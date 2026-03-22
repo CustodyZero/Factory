@@ -1,4 +1,6 @@
-# Factory
+<p align="center">
+  <strong>Factory</strong>
+</p>
 
 A change-control system for governed AI-assisted development.
 
@@ -313,3 +315,51 @@ Execution protocol:
 └── docs/
     └── integration.md     # How to adopt in a host project
 ```
+
+---
+
+## Starting a New Project
+
+To use Factory as a template for a new project:
+
+```sh
+# Clone
+git clone https://github.com/custodyzero/factory.git my-project
+cd my-project
+
+# Reset git history
+rm -rf .git
+git init
+
+# Configure
+# Edit factory.config.json — set project_name, verification commands,
+# and infrastructure_patterns for your project
+
+# Install and verify
+pnpm install
+pnpm prepare
+npx tsx tools/validate.ts
+```
+
+See [`docs/integration.md`](docs/integration.md) for embedding Factory
+into an existing repository.
+
+---
+
+## License
+
+Factory is open source under the MIT License. See [LICENSE](LICENSE).
+
+The MIT License governs the source code. It does not grant rights to use
+CustodyZero brand assets. See the
+[CustodyZero brand repository](https://github.com/custodyzero/brand)
+for brand usage policy.
+
+---
+
+<p align="center">
+  <a href="https://custodyzero.com">
+    <img src="https://raw.githubusercontent.com/CustodyZero/brand/main/brand/custodyzero/wordmark/custodyzero-cz-dark.svg"
+         alt="A CustodyZero product" width="160" />
+  </a>
+</p>

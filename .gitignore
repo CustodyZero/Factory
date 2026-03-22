@@ -3,3 +3,22 @@ dist/
 derived-state.json
 *.tsbuildinfo
 .vite/
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test / build artifacts
+coverage/
+*.log

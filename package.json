@@ -3,6 +3,12 @@
   "private": true,
   "version": "0.1.0",
   "description": "Change-control factory for governed AI-assisted development",
+  "author": "CustodyZero (https://custodyzero.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/custodyzero/factory.git"
+  },
   "type": "module",
   "scripts": {
     "factory:complete": "npx tsx tools/complete.ts",

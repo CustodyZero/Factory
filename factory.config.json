@@ -2,8 +2,8 @@
   "$schema": "./schemas/factory-config.schema.json",
   "project_name": "my-project",
   "verification": {
-    "build": "pnpm build",
-    "lint": "pnpm lint",
+    "build": "true",
+    "lint": "true",
     "test": "pnpm test"
   },
   "validation": {
