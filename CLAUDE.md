@@ -16,6 +16,7 @@ Read `AGENTS.md` first. It defines all operating constraints.
 npx tsx tools/status.ts              # What is the factory state?
 npx tsx tools/execute.ts <feature>   # What packets are ready?
 npx tsx tools/complete.ts <packet>   # Create completion record
+npx tsx tools/accept.ts <packet>     # Accept a completed packet (human action)
 npx tsx tools/validate.ts            # Validate factory integrity
 npm test                             # Run factory tooling tests
 ```

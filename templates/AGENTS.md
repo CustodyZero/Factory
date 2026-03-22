@@ -70,6 +70,7 @@ Feature (intent) → Plan (packets) → Human Approval → Execution → QA Repo
 | `npx tsx factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
 | `npx tsx factory/tools/execute.ts <feature-id>` | Determine which packets to implement next |
 | `npx tsx factory/tools/complete.ts <packet-id>` | After implementation, before committing |
+| `npx tsx factory/tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx factory/tools/validate.ts` | Verify factory integrity |
 
 ---

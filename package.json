@@ -11,6 +11,7 @@
   },
   "type": "module",
   "scripts": {
+    "factory:accept": "npx tsx tools/accept.ts",
     "factory:complete": "npx tsx tools/complete.ts",
     "factory:derive": "npx tsx tools/derive.ts",
     "factory:execute": "npx tsx tools/execute.ts",
