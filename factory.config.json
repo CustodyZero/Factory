@@ -1,0 +1,34 @@
+{
+  "$schema": "./schemas/factory-config.schema.json",
+  "project_name": "my-project",
+  "verification": {
+    "build": "pnpm build",
+    "lint": "pnpm lint",
+    "test": "pnpm test"
+  },
+  "validation": {
+    "command": "npx tsx tools/validate.ts"
+  },
+  "infrastructure_patterns": [
+    "factory/",
+    "tools/",
+    ".githooks/",
+    ".github/",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "tsconfig.json",
+    "turbo.json",
+    ".gitignore",
+    ".eslintrc.json",
+    ".eslintignore",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "completed_by_default": {
+    "kind": "agent",
+    "id": "claude"
+  }
+}

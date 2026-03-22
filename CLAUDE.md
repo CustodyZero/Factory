@@ -1,0 +1,21 @@
+# Claude Code — Factory Project
+
+Read `AGENTS.md` first. It defines all operating constraints.
+
+## Critical Rules
+
+1. **Run `npx tsx tools/status.ts` at the start of every session**
+2. **Never implement without a packet**
+3. **Never commit without a completion**
+4. **Never introduce facades or partial success paths**
+5. **One intent per change — no scope mixing**
+
+## Quick Reference
+
+```sh
+npx tsx tools/status.ts              # What is the factory state?
+npx tsx tools/execute.ts <feature>   # What packets are ready?
+npx tsx tools/complete.ts <packet>   # Create completion record
+npx tsx tools/validate.ts            # Validate factory integrity
+npm test                             # Run factory tooling tests
+```
