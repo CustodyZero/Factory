@@ -48,6 +48,8 @@ export interface PacketState {
 
 export type ExecuteActionKind =
   | 'spawn_packets'
+  | 'produce_report'
+  | 'awaiting_acceptance'
   | 'all_complete'
   | 'blocked'
   | 'not_approved'
@@ -116,6 +118,7 @@ export interface ExecuteInput {
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completionIds: ReadonlySet<string>;
   readonly acceptanceIds: ReadonlySet<string>;
+  readonly hasReport: boolean;
 }
 
 function isAccepted(
@@ -206,6 +209,48 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   }
 
   if (completedPackets.length === feature.packets.length) {
+    // All packets complete — determine next governance step
+    if (!input.hasReport && feature.packets.length > 0) {
+      return {
+        kind: 'produce_report',
+        feature_id: feature.id,
+        ready_packets: [],
+        in_progress_packets: [],
+        completed_packets: completedPackets,
+        blocked_packets: [],
+        total_packets: feature.packets.length,
+        message:
+          `Feature '${feature.id}': all ${String(feature.packets.length)} packets complete.\n` +
+          `  Next: produce QA report with npx tsx tools/report.ts ${feature.id}`,
+      };
+    }
+
+    // Report exists — check if architectural packets need human acceptance
+    const needsAcceptance: string[] = [];
+    for (const packetId of feature.packets) {
+      const packet = allPacketMap.get(packetId);
+      if (packet === undefined) continue;
+      if (packet.change_class === 'architectural' && !input.acceptanceIds.has(packetId)) {
+        needsAcceptance.push(packetId);
+      }
+    }
+
+    if (needsAcceptance.length > 0) {
+      return {
+        kind: 'awaiting_acceptance',
+        feature_id: feature.id,
+        ready_packets: [],
+        in_progress_packets: [],
+        completed_packets: completedPackets,
+        blocked_packets: [],
+        total_packets: feature.packets.length,
+        message:
+          `Feature '${feature.id}': QA report produced. Awaiting human acceptance for architectural packets:\n` +
+          needsAcceptance.map((id) => `  - ${id}`).join('\n') +
+          `\n  Use npx tsx tools/accept.ts <packet-id> for each.`,
+      };
+    }
+
     return {
       kind: 'all_complete',
       feature_id: feature.id,
@@ -216,7 +261,8 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       total_packets: feature.packets.length,
       message:
         `Feature '${feature.id}': all ${String(feature.packets.length)} packets complete.\n` +
-        `  Next: produce QA report with npx tsx tools/report.ts ${feature.id}`,
+        `  QA report produced and all acceptances satisfied.\n` +
+        `  Feature is ready for delivery.`,
     };
   }
 
@@ -375,12 +421,15 @@ function main(): void {
 
   const completionIds = new Set(completions.map((c) => c.packet_id));
   const acceptanceIds = new Set(acceptances.map((a) => a.packet_id));
+  const reportPath = join(factoryRoot, 'reports', `${resolvedFeatureId}.json`);
+  const hasReport = existsSync(reportPath);
 
   const action = resolveExecuteAction({
     feature,
     packets,
     completionIds,
     acceptanceIds,
+    hasReport,
   });
 
   if (process.argv.includes('--json')) {

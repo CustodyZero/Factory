@@ -70,6 +70,7 @@ Feature (intent) → Plan (packets) → Human Approval → Execution → QA Repo
 | `npx tsx factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
 | `npx tsx factory/tools/execute.ts <feature-id>` | Determine which packets to implement next |
 | `npx tsx factory/tools/complete.ts <packet-id>` | After implementation, before committing |
+| `npx tsx factory/tools/report.ts <feature-id>` | Produce QA report after all packets complete (pipe assessments JSON to stdin) |
 | `npx tsx factory/tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx factory/tools/validate.ts` | Verify factory integrity |
 
@@ -123,22 +124,24 @@ Do not rely on memory. Do not guess. Read the factory state.
 
 ## 5. Execution Protocol (for feature-level work)
 
-When executing a feature with multiple packets:
+When executing a feature, **execute.ts is the single authority on what to do next**.
+Do not decide when to stop or what step comes next — always ask execute.ts.
 
 ```
 loop:
   1. Run: npx tsx factory/tools/execute.ts <feature-id>
-  2. Read output: which packets are ready?
-  3. Implement ready packets (parallel if independent)
-  4. For each completed packet: npx tsx factory/tools/complete.ts <packet-id>
-  5. Commit with completion
-  6. Go to 1
-
-  Exit when: all_complete
-  Then: produce QA report
+  2. Read the action kind in the output:
+     - spawn_packets  → implement ready packets, complete each, go to 1
+     - produce_report → produce QA report (pipe assessments JSON to report.ts), go to 1
+     - awaiting_acceptance → stop, inform human that architectural packets need acceptance
+     - all_complete   → feature is done, ready for delivery
+     - blocked        → resolve dependencies or replan
 ```
 
 Each iteration is stateless. If interrupted, re-run `factory/tools/execute.ts` to resume.
+
+**Never skip the QA report step.** After all packets are complete, execute.ts returns
+`produce_report` — you must produce the report before the feature can proceed to acceptance.
 
 ---
 

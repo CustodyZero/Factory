@@ -257,6 +257,48 @@ function validateEvidenceSchema(filepath: string, data: unknown): ValidationResu
   return results;
 }
 
+function validateReportSchema(filepath: string, data: unknown): ValidationResult[] {
+  const results: ValidationResult[] = [];
+  const e = (msg: string) => results.push({ file: filepath, severity: 'error', error_type: 'schema', message: msg });
+
+  if (!isObject(data)) { e('report must be a JSON object'); return results; }
+
+  if (typeof data['feature_id'] !== 'string' || !KEBAB_CASE_RE.test(data['feature_id'])) {
+    e("'feature_id' must be a kebab-case string");
+  }
+  if (!isValidISO8601(data['produced_at'])) e("'produced_at' must be a valid ISO 8601 timestamp");
+
+  const idCheck = isValidIdentity(data['produced_by'], VALID_IDENTITY_KINDS as unknown as string[]);
+  if (!idCheck.valid) e(`'produced_by': ${idCheck.reason}`);
+
+  if (typeof data['summary'] !== 'string' || data['summary'].length === 0) e("'summary' is required and must be non-empty");
+
+  const validRecommendations = ['accept', 'accept_with_reservations', 'reject'];
+  if (typeof data['recommendation'] !== 'string' || !validRecommendations.includes(data['recommendation'])) {
+    e(`'recommendation' must be one of: ${validRecommendations.join(', ')}`);
+  }
+
+  if (!Array.isArray(data['packets']) || data['packets'].length === 0) {
+    e("'packets' must be a non-empty array");
+  } else {
+    for (const pa of data['packets'] as unknown[]) {
+      if (!isObject(pa)) { e('each packet assessment must be an object'); continue; }
+      const prefix = `packets[${typeof pa['packet_id'] === 'string' ? pa['packet_id'] : '?'}]`;
+      if (typeof pa['packet_id'] !== 'string' || !KEBAB_CASE_RE.test(pa['packet_id'])) e(`${prefix}: 'packet_id' must be a kebab-case string`);
+      if (typeof pa['intent_satisfied'] !== 'boolean') e(`${prefix}: 'intent_satisfied' must be a boolean`);
+      if (typeof pa['intent_summary'] !== 'string' || pa['intent_summary'].length === 0) e(`${prefix}: 'intent_summary' is required`);
+      if (!Array.isArray(pa['contracts_verified'])) e(`${prefix}: 'contracts_verified' must be an array`);
+      if (!Array.isArray(pa['risks'])) e(`${prefix}: 'risks' must be an array`);
+    }
+  }
+
+  if (data['reservations'] != null && !isStringArray(data['reservations'])) {
+    e("'reservations' must be an array of strings");
+  }
+
+  return results;
+}
+
 function validateFeatureSchema(filepath: string, data: unknown): ValidationResult[] {
   const results: ValidationResult[] = [];
   const e = (msg: string) => results.push({ file: filepath, severity: 'error', error_type: 'schema', message: msg });
@@ -306,10 +348,11 @@ interface ArtifactIndex {
   rejectionPacketIds: Set<string>;
   evidenceKeys: Set<string>;
   allDeclaredDeps: Set<string>;
+  reportFeatureIds: Set<string>;
   packets: Array<{ id: string; change_class: string; packages: string[]; started_at: string | null; status: string | null }>;
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
-  features: Array<{ id: string; packets: string[] }>;
+  features: Array<{ id: string; status: string; packets: string[] }>;
 }
 
 function buildIndex(
@@ -319,6 +362,7 @@ function buildIndex(
   rejections: Array<{ data: unknown }>,
   evidence: Array<{ data: unknown }>,
   features: Array<{ data: unknown }>,
+  reports: Array<{ data: unknown }>,
 ): ArtifactIndex {
   const index: ArtifactIndex = {
     packetIds: new Set(),
@@ -327,6 +371,7 @@ function buildIndex(
     rejectionPacketIds: new Set(),
     evidenceKeys: new Set(),
     allDeclaredDeps: new Set(),
+    reportFeatureIds: new Set(),
     packets: [],
     acceptances: [],
     rejections: [],
@@ -389,7 +434,14 @@ function buildIndex(
   for (const { data } of features) {
     if (isObject(data) && typeof data['id'] === 'string') {
       const featurePackets = isStringArray(data['packets']) ? data['packets'] : [];
-      index.features.push({ id: data['id'], packets: featurePackets });
+      const featureStatus = typeof data['status'] === 'string' ? data['status'] : '';
+      index.features.push({ id: data['id'], status: featureStatus, packets: featurePackets });
+    }
+  }
+
+  for (const { data } of reports) {
+    if (isObject(data) && typeof data['feature_id'] === 'string') {
+      index.reportFeatureIds.add(data['feature_id']);
     }
   }
 
@@ -506,6 +558,36 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
   }
 
   // -------------------------------------------------------------------------
+  // Warning: completed features without QA reports
+  // -------------------------------------------------------------------------
+  for (const f of index.features) {
+    if (f.status !== 'approved' && f.status !== 'executing') continue;
+    if (f.packets.length === 0) continue;
+    const allComplete = f.packets.every((pid) => index.completionPacketIds.has(pid));
+    if (allComplete && !index.reportFeatureIds.has(f.id)) {
+      results.push({
+        file: `features/${f.id}.json`,
+        severity: 'warning',
+        error_type: 'governance',
+        message: `Feature '${f.id}': all packets complete but no QA report exists. Run: npx tsx tools/report.ts ${f.id}`,
+      });
+    }
+  }
+
+  // Report referential integrity: report must reference existing feature
+  for (const fid of index.reportFeatureIds) {
+    const featureExists = index.features.some((f) => f.id === fid);
+    if (!featureExists) {
+      results.push({
+        file: `reports/${fid}.json`,
+        severity: 'error',
+        error_type: 'referential',
+        message: `Orphaned report: feature '${fid}' does not exist`,
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // FI-6: No progression without completion
   // -------------------------------------------------------------------------
   const startedPackets = index.packets
@@ -559,6 +641,7 @@ function main(): void {
   const rejections = readJsonFiles('rejections');
   const evidence = readJsonFiles('evidence');
   const features = readJsonFiles('features');
+  const reports = readJsonFiles('reports');
 
   // Check for parse failures
   for (const collection of [
@@ -568,6 +651,7 @@ function main(): void {
     { name: 'rejections', items: rejections },
     { name: 'evidence', items: evidence },
     { name: 'features', items: features },
+    { name: 'reports', items: reports },
   ]) {
     for (const item of collection.items) {
       if (item.data === null) {
@@ -600,9 +684,12 @@ function main(): void {
   for (const f of features) {
     if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data));
   }
+  for (const r of reports) {
+    if (r.data != null) allResults.push(...validateReportSchema(r.filepath, r.data));
+  }
 
   // Referential integrity + invariants (Layers 2-5)
-  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features);
+  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features, reports);
   allResults.push(...validateIntegrity(index));
 
   // FI-1: Check for duplicate completions
@@ -649,7 +736,7 @@ function main(): void {
 
   if (allResults.length === 0) {
     console.log('Factory validation: PASS');
-    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
+    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${reports.length} reports`);
     process.exit(0);
   }
 
@@ -659,7 +746,7 @@ function main(): void {
     console.log(`Factory validation: PASS with warnings (${warnings.length} warning(s))`);
   }
 
-  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
+  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${reports.length} reports`);
   console.log('');
 
   for (const r of allResults) {

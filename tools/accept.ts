@@ -69,10 +69,22 @@ if (existsSync(acceptancePath)) {
   process.exit(1);
 }
 
-// Read packet for display
+// Read packet for display and gate checks
 const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
 const title = typeof packet['title'] === 'string' ? packet['title'] : packetId;
 const changeClass = typeof packet['change_class'] === 'string' ? packet['change_class'] : 'unknown';
+const featureId = typeof packet['feature_id'] === 'string' ? packet['feature_id'] : null;
+
+// Gate: architectural packets require a QA report before acceptance
+if (changeClass === 'architectural' && featureId !== null) {
+  const reportPath = join(FACTORY_ROOT, 'reports', `${featureId}.json`);
+  if (!existsSync(reportPath)) {
+    console.error(`ERROR: Architectural packet '${packetId}' requires a QA report before acceptance.`);
+    console.error(`  Feature: ${featureId}`);
+    console.error(`  Run: npx tsx tools/report.ts ${featureId}`);
+    process.exit(1);
+  }
+}
 
 console.log(`\nAccepting packet: ${title}`);
 console.log(`  ID:           ${packetId}`);

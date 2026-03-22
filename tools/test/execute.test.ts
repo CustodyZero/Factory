@@ -37,6 +37,7 @@ function makeInput(overrides: Partial<ExecuteInput> = {}): ExecuteInput {
     packets: overrides.packets ?? [],
     completionIds: overrides.completionIds ?? new Set(),
     acceptanceIds: overrides.acceptanceIds ?? new Set(),
+    hasReport: overrides.hasReport ?? false,
   };
 }
 
@@ -69,13 +70,13 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual(['p1']);
   });
 
-  it('EX-U4: all packets completed produces all_complete', () => {
+  it('EX-U4: all packets completed without report produces produce_report', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['p1'] }),
       packets: [makePacket('p1')],
       completionIds: new Set(['p1']),
     }));
-    expect(action.kind).toBe('all_complete');
+    expect(action.kind).toBe('produce_report');
     expect(action.completed_packets).toEqual(['p1']);
   });
 
@@ -194,13 +195,64 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual(['p2']);
   });
 
-  it('EX-U14: all_complete message suggests QA report', () => {
+  it('EX-U14: produce_report message suggests QA report tool', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ id: 'my-feature', packets: ['p1'] }),
       packets: [makePacket('p1')],
       completionIds: new Set(['p1']),
     }));
+    expect(action.kind).toBe('produce_report');
     expect(action.message).toContain('report');
     expect(action.message).toContain('my-feature');
+  });
+
+  it('EX-U15: all complete with report and no architectural packets produces all_complete', () => {
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['p1'] }),
+      packets: [makePacket('p1')],
+      completionIds: new Set(['p1']),
+      hasReport: true,
+    }));
+    expect(action.kind).toBe('all_complete');
+    expect(action.message).toContain('ready for delivery');
+  });
+
+  it('EX-U16: architectural packet without acceptance produces awaiting_acceptance', () => {
+    const archPacket = { ...makePacket('p1'), change_class: 'architectural' as const };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['p1'] }),
+      packets: [archPacket],
+      completionIds: new Set(['p1']),
+      hasReport: true,
+    }));
+    expect(action.kind).toBe('awaiting_acceptance');
+    expect(action.message).toContain('p1');
+    expect(action.message).toContain('accept');
+  });
+
+  it('EX-U17: architectural packet with acceptance produces all_complete', () => {
+    const archPacket = { ...makePacket('p1'), change_class: 'architectural' as const };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['p1'] }),
+      packets: [archPacket],
+      completionIds: new Set(['p1']),
+      acceptanceIds: new Set(['p1']),
+      hasReport: true,
+    }));
+    expect(action.kind).toBe('all_complete');
+  });
+
+  it('EX-U18: mixed packets — only architectural ones need acceptance', () => {
+    const localPacket = makePacket('p1');
+    const archPacket = { ...makePacket('p2'), change_class: 'architectural' as const };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['p1', 'p2'] }),
+      packets: [localPacket, archPacket],
+      completionIds: new Set(['p1', 'p2']),
+      hasReport: true,
+    }));
+    expect(action.kind).toBe('awaiting_acceptance');
+    expect(action.message).toContain('p2');
+    expect(action.message).not.toContain('p1');
   });
 });

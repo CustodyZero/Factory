@@ -44,6 +44,7 @@ export interface PacketSummary {
 export type NextActionKind =
   | 'complete_packet'
   | 'accept_packet'
+  | 'produce_report'
   | 'resolve_dependency'
   | 'no_active_work'
   | 'all_clear';
@@ -133,6 +134,7 @@ export interface StatusInput {
   readonly acceptances: ReadonlyArray<RawAcceptance>;
   readonly featureFilter?: string | undefined;
   readonly features?: ReadonlyArray<RawFeature> | undefined;
+  readonly reportIds?: ReadonlySet<string> | undefined;
 }
 
 function verificationPasses(v: RawCompletion['verification']): boolean {
@@ -243,7 +245,21 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
     audit_pending: auditPending.length,
   };
 
-  const nextAction = deriveNextAction(incomplete, awaitingAcceptance, blocked);
+  // Identify features needing QA reports
+  const completionIds = new Set(input.completions.map((c) => c.packet_id));
+  const reportIds = input.reportIds ?? new Set<string>();
+  const featuresNeedingReport: string[] = [];
+  for (const feature of (input.features ?? [])) {
+    if (feature.status !== 'approved' && feature.status !== 'executing') continue;
+    if (feature.packets.length === 0) continue;
+    if (reportIds.has(feature.id)) continue;
+    const allComplete = feature.packets.every((pid) => completionIds.has(pid));
+    if (allComplete) {
+      featuresNeedingReport.push(feature.id);
+    }
+  }
+
+  const nextAction = deriveNextAction(incomplete, awaitingAcceptance, blocked, featuresNeedingReport);
 
   return {
     feature_filter: featureFilter,
@@ -260,6 +276,7 @@ function deriveNextAction(
   incomplete: ReadonlyArray<PacketSummary>,
   awaitingAcceptance: ReadonlyArray<PacketSummary>,
   blocked: ReadonlyArray<PacketSummary>,
+  featuresNeedingReport: ReadonlyArray<string>,
 ): NextAction {
   if (incomplete.length > 0) {
     const sorted = [...incomplete].sort((a, b) =>
@@ -282,6 +299,16 @@ function deriveNextAction(
       packet_id: first.id,
       message: `Packet '${first.id}' is blocked by unmet dependency '${dep}'. Resolve the dependency first.`,
       command: null,
+    };
+  }
+
+  if (featuresNeedingReport.length > 0) {
+    const featureId = featuresNeedingReport[0]!;
+    return {
+      kind: 'produce_report',
+      packet_id: null,
+      message: `Feature '${featureId}': all packets complete but no QA report. Produce the report before acceptance.`,
+      command: `npx tsx tools/report.ts ${featureId}`,
     };
   }
 
@@ -387,10 +414,17 @@ function main(): void {
   const acceptances = readJsonDir<RawAcceptance>(factoryRoot, 'acceptances');
   const features = readJsonDir<RawFeature>(factoryRoot, 'features');
 
+  const reportsDir = join(factoryRoot, 'reports');
+  const reportIds = new Set<string>(
+    existsSync(reportsDir)
+      ? readdirSync(reportsDir).filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''))
+      : [],
+  );
+
   const featureIdx = process.argv.indexOf('--feature');
   const featureFilter = featureIdx !== -1 ? process.argv[featureIdx + 1] : undefined;
 
-  const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features });
+  const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features, reportIds });
 
   if (process.argv.includes('--json')) {
     process.stdout.write(JSON.stringify(status, null, 2) + '\n');
