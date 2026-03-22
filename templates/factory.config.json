@@ -1,32 +1,23 @@
 {
-  "$schema": "./schemas/factory-config.schema.json",
-  "project_name": "factory",
-  "factory_dir": ".",
+  "$schema": "./factory/schemas/factory-config.schema.json",
+  "project_name": "my-project",
+  "factory_dir": "factory",
   "verification": {
     "build": "true",
     "lint": "true",
-    "test": "pnpm test"
+    "test": "true"
   },
   "validation": {
-    "command": "npx tsx tools/validate.ts"
+    "command": "npx tsx factory/tools/validate.ts"
   },
   "infrastructure_patterns": [
     "factory/",
-    "tools/",
-    "hooks/",
-    "templates/",
+    ".githooks/",
     ".github/",
     "package.json",
     "pnpm-lock.yaml",
-    "pnpm-workspace.yaml",
     "tsconfig.json",
-    "turbo.json",
     ".gitignore",
-    ".eslintrc.json",
-    ".eslintignore",
-    "docs/",
-    "setup.sh",
-    "setup.ps1",
     "CLAUDE.md",
     "AGENTS.md",
     "README.md",

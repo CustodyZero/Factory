@@ -1,160 +1,57 @@
 # Integration Guide
 
-How to adopt the factory in a host project.
+How to add the factory to an existing project.
 
 ---
 
-## Option A: Standalone (this repo IS your factory)
-
-Use this repo directly as your project root. Your source code, factory
-artifacts, and tooling all live together.
-
-1. Clone or copy this repo
-2. Run `pnpm install`
-3. Edit `factory.config.json` with your project's build/lint/test commands
-4. Run `pnpm prepare` to install git hooks
-5. Start creating packets
-
----
-
-## Option B: Embed in an existing project
-
-Copy the factory structure into your existing repo.
-
-### What to copy
-
-```
-factory.config.json          → <project-root>/factory.config.json
-schemas/                     → <project-root>/factory/schemas/
-packets/                     → <project-root>/factory/packets/
-completions/                 → <project-root>/factory/completions/
-acceptances/                 → <project-root>/factory/acceptances/
-rejections/                  → <project-root>/factory/rejections/
-evidence/                    → <project-root>/factory/evidence/
-features/                    → <project-root>/factory/features/
-reports/                     → <project-root>/factory/reports/
-tools/                       → <project-root>/tools/factory/
-AGENTS.md                    → <project-root>/AGENTS.md
-.githooks/pre-commit         → <project-root>/.githooks/pre-commit
-```
-
-### Adjust paths
-
-When embedding, the tooling assumes artifacts are at the project root.
-You'll need to adjust `factory.config.json` or the tool scripts if
-your factory artifacts live under a subdirectory like `factory/`.
-
-The key function is `resolveFactoryRoot()` in `tools/config.ts`.
-
-### Add scripts to your package.json
-
-```json
-{
-  "scripts": {
-    "factory:complete": "npx tsx tools/factory/complete.ts",
-    "factory:derive": "npx tsx tools/factory/derive.ts",
-    "factory:execute": "npx tsx tools/factory/execute.ts",
-    "factory:status": "npx tsx tools/factory/status.ts",
-    "factory:validate": "npx tsx tools/factory/validate.ts",
-    "prepare": "git config core.hooksPath .githooks"
-  }
-}
-```
-
-### Install dependencies
-
-The factory tooling requires:
-
-```json
-{
-  "devDependencies": {
-    "tsx": "^4.0.0",
-    "vitest": "^4.0.0"
-  }
-}
-```
-
-These are lightweight — no framework dependencies.
-
-### Configure git hooks
+## Quick Setup
 
 ```sh
-git config core.hooksPath .githooks
+# From your project root
+git clone https://github.com/custodyzero/factory.git factory
+./factory/setup.sh
 ```
 
-Or add a `prepare` script to your `package.json` (shown above).
+The setup script:
 
-### Update infrastructure patterns
-
-Edit the `infrastructure_patterns` in `factory.config.json` to match
-your project's structure. These patterns define which files are considered
-"factory/infrastructure" (not implementation work) for the FI-7 gate.
-
-Common patterns to add:
-- `src/` directories that are NOT implementation (unlikely)
-- Build output directories
-- Documentation directories
-- CI configuration paths
-
-Common patterns to customize:
-- `tools/factory/` instead of `tools/` if you have other tools
-- Project-specific root config files
+1. Installs factory dependencies (isolated in `factory/node_modules/`)
+2. Copies template files to your project root (no-clobber):
+   - `factory.config.json` — project configuration
+   - `CLAUDE.md` — AI agent instructions
+   - `AGENTS.md` — agent operating constraints
+3. Configures `git config core.hooksPath factory/hooks`
 
 ---
 
-## Prerequisites
-
-| Requirement | Version | Purpose |
-|---|---|---|
-| Node.js | >= 20 | Runtime for factory tooling |
-| pnpm (or npm/yarn) | Any | Package manager (configurable in factory.config.json) |
-| tsx | >= 4.0 | TypeScript execution without compilation |
-| vitest | >= 4.0 | Test runner for factory tooling tests |
-| git | Any | Version control + hooks |
-
-### Optional
-
-| Tool | Purpose |
-|---|---|
-| jq | Pre-commit hook reads config without Node.js for speed |
-
----
-
-## Configuration Reference
+## Post-Setup Configuration
 
 ### factory.config.json
 
+Edit the template at your project root:
+
 ```json
 {
-  "$schema": "./schemas/factory-config.schema.json",
-
+  "$schema": "./factory/schemas/factory-config.schema.json",
   "project_name": "my-project",
-
+  "factory_dir": "factory",
   "verification": {
-    "build": "pnpm build",
-    "lint": "pnpm lint",
-    "test": "pnpm test"
+    "build": "dotnet build",
+    "lint": "true",
+    "test": "dotnet test"
   },
-
   "validation": {
-    "command": "npx tsx tools/validate.ts"
+    "command": "npx tsx factory/tools/validate.ts"
   },
-
   "infrastructure_patterns": [
     "factory/",
-    "tools/",
-    ".githooks/",
     ".github/",
     "package.json",
-    "pnpm-lock.yaml",
-    "tsconfig.json",
     ".gitignore",
-    "README.md",
-    "AGENTS.md",
     "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
     "LICENSE"
   ],
-
   "completed_by_default": {
     "kind": "agent",
     "id": "claude"
@@ -167,9 +64,10 @@ Common patterns to customize:
 | Field | Type | Description |
 |---|---|---|
 | `project_name` | string | Used in status output headers |
-| `verification.build` | string | Shell command to run build verification |
-| `verification.lint` | string | Shell command to run lint verification |
-| `verification.test` | string | Shell command to run test verification |
+| `factory_dir` | string | Path to factory directory relative to project root (default: `"."`) |
+| `verification.build` | string | Shell command for build verification |
+| `verification.lint` | string | Shell command for lint verification |
+| `verification.test` | string | Shell command for test verification |
 | `validation.command` | string | Shell command to run factory validation |
 | `infrastructure_patterns` | string[] | File paths/prefixes that are not "implementation work" |
 | `completed_by_default` | identity | Default identity written into completion records |
@@ -178,8 +76,30 @@ Common patterns to customize:
 
 Patterns ending in `/` match directory prefixes (e.g., `factory/` matches
 `factory/packets/foo.json`). Patterns without `/` match exact filenames
-(e.g., `package.json` matches only the root `package.json`, not
-`packages/cli/package.json`).
+(e.g., `package.json` matches only the root `package.json`).
+
+Adjust these patterns to match your project structure. Common additions:
+- CI configuration directories (`.github/`, `.gitlab/`)
+- Project-level config files (`.sln`, `Makefile`, `Cargo.toml`)
+- Documentation directories
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Purpose |
+|---|---|---|
+| Node.js | >= 20 | Runtime for factory tooling |
+| git | Any | Version control + hooks |
+
+### Optional
+
+| Tool | Purpose |
+|---|---|
+| jq | Pre-commit hook reads config without Node.js for speed |
+
+Factory's Node.js dependencies (tsx, vitest, typescript) are installed
+inside `factory/node_modules/` and do not affect the host project.
 
 ---
 
@@ -195,17 +115,56 @@ The pre-commit hook runs four steps in order:
 
 If any step fails, the commit is blocked.
 
+The hook resolves tool paths from `factory_dir` in the config, so it
+works regardless of whether factory is at the project root or in a
+subdirectory.
+
 ---
 
 ## Testing the Factory Tooling
 
 ```sh
-pnpm test              # or: npx vitest run
+cd factory
+npx vitest run
 ```
 
-The factory tooling has its own test suite (44 tests) covering:
-- Completion gate logic (16 tests)
-- Status derivation (14 tests)
-- Execute resolver (14 tests)
+The factory tooling has its own test suite covering:
+- Completion gate logic
+- Status derivation
+- Execute resolver
 
 All tests are pure function tests — no I/O, no mocking.
+
+---
+
+## Git Considerations
+
+### Committing factory as part of your repo
+
+Factory artifacts (packets, completions, acceptances, etc.) are meant to
+be committed alongside your code. They are the governance trail.
+
+### Updating factory
+
+To update factory tooling from upstream:
+
+```sh
+cd factory
+git pull origin main
+```
+
+Since factory is a cloned repo inside your project, its `.git` directory
+is independent. You can pull updates without affecting your project's
+git history.
+
+### .gitignore
+
+Add to your project's `.gitignore`:
+
+```
+factory/node_modules/
+factory/derived-state.json
+```
+
+The setup script does not modify your `.gitignore` — add these entries
+manually.

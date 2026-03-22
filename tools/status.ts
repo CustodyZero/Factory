@@ -379,8 +379,8 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
 // ---------------------------------------------------------------------------
 
 function main(): void {
-  const factoryRoot = resolveFactoryRoot();
   const config = loadConfig();
+  const factoryRoot = resolveFactoryRoot(undefined, config);
 
   const packets = readJsonDir<RawPacket>(factoryRoot, 'packets');
   const completions = readJsonDir<RawCompletion>(factoryRoot, 'completions');

@@ -18,7 +18,7 @@
     "factory:validate": "npx tsx tools/validate.ts",
     "factory:test": "vitest run",
     "test": "vitest run",
-    "prepare": "git config core.hooksPath .githooks"
+    "prepare": "git config core.hooksPath hooks"
   },
   "engines": {
     "node": ">=20"

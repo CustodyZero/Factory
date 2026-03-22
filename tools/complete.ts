@@ -26,7 +26,7 @@ import { execSync } from 'node:child_process';
 import { loadConfig, resolveFactoryRoot } from './config.js';
 
 const config = loadConfig();
-const FACTORY_ROOT = resolveFactoryRoot();
+const FACTORY_ROOT = resolveFactoryRoot(undefined, config);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing

@@ -31,41 +31,44 @@ the implementer.
 - Node.js >= 20
 - pnpm (or npm/yarn — adjust `factory.config.json` accordingly)
 
-### Setup
+### Add to an Existing Project
 
 ```sh
-# Install dependencies
-pnpm install
+# Clone factory as a subdirectory
+git clone https://github.com/custodyzero/factory.git factory
 
-# Configure git hooks
-pnpm prepare    # or: git config core.hooksPath .githooks
+# Run setup (installs deps, copies templates, configures hooks)
+./factory/setup.sh
 
-# Verify everything works
-npx tsx tools/validate.ts
+# Configure for your project
+# Edit factory.config.json — set project_name and verification commands
 ```
 
 ### Configure for Your Project
 
-Edit `factory.config.json`:
+Edit `factory.config.json` at the project root:
 
 ```json
 {
   "project_name": "my-project",
+  "factory_dir": "factory",
   "verification": {
-    "build": "pnpm build",
-    "lint": "pnpm lint",
-    "test": "pnpm test"
+    "build": "dotnet build",
+    "lint": "true",
+    "test": "dotnet test"
   },
   "validation": {
-    "command": "npx tsx tools/validate.ts"
+    "command": "npx tsx factory/tools/validate.ts"
   },
   "infrastructure_patterns": [
     "factory/",
-    "tools/",
-    ".githooks/",
     ".github/",
     "package.json",
-    "README.md"
+    ".gitignore",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
+    "LICENSE"
   ],
   "completed_by_default": {
     "kind": "agent",
@@ -230,15 +233,15 @@ a completion. Enforced by the pre-commit hook.
 ### Status
 
 ```sh
-npx tsx tools/status.ts              # human-readable report
-npx tsx tools/status.ts --json       # machine-readable JSON
-npx tsx tools/status.ts --feature <id>  # scoped to a feature
+npx tsx factory/tools/status.ts              # human-readable report
+npx tsx factory/tools/status.ts --json       # machine-readable JSON
+npx tsx factory/tools/status.ts --feature <id>  # scoped to a feature
 ```
 
 ### Complete
 
 ```sh
-npx tsx tools/complete.ts <packet-id> [--summary "..."]
+npx tsx factory/tools/complete.ts <packet-id> [--summary "..."]
 ```
 
 Runs verification (build, lint, test), then creates a completion record.
@@ -246,8 +249,8 @@ Runs verification (build, lint, test), then creates a completion record.
 ### Execute
 
 ```sh
-npx tsx tools/execute.ts <feature-id>
-npx tsx tools/execute.ts <feature-id> --json
+npx tsx factory/tools/execute.ts <feature-id>
+npx tsx factory/tools/execute.ts <feature-id> --json
 ```
 
 Stateless action resolver for feature-level execution.
@@ -255,7 +258,7 @@ Stateless action resolver for feature-level execution.
 ### Validate
 
 ```sh
-npx tsx tools/validate.ts
+npx tsx factory/tools/validate.ts
 ```
 
 Schema validation + referential integrity + invariant enforcement.
@@ -263,8 +266,8 @@ Schema validation + referential integrity + invariant enforcement.
 ### Derive
 
 ```sh
-npx tsx tools/derive.ts              # print to stdout
-npx tsx tools/derive.ts --write      # write to derived-state.json
+npx tsx factory/tools/derive.ts              # print to stdout
+npx tsx factory/tools/derive.ts --write      # write to derived-state.json
 ```
 
 ---
@@ -277,7 +280,7 @@ draft → planned → approved → executing → completed → delivered
 ```
 
 Execution protocol:
-1. Run `npx tsx tools/execute.ts <feature-id>`
+1. Run `npx tsx factory/tools/execute.ts <feature-id>`
 2. Spawn parallel agents for each ready packet
 3. Each agent: implement → complete → commit
 4. Re-run execute
@@ -288,61 +291,56 @@ Execution protocol:
 
 ## Directory Structure
 
+When installed in a host project:
+
 ```
-.
-├── factory.config.json    # Project-specific configuration
-├── schemas/               # JSON schemas for all artifact types
-├── packets/               # Work unit declarations
-├── completions/           # Implementation evidence
-├── acceptances/           # Human approval records
-├── rejections/            # Audit reversals
-├── evidence/              # Environment dependency proofs
-├── features/              # Feature-level intents
-├── reports/               # QA reports
-├── tools/                 # Factory tooling
-│   ├── config.ts          # Configuration loader
-│   ├── validate.ts        # Schema + integrity validation
-│   ├── status.ts          # Status & next action
-│   ├── execute.ts         # Feature execution resolver
-│   ├── complete.ts        # Completion record generator
-│   ├── completion-gate.ts # Pre-commit FI-7 enforcement
-│   ├── derive.ts          # State derivation
-│   └── test/              # Tooling tests
-├── .githooks/             # Git hooks
-│   └── pre-commit         # Build + lint + gate + validate
-├── AGENTS.md              # Agent operating instructions
-├── CLAUDE.md              # Claude-specific reference
-└── docs/
-    └── integration.md     # How to adopt in a host project
+.                            # Host project root
+├── factory.config.json      # Project-specific configuration
+├── CLAUDE.md                # AI instructions for the project
+├── AGENTS.md                # Agent operating constraints
+├── factory/                 # Factory (this repo, cloned)
+│   ├── schemas/             # JSON schemas for all artifact types
+│   ├── packets/             # Work unit declarations
+│   ├── completions/         # Implementation evidence
+│   ├── acceptances/         # Human approval records
+│   ├── rejections/          # Audit reversals
+│   ├── evidence/            # Environment dependency proofs
+│   ├── features/            # Feature-level intents
+│   ├── reports/             # QA reports
+│   ├── tools/               # Factory tooling
+│   │   ├── config.ts        # Configuration loader
+│   │   ├── validate.ts      # Schema + integrity validation
+│   │   ├── status.ts        # Status & next action
+│   │   ├── execute.ts       # Feature execution resolver
+│   │   ├── complete.ts      # Completion record generator
+│   │   ├── completion-gate.ts # Pre-commit FI-7 enforcement
+│   │   ├── derive.ts        # State derivation
+│   │   └── test/            # Tooling tests
+│   ├── hooks/               # Git hooks
+│   │   └── pre-commit       # Build + lint + gate + validate
+│   ├── templates/           # Setup templates
+│   ├── setup.sh             # Installation script
+│   └── docs/
+│       └── integration.md   # Detailed integration guide
+└── src/                     # Host project source (any language)
 ```
 
 ---
 
-## Starting a New Project
-
-To use Factory as a template for a new project:
+## Installation
 
 ```sh
-# Clone
-git clone https://github.com/custodyzero/factory.git my-project
-cd my-project
-
-# Reset git history
-rm -rf .git
-git init
-
-# Configure
-# Edit factory.config.json — set project_name, verification commands,
-# and infrastructure_patterns for your project
-
-# Install and verify
-pnpm install
-pnpm prepare
-npx tsx tools/validate.ts
+# From your project root
+git clone https://github.com/custodyzero/factory.git factory
+./factory/setup.sh
 ```
 
-See [`docs/integration.md`](docs/integration.md) for embedding Factory
-into an existing repository.
+The setup script:
+1. Installs factory dependencies (isolated in `factory/node_modules/`)
+2. Copies template `factory.config.json`, `CLAUDE.md`, and `AGENTS.md` to your project root (no-clobber)
+3. Configures `git config core.hooksPath factory/hooks`
+
+See [`docs/integration.md`](docs/integration.md) for detailed integration guide.
 
 ---
 

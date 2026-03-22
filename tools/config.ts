@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 export interface FactoryConfig {
   readonly project_name: string;
+  readonly factory_dir: string;
   readonly verification: {
     readonly build: string;
     readonly lint: string;
@@ -73,7 +74,8 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
 
   try {
     const raw = readFileSync(configPath, 'utf-8');
-    return JSON.parse(raw) as FactoryConfig;
+    const parsed = JSON.parse(raw) as Partial<FactoryConfig>;
+    return { factory_dir: '.', ...parsed } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
@@ -82,10 +84,14 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
 
 /**
  * Resolves the factory artifacts root directory.
- * By default, factory artifacts live in the same directory as factory.config.json.
+ *
+ * When factory_dir is "." (default), artifacts live alongside factory.config.json.
+ * When factory_dir is "factory" (host-project mode), artifacts live under factory/.
  */
-export function resolveFactoryRoot(projectRoot?: string): string {
-  return projectRoot ?? findProjectRoot();
+export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig): string {
+  const root = projectRoot ?? findProjectRoot();
+  const factoryDir = config?.factory_dir ?? '.';
+  return factoryDir === '.' ? root : join(root, factoryDir);
 }
 
 /**

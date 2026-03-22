@@ -168,8 +168,8 @@ function readCompletionIds(factoryRoot: string): Set<string> {
 // ---------------------------------------------------------------------------
 
 function main(): void {
-  const factoryRoot = resolveFactoryRoot();
   const config = loadConfig();
+  const factoryRoot = resolveFactoryRoot(undefined, config);
 
   // Get staged files from git
   let stagedFiles: string[];

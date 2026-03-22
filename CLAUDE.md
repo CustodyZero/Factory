@@ -19,3 +19,6 @@ npx tsx tools/complete.ts <packet>   # Create completion record
 npx tsx tools/validate.ts            # Validate factory integrity
 npm test                             # Run factory tooling tests
 ```
+
+Note: This repo uses `factory_dir: "."` because the factory IS the project.
+When installed in a host project, paths become `factory/tools/...` instead.

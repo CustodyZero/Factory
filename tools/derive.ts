@@ -14,7 +14,7 @@
 
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveFactoryRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,7 +117,7 @@ interface DerivedState {
 // File reading helpers
 // ---------------------------------------------------------------------------
 
-const FACTORY_ROOT = resolveFactoryRoot();
+const FACTORY_ROOT = resolveFactoryRoot(undefined, loadConfig());
 
 function readJsonDir<T>(subdir: string): ReadonlyArray<{ filename: string; data: T }> {
   const dir = join(FACTORY_ROOT, subdir);

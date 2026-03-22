@@ -18,7 +18,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveFactoryRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +37,7 @@ interface ValidationResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const FACTORY_ROOT = resolveFactoryRoot();
+const FACTORY_ROOT = resolveFactoryRoot(undefined, loadConfig());
 const VALID_CHANGE_CLASSES = ['trivial', 'local', 'cross_cutting', 'architectural'] as const;
 const VALID_IDENTITY_KINDS = ['human', 'agent', 'cli', 'ui'] as const;
 const VALID_FEATURE_STATUSES = ['draft', 'planned', 'approved', 'executing', 'completed', 'delivered'] as const;

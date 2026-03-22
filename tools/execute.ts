@@ -20,7 +20,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveFactoryRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -342,7 +342,8 @@ function main(): void {
     process.exit(1);
   }
 
-  const factoryRoot = resolveFactoryRoot();
+  const config = loadConfig();
+  const factoryRoot = resolveFactoryRoot(undefined, config);
   const featurePath = join(factoryRoot, 'features', `${resolvedFeatureId}.json`);
 
   if (!existsSync(featurePath)) {
