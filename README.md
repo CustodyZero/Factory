@@ -1,5 +1,6 @@
 <p align="center">
-  <strong>Factory</strong>
+  <img src="https://raw.githubusercontent.com/CustodyZero/brand/main/brand/factory/wordmark/factory-wordmark-green.svg"
+       alt="Factory" width="200" />
 </p>
 
 A change-control system for governed AI-assisted development.
