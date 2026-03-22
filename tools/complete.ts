@@ -23,10 +23,11 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, findProjectRoot, resolveFactoryRoot } from './config.js';
 
 const config = loadConfig();
-const FACTORY_ROOT = resolveFactoryRoot(undefined, config);
+const PROJECT_ROOT = findProjectRoot();
+const FACTORY_ROOT = resolveFactoryRoot(PROJECT_ROOT, config);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -82,7 +83,7 @@ function runStep(name: string, command: string): VerificationStep {
   console.log(`  Running ${name}...`);
   try {
     const output = execSync(command, {
-      cwd: FACTORY_ROOT,
+      cwd: PROJECT_ROOT,
       encoding: 'utf-8',
       timeout: 300_000,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -114,7 +115,7 @@ const ciPass = buildPass && lintPass && testsPass;
 let filesChanged: string[] = [];
 try {
   const diffOutput = execSync('git diff --name-only HEAD~1', {
-    cwd: FACTORY_ROOT,
+    cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 10_000,
   }).trim();
@@ -170,7 +171,7 @@ if (!ciPass) {
 console.log('\nRe-validating factory...');
 try {
   execSync(config.validation.command, {
-    cwd: FACTORY_ROOT,
+    cwd: PROJECT_ROOT,
     encoding: 'utf-8',
     timeout: 30_000,
     stdio: 'inherit',
