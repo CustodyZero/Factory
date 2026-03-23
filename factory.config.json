@@ -35,5 +35,15 @@
   "completed_by_default": {
     "kind": "agent",
     "id": "claude"
+  },
+  "personas": {
+    "developer": {
+      "description": "Implements the change",
+      "instructions": []
+    },
+    "reviewer": {
+      "description": "Verifies acceptance criteria are met",
+      "instructions": []
+    }
   }
 }

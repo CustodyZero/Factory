@@ -16,6 +16,16 @@ import { join } from 'node:path';
 // Types
 // ---------------------------------------------------------------------------
 
+export interface PersonaConfig {
+  readonly description: string;
+  readonly instructions: ReadonlyArray<string>;
+}
+
+export interface PersonasConfig {
+  readonly developer: PersonaConfig;
+  readonly reviewer: PersonaConfig;
+}
+
 export interface FactoryConfig {
   readonly project_name: string;
   readonly factory_dir: string;
@@ -32,6 +42,7 @@ export interface FactoryConfig {
     readonly kind: string;
     readonly id: string;
   };
+  readonly personas: PersonasConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +86,16 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
   try {
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<FactoryConfig>;
-    return { factory_dir: '.', ...parsed } as FactoryConfig;
+    const defaultPersonas: PersonasConfig = {
+      developer: { description: 'Implements the change', instructions: [] },
+      reviewer: { description: 'Verifies acceptance criteria are met', instructions: [] },
+    };
+    const rawPersonas = (parsed as Record<string, unknown>)['personas'] as Partial<PersonasConfig> | undefined;
+    const personas: PersonasConfig = {
+      developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
+      reviewer: { ...defaultPersonas.reviewer, ...rawPersonas?.reviewer },
+    };
+    return { factory_dir: '.', ...parsed, personas } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);

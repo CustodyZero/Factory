@@ -153,6 +153,32 @@ function validatePacketSchema(filepath: string, data: unknown): ValidationResult
     e("'feature_id' must be a string or null");
   }
 
+  // kind and verifies validation
+  const validKinds = ['dev', 'qa'];
+  if (typeof data['kind'] !== 'string' || !validKinds.includes(data['kind'])) {
+    e("'kind' must be 'dev' or 'qa'");
+  }
+  if (data['kind'] === 'qa') {
+    if (typeof data['verifies'] !== 'string' || !KEBAB_CASE_RE.test(data['verifies'])) {
+      e("QA packet must have 'verifies' set to a valid packet ID");
+    }
+  } else if (data['verifies'] != null && data['verifies'] !== null) {
+    e("Dev packet must not have 'verifies' set");
+  }
+
+  // acceptance_criteria validation
+  if (!Array.isArray(data['acceptance_criteria']) || data['acceptance_criteria'].length === 0) {
+    e("'acceptance_criteria' must be a non-empty array of strings");
+  } else if (!data['acceptance_criteria'].every((c: unknown) => typeof c === 'string' && c.length > 0)) {
+    e("each acceptance criterion must be a non-empty string");
+  } else if (data['acceptance_criteria'].some((c: unknown) => typeof c === 'string' && c.startsWith('[MIGRATION]'))) {
+    results.push({ file: filepath, severity: 'warning', error_type: 'migration', message: "acceptance_criteria contains [MIGRATION] placeholder — replace with real criteria" });
+  }
+
+  if (data['instructions'] != null && !isStringArray(data['instructions'])) {
+    e("'instructions' must be an array of strings");
+  }
+
   if (data['tags'] != null && !isStringArray(data['tags'])) {
     e("'tags' must be an array of strings");
   }
@@ -257,48 +283,6 @@ function validateEvidenceSchema(filepath: string, data: unknown): ValidationResu
   return results;
 }
 
-function validateReportSchema(filepath: string, data: unknown): ValidationResult[] {
-  const results: ValidationResult[] = [];
-  const e = (msg: string) => results.push({ file: filepath, severity: 'error', error_type: 'schema', message: msg });
-
-  if (!isObject(data)) { e('report must be a JSON object'); return results; }
-
-  if (typeof data['feature_id'] !== 'string' || !KEBAB_CASE_RE.test(data['feature_id'])) {
-    e("'feature_id' must be a kebab-case string");
-  }
-  if (!isValidISO8601(data['produced_at'])) e("'produced_at' must be a valid ISO 8601 timestamp");
-
-  const idCheck = isValidIdentity(data['produced_by'], VALID_IDENTITY_KINDS as unknown as string[]);
-  if (!idCheck.valid) e(`'produced_by': ${idCheck.reason}`);
-
-  if (typeof data['summary'] !== 'string' || data['summary'].length === 0) e("'summary' is required and must be non-empty");
-
-  const validRecommendations = ['accept', 'accept_with_reservations', 'reject'];
-  if (typeof data['recommendation'] !== 'string' || !validRecommendations.includes(data['recommendation'])) {
-    e(`'recommendation' must be one of: ${validRecommendations.join(', ')}`);
-  }
-
-  if (!Array.isArray(data['packets']) || data['packets'].length === 0) {
-    e("'packets' must be a non-empty array");
-  } else {
-    for (const pa of data['packets'] as unknown[]) {
-      if (!isObject(pa)) { e('each packet assessment must be an object'); continue; }
-      const prefix = `packets[${typeof pa['packet_id'] === 'string' ? pa['packet_id'] : '?'}]`;
-      if (typeof pa['packet_id'] !== 'string' || !KEBAB_CASE_RE.test(pa['packet_id'])) e(`${prefix}: 'packet_id' must be a kebab-case string`);
-      if (typeof pa['intent_satisfied'] !== 'boolean') e(`${prefix}: 'intent_satisfied' must be a boolean`);
-      if (typeof pa['intent_summary'] !== 'string' || pa['intent_summary'].length === 0) e(`${prefix}: 'intent_summary' is required`);
-      if (!Array.isArray(pa['contracts_verified'])) e(`${prefix}: 'contracts_verified' must be an array`);
-      if (!Array.isArray(pa['risks'])) e(`${prefix}: 'risks' must be an array`);
-    }
-  }
-
-  if (data['reservations'] != null && !isStringArray(data['reservations'])) {
-    e("'reservations' must be an array of strings");
-  }
-
-  return results;
-}
-
 function validateFeatureSchema(filepath: string, data: unknown): ValidationResult[] {
   const results: ValidationResult[] = [];
   const e = (msg: string) => results.push({ file: filepath, severity: 'error', error_type: 'schema', message: msg });
@@ -314,6 +298,14 @@ function validateFeatureSchema(filepath: string, data: unknown): ValidationResul
   }
 
   if (typeof data['intent'] !== 'string' || data['intent'].length === 0) e("'intent' is required and must be non-empty");
+
+  if (!Array.isArray(data['acceptance_criteria']) || data['acceptance_criteria'].length === 0) {
+    e("'acceptance_criteria' must be a non-empty array of strings");
+  } else if (!data['acceptance_criteria'].every((c: unknown) => typeof c === 'string' && c.length > 0)) {
+    e("each acceptance criterion must be a non-empty string");
+  } else if (data['acceptance_criteria'].some((c: unknown) => typeof c === 'string' && c.startsWith('[MIGRATION]'))) {
+    results.push({ file: filepath, severity: 'warning', error_type: 'migration', message: "acceptance_criteria contains [MIGRATION] placeholder — replace with real criteria" });
+  }
 
   if (typeof data['status'] !== 'string' || !(VALID_FEATURE_STATUSES as readonly string[]).includes(data['status'])) {
     e(`'status' must be one of: ${VALID_FEATURE_STATUSES.join(', ')}`);
@@ -348,8 +340,8 @@ interface ArtifactIndex {
   rejectionPacketIds: Set<string>;
   evidenceKeys: Set<string>;
   allDeclaredDeps: Set<string>;
-  reportFeatureIds: Set<string>;
-  packets: Array<{ id: string; change_class: string; packages: string[]; started_at: string | null; status: string | null }>;
+  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; started_at: string | null; status: string | null }>;
+  completions: Array<{ packet_id: string; completed_by_id: string }>;
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
   features: Array<{ id: string; status: string; packets: string[] }>;
@@ -362,7 +354,6 @@ function buildIndex(
   rejections: Array<{ data: unknown }>,
   evidence: Array<{ data: unknown }>,
   features: Array<{ data: unknown }>,
-  reports: Array<{ data: unknown }>,
 ): ArtifactIndex {
   const index: ArtifactIndex = {
     packetIds: new Set(),
@@ -371,8 +362,8 @@ function buildIndex(
     rejectionPacketIds: new Set(),
     evidenceKeys: new Set(),
     allDeclaredDeps: new Set(),
-    reportFeatureIds: new Set(),
     packets: [],
+    completions: [],
     acceptances: [],
     rejections: [],
     features: [],
@@ -385,8 +376,12 @@ function buildIndex(
       const pkgs = isStringArray(scope['packages']) ? scope['packages'] : [];
       const startedAt = typeof data['started_at'] === 'string' ? data['started_at'] : null;
       const packetStatus = typeof data['status'] === 'string' ? data['status'] : null;
+      const kind = typeof data['kind'] === 'string' ? data['kind'] : 'dev';
+      const verifies = typeof data['verifies'] === 'string' ? data['verifies'] : null;
       index.packets.push({
         id: data['id'],
+        kind,
+        verifies,
         change_class: typeof data['change_class'] === 'string' ? data['change_class'] : '',
         packages: pkgs,
         started_at: startedAt,
@@ -400,6 +395,11 @@ function buildIndex(
   for (const { data } of completions) {
     if (isObject(data) && typeof data['packet_id'] === 'string') {
       index.completionPacketIds.add(data['packet_id']);
+      const by = isObject(data['completed_by']) ? data['completed_by'] : {};
+      index.completions.push({
+        packet_id: data['packet_id'],
+        completed_by_id: typeof by['id'] === 'string' ? by['id'] : '',
+      });
     }
   }
 
@@ -436,12 +436,6 @@ function buildIndex(
       const featurePackets = isStringArray(data['packets']) ? data['packets'] : [];
       const featureStatus = typeof data['status'] === 'string' ? data['status'] : '';
       index.features.push({ id: data['id'], status: featureStatus, packets: featurePackets });
-    }
-  }
-
-  for (const { data } of reports) {
-    if (isObject(data) && typeof data['feature_id'] === 'string') {
-      index.reportFeatureIds.add(data['feature_id']);
     }
   }
 
@@ -558,31 +552,49 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
   }
 
   // -------------------------------------------------------------------------
-  // Warning: completed features without QA reports
+  // QA packet structural checks
   // -------------------------------------------------------------------------
-  for (const f of index.features) {
-    if (f.status !== 'approved' && f.status !== 'executing') continue;
-    if (f.packets.length === 0) continue;
-    const allComplete = f.packets.every((pid) => index.completionPacketIds.has(pid));
-    if (allComplete && !index.reportFeatureIds.has(f.id)) {
-      results.push({
-        file: `features/${f.id}.json`,
-        severity: 'warning',
-        error_type: 'governance',
-        message: `Feature '${f.id}': all packets complete but no QA report exists. Run: npx tsx tools/report.ts ${f.id}`,
-      });
+  for (const p of index.packets) {
+    if (p.kind === 'qa' && p.verifies !== null) {
+      if (!index.packetIds.has(p.verifies)) {
+        results.push({
+          file: `packets/${p.id}.json`,
+          severity: 'error',
+          error_type: 'referential',
+          message: `QA packet '${p.id}' verifies '${p.verifies}' which does not exist`,
+        });
+      } else {
+        const target = index.packets.find((t) => t.id === p.verifies);
+        if (target !== undefined && target.kind !== 'dev') {
+          results.push({
+            file: `packets/${p.id}.json`,
+            severity: 'error',
+            error_type: 'referential',
+            message: `QA packet '${p.id}' verifies '${p.verifies}' which is not a dev packet`,
+          });
+        }
+      }
     }
   }
 
-  // Report referential integrity: report must reference existing feature
-  for (const fid of index.reportFeatureIds) {
-    const featureExists = index.features.some((f) => f.id === fid);
-    if (!featureExists) {
+  // -------------------------------------------------------------------------
+  // FI-7: QA packet completion identity must differ from dev packet identity
+  // -------------------------------------------------------------------------
+  const completionIdentityMap = new Map<string, string>();
+  for (const c of index.completions) {
+    completionIdentityMap.set(c.packet_id, c.completed_by_id);
+  }
+
+  for (const p of index.packets) {
+    if (p.kind !== 'qa' || p.verifies === null) continue;
+    const qaIdentity = completionIdentityMap.get(p.id);
+    const devIdentity = completionIdentityMap.get(p.verifies);
+    if (qaIdentity !== undefined && devIdentity !== undefined && qaIdentity === devIdentity) {
       results.push({
-        file: `reports/${fid}.json`,
+        file: `completions/${p.id}.json`,
         severity: 'error',
-        error_type: 'referential',
-        message: `Orphaned report: feature '${fid}' does not exist`,
+        error_type: 'invariant',
+        message: `FI-7 violation: QA packet '${p.id}' completed by '${qaIdentity}' — same identity as dev packet '${p.verifies}'. Reviewer must differ from implementer.`,
       });
     }
   }
@@ -641,7 +653,6 @@ function main(): void {
   const rejections = readJsonFiles('rejections');
   const evidence = readJsonFiles('evidence');
   const features = readJsonFiles('features');
-  const reports = readJsonFiles('reports');
 
   // Check for parse failures
   for (const collection of [
@@ -651,7 +662,6 @@ function main(): void {
     { name: 'rejections', items: rejections },
     { name: 'evidence', items: evidence },
     { name: 'features', items: features },
-    { name: 'reports', items: reports },
   ]) {
     for (const item of collection.items) {
       if (item.data === null) {
@@ -684,12 +694,9 @@ function main(): void {
   for (const f of features) {
     if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data));
   }
-  for (const r of reports) {
-    if (r.data != null) allResults.push(...validateReportSchema(r.filepath, r.data));
-  }
 
   // Referential integrity + invariants (Layers 2-5)
-  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features, reports);
+  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features);
   allResults.push(...validateIntegrity(index));
 
   // FI-1: Check for duplicate completions
@@ -736,7 +743,7 @@ function main(): void {
 
   if (allResults.length === 0) {
     console.log('Factory validation: PASS');
-    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${reports.length} reports`);
+    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
     process.exit(0);
   }
 
@@ -746,7 +753,7 @@ function main(): void {
     console.log(`Factory validation: PASS with warnings (${warnings.length} warning(s))`);
   }
 
-  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${reports.length} reports`);
+  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
   console.log('');
 
   for (const r of allResults) {

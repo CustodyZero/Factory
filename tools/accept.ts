@@ -19,7 +19,7 @@
  * The "cli" kind is allowed under FI-3 because a human invoked the command.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveFactoryRoot } from './config.js';
@@ -75,13 +75,32 @@ const title = typeof packet['title'] === 'string' ? packet['title'] : packetId;
 const changeClass = typeof packet['change_class'] === 'string' ? packet['change_class'] : 'unknown';
 const featureId = typeof packet['feature_id'] === 'string' ? packet['feature_id'] : null;
 
-// Gate: architectural packets require a QA report before acceptance
-if (changeClass === 'architectural' && featureId !== null) {
-  const reportPath = join(FACTORY_ROOT, 'reports', `${featureId}.json`);
-  if (!existsSync(reportPath)) {
-    console.error(`ERROR: Architectural packet '${packetId}' requires a QA report before acceptance.`);
-    console.error(`  Feature: ${featureId}`);
-    console.error(`  Run: npx tsx tools/report.ts ${featureId}`);
+// Gate: architectural dev packets require their QA counterpart to be complete
+const packetKind = typeof packet['kind'] === 'string' ? packet['kind'] : 'dev';
+if (changeClass === 'architectural' && packetKind === 'dev') {
+  // Find the QA packet that verifies this dev packet
+  const packetsDir = join(FACTORY_ROOT, 'packets');
+  const allPacketFiles = existsSync(packetsDir)
+    ? readdirSync(packetsDir).filter((f) => f.endsWith('.json'))
+    : [];
+  let qaPacketId: string | null = null;
+  for (const f of allPacketFiles) {
+    const p = JSON.parse(readFileSync(join(packetsDir, f), 'utf-8')) as Record<string, unknown>;
+    if (p['kind'] === 'qa' && p['verifies'] === packetId) {
+      qaPacketId = typeof p['id'] === 'string' ? p['id'] : f.replace('.json', '');
+      break;
+    }
+  }
+  if (qaPacketId === null) {
+    console.error(`ERROR: Architectural packet '${packetId}' has no QA counterpart.`);
+    console.error('  A QA packet with verifies: "' + packetId + '" must exist.');
+    process.exit(1);
+  }
+  const qaCompletionPath = join(FACTORY_ROOT, 'completions', `${qaPacketId}.json`);
+  if (!existsSync(qaCompletionPath)) {
+    console.error(`ERROR: Architectural packet '${packetId}' requires QA verification before acceptance.`);
+    console.error(`  QA packet: ${qaPacketId}`);
+    console.error(`  QA completion not found: completions/${qaPacketId}.json`);
     process.exit(1);
   }
 }

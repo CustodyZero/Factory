@@ -197,40 +197,4 @@ describe('deriveFactoryStatus', () => {
     expect(status.summary.total).toBe(2);
     expect(status.feature_filter).toBeNull();
   });
-
-  it('FS-U15: produce_report when feature packets all complete but no report', () => {
-    const status = deriveFactoryStatus({
-      packets: [makePacket('p1'), makePacket('p2')],
-      completions: [makeCompletion('p1'), makeCompletion('p2')],
-      acceptances: [],
-      features: [{ id: 'my-feature', intent: 'test', status: 'approved', packets: ['p1', 'p2'] }],
-      reportIds: new Set<string>(),
-    });
-    expect(status.next_action.kind).toBe('produce_report');
-    expect(status.next_action.command).toContain('my-feature');
-  });
-
-  it('FS-U16: all_clear when feature has report', () => {
-    const status = deriveFactoryStatus({
-      packets: [makePacket('p1'), makePacket('p2')],
-      completions: [makeCompletion('p1'), makeCompletion('p2')],
-      acceptances: [],
-      features: [{ id: 'my-feature', intent: 'test', status: 'approved', packets: ['p1', 'p2'] }],
-      reportIds: new Set<string>(['my-feature']),
-    });
-    expect(status.next_action.kind).toBe('all_clear');
-  });
-
-  it('FS-U17: produce_report takes priority over acceptance', () => {
-    const status = deriveFactoryStatus({
-      packets: [
-        makePacket('p1', { change_class: 'architectural' }),
-      ],
-      completions: [makeCompletion('p1')],
-      acceptances: [],
-      features: [{ id: 'feat', intent: 'test', status: 'approved', packets: ['p1'] }],
-      reportIds: new Set<string>(),
-    });
-    expect(status.next_action.kind).toBe('produce_report');
-  });
 });

@@ -21,6 +21,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, resolveFactoryRoot } from './config.js';
+import type { FactoryConfig, PersonasConfig } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -48,18 +49,25 @@ export interface PacketState {
 
 export type ExecuteActionKind =
   | 'spawn_packets'
-  | 'produce_report'
   | 'awaiting_acceptance'
   | 'all_complete'
   | 'blocked'
   | 'not_approved'
   | 'feature_not_found';
 
+export type Persona = 'developer' | 'reviewer';
+
+export interface PacketAssignment {
+  readonly packet_id: string;
+  readonly persona: Persona;
+  readonly instructions: ReadonlyArray<string>;
+}
+
 export interface ExecuteAction {
   readonly kind: ExecuteActionKind;
   readonly feature_id: string;
-  readonly ready_packets: ReadonlyArray<string>;
-  readonly in_progress_packets: ReadonlyArray<string>;
+  readonly ready_packets: ReadonlyArray<PacketAssignment>;
+  readonly in_progress_packets: ReadonlyArray<PacketAssignment>;
   readonly completed_packets: ReadonlyArray<string>;
   readonly blocked_packets: ReadonlyArray<{ readonly id: string; readonly blocked_by: ReadonlyArray<string> }>;
   readonly total_packets: number;
@@ -72,11 +80,14 @@ export interface ExecuteAction {
 
 interface RawPacket {
   readonly id: string;
+  readonly kind: 'dev' | 'qa';
   readonly title: string;
   readonly change_class: string;
+  readonly verifies?: string | null;
   readonly started_at?: string | null;
   readonly status?: string | null;
   readonly dependencies?: ReadonlyArray<string>;
+  readonly instructions?: ReadonlyArray<string>;
 }
 
 interface RawCompletion {
@@ -118,7 +129,7 @@ export interface ExecuteInput {
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completionIds: ReadonlySet<string>;
   readonly acceptanceIds: ReadonlySet<string>;
-  readonly hasReport: boolean;
+  readonly personas?: PersonasConfig;
 }
 
 function isAccepted(
@@ -162,9 +173,20 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const featurePacketIds = new Set(feature.packets);
 
   const completedPackets: string[] = [];
-  const inProgressPackets: string[] = [];
-  const readyPackets: string[] = [];
+  const inProgressPackets: PacketAssignment[] = [];
+  const readyPackets: PacketAssignment[] = [];
   const blockedPackets: Array<{ id: string; blocked_by: string[] }> = [];
+
+  function assignPacket(packet: RawPacket): PacketAssignment {
+    const persona: Persona = packet.kind === 'qa' ? 'reviewer' : 'developer';
+    const personaInstructions = input.personas?.[persona]?.instructions ?? [];
+    const packetInstructions = packet.instructions ?? [];
+    return {
+      packet_id: packet.id,
+      persona,
+      instructions: [...personaInstructions, ...packetInstructions],
+    };
+  }
 
   for (const packetId of feature.packets) {
     const packet = allPacketMap.get(packetId);
@@ -179,7 +201,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     }
 
     if (packet.started_at != null) {
-      inProgressPackets.push(packetId);
+      inProgressPackets.push(assignPacket(packet));
       continue;
     }
 
@@ -204,34 +226,24 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     if (unmetDeps.length > 0) {
       blockedPackets.push({ id: packetId, blocked_by: unmetDeps });
     } else {
-      readyPackets.push(packetId);
+      readyPackets.push(assignPacket(packet));
     }
   }
 
   if (completedPackets.length === feature.packets.length) {
-    // All packets complete — determine next governance step
-    if (!input.hasReport && feature.packets.length > 0) {
-      return {
-        kind: 'produce_report',
-        feature_id: feature.id,
-        ready_packets: [],
-        in_progress_packets: [],
-        completed_packets: completedPackets,
-        blocked_packets: [],
-        total_packets: feature.packets.length,
-        message:
-          `Feature '${feature.id}': all ${String(feature.packets.length)} packets complete.\n` +
-          `  Next: produce QA report with npx tsx tools/report.ts ${feature.id}`,
-      };
-    }
-
-    // Report exists — check if architectural packets need human acceptance
+    // All packets complete — check if architectural dev packets need human acceptance
+    // Architectural dev packets require: (1) their QA counterpart is complete, (2) explicit human acceptance
     const needsAcceptance: string[] = [];
-    for (const packetId of feature.packets) {
-      const packet = allPacketMap.get(packetId);
+    for (const pktId of feature.packets) {
+      const packet = allPacketMap.get(pktId);
       if (packet === undefined) continue;
-      if (packet.change_class === 'architectural' && !input.acceptanceIds.has(packetId)) {
-        needsAcceptance.push(packetId);
+      if (packet.kind === 'dev' && packet.change_class === 'architectural' && !input.acceptanceIds.has(pktId)) {
+        // Check that the QA counterpart is complete
+        const qaPacket = input.packets.find((p) => p.verifies === pktId);
+        const qaComplete = qaPacket !== undefined && input.completionIds.has(qaPacket.id);
+        if (qaComplete) {
+          needsAcceptance.push(pktId);
+        }
       }
     }
 
@@ -245,7 +257,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
         blocked_packets: [],
         total_packets: feature.packets.length,
         message:
-          `Feature '${feature.id}': QA report produced. Awaiting human acceptance for architectural packets:\n` +
+          `Feature '${feature.id}': all packets complete. Awaiting human acceptance for architectural packets:\n` +
           needsAcceptance.map((id) => `  - ${id}`).join('\n') +
           `\n  Use npx tsx tools/accept.ts <packet-id> for each.`,
       };
@@ -261,12 +273,14 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       total_packets: feature.packets.length,
       message:
         `Feature '${feature.id}': all ${String(feature.packets.length)} packets complete.\n` +
-        `  QA report produced and all acceptances satisfied.\n` +
+        `  All QA verifications and acceptances satisfied.\n` +
         `  Feature is ready for delivery.`,
     };
   }
 
   if (readyPackets.length > 0) {
+    const readyDesc = readyPackets.map((r) => `${r.packet_id} (${r.persona})`).join(', ');
+    const ipDesc = inProgressPackets.map((r) => `${r.packet_id} (${r.persona})`).join(', ');
     return {
       kind: 'spawn_packets',
       feature_id: feature.id,
@@ -277,14 +291,15 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       total_packets: feature.packets.length,
       message:
         `Feature '${feature.id}': ${String(completedPackets.length)}/${String(feature.packets.length)} complete.\n` +
-        `  Ready to execute: ${readyPackets.join(', ')}\n` +
-        (inProgressPackets.length > 0 ? `  In progress: ${inProgressPackets.join(', ')}\n` : '') +
+        `  Ready to execute: ${readyDesc}\n` +
+        (inProgressPackets.length > 0 ? `  In progress: ${ipDesc}\n` : '') +
         (blockedPackets.length > 0 ? `  Blocked: ${blockedPackets.map((b) => b.id).join(', ')}\n` : '') +
         `  Spawn ${String(readyPackets.length)} agent(s) for ready packets.`,
     };
   }
 
   if (inProgressPackets.length > 0) {
+    const ipDesc = inProgressPackets.map((r) => `${r.packet_id} (${r.persona})`).join(', ');
     return {
       kind: 'spawn_packets',
       feature_id: feature.id,
@@ -295,7 +310,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       total_packets: feature.packets.length,
       message:
         `Feature '${feature.id}': ${String(completedPackets.length)}/${String(feature.packets.length)} complete.\n` +
-        `  In progress (awaiting completion): ${inProgressPackets.join(', ')}\n` +
+        `  In progress (awaiting completion): ${ipDesc}\n` +
         (blockedPackets.length > 0 ? `  Blocked: ${blockedPackets.map((b) => b.id).join(', ')}\n` : '') +
         `  Wait for in-progress packets to complete, then re-run.`,
     };
@@ -343,16 +358,21 @@ function renderAction(action: ExecuteAction): string {
 
   if (action.in_progress_packets.length > 0) {
     lines.push('  \u23f3 In progress:');
-    for (const id of action.in_progress_packets) {
-      lines.push(`    - ${id}`);
+    for (const a of action.in_progress_packets) {
+      lines.push(`    - ${a.packet_id} [${a.persona}]`);
     }
     lines.push('');
   }
 
   if (action.ready_packets.length > 0) {
     lines.push('  \u2192 Ready to spawn:');
-    for (const id of action.ready_packets) {
-      lines.push(`    - ${id}`);
+    for (const a of action.ready_packets) {
+      lines.push(`    - ${a.packet_id} [${a.persona}]`);
+      if (a.instructions.length > 0) {
+        for (const instr of a.instructions) {
+          lines.push(`      \u2022 ${instr}`);
+        }
+      }
     }
     lines.push('');
   }
@@ -421,15 +441,13 @@ function main(): void {
 
   const completionIds = new Set(completions.map((c) => c.packet_id));
   const acceptanceIds = new Set(acceptances.map((a) => a.packet_id));
-  const reportPath = join(factoryRoot, 'reports', `${resolvedFeatureId}.json`);
-  const hasReport = existsSync(reportPath);
 
   const action = resolveExecuteAction({
     feature,
     packets,
     completionIds,
     acceptanceIds,
-    hasReport,
+    personas: config.personas,
   });
 
   if (process.argv.includes('--json')) {

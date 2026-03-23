@@ -31,7 +31,7 @@ This tells you:
 npx tsx factory/tools/execute.ts <feature-id>
 ```
 
-This tells you which packets are ready to implement.
+This tells you which packets are ready to implement **and which persona to use**.
 
 ### After Completing Implementation
 
@@ -50,27 +50,45 @@ without a matching completion record.
 ## 2. Factory Lifecycle
 
 ```
-Feature (intent) → Plan (packets) → Human Approval → Execution → QA Report → Delivery
+Feature (intent) → Plan (dev/qa packet pairs) → Human Approval → Execution → Delivery
 ```
+
+### Dev/QA Packet Pairs
+
+Each story in a feature decomposes into a **dev packet** and a **QA packet**:
+
+- **Dev packet** (`kind: "dev"`): implements the change
+- **QA packet** (`kind: "qa"`): verifies the dev packet's acceptance criteria were met
+
+QA packets reference their dev counterpart via the `verifies` field and depend on
+the dev packet (listed in `dependencies`). This means QA is sequenced automatically:
+the factory will not assign a QA packet until its dev packet is complete.
+
+### Persona Assignment
+
+Execute.ts returns each ready packet with a **persona**:
+- Dev packets → `developer` persona
+- QA packets → `reviewer` persona
+
+The planner spawns the agent with the persona the factory specifies.
+**FI-7**: A QA packet must not be completed by the same identity that completed its dev counterpart.
 
 ### Artifacts
 
 | Directory | Purpose |
 |---|---|
 | `factory/features/` | Feature-level intents (multi-packet) |
-| `factory/packets/` | Individual work units |
+| `factory/packets/` | Individual work units (dev and qa) |
 | `factory/completions/` | Verification evidence (build/lint/test results) |
 | `factory/acceptances/` | Human approval records |
-| `factory/reports/` | QA reports for completed features |
 
 ### Commands
 
 | Command | When to Use |
 |---|---|
 | `npx tsx factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
-| `npx tsx factory/tools/execute.ts <feature-id>` | Determine which packets to implement next |
+| `npx tsx factory/tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
 | `npx tsx factory/tools/complete.ts <packet-id>` | After implementation, before committing |
-| `npx tsx factory/tools/report.ts <feature-id>` | Produce QA report after all packets complete (pipe assessments JSON to stdin) |
 | `npx tsx factory/tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx factory/tools/validate.ts` | Verify factory integrity |
 
@@ -107,6 +125,11 @@ One packet = one intent. Do not mix:
 
 Non-trivial changes must include tests. A successful build is not evidence of correctness.
 
+### 3.6 Reviewer Must Differ from Implementer
+
+FI-7: A QA packet cannot be completed by the same identity that completed its dev counterpart.
+The factory validates this. If you implemented the dev packet, you cannot review the QA packet.
+
 ---
 
 ## 4. Session Reconstruction
@@ -116,7 +139,7 @@ If you are starting a new session or have lost context:
 1. Run `npx tsx factory/tools/status.ts`
 2. Read the output — it tells you exactly where things stand
 3. If a feature is active, run `npx tsx factory/tools/execute.ts <feature-id>`
-4. The output tells you what to do next
+4. The output tells you what to do next **and which persona to use**
 
 Do not rely on memory. Do not guess. Read the factory state.
 
@@ -131,8 +154,7 @@ Do not decide when to stop or what step comes next — always ask execute.ts.
 loop:
   1. Run: npx tsx factory/tools/execute.ts <feature-id>
   2. Read the action kind in the output:
-     - spawn_packets  → implement ready packets, complete each, go to 1
-     - produce_report → produce QA report (pipe assessments JSON to report.ts), go to 1
+     - spawn_packets  → spawn agents for ready packets using the assigned persona, complete each, go to 1
      - awaiting_acceptance → stop, inform human that architectural packets need acceptance
      - all_complete   → feature is done, ready for delivery
      - blocked        → resolve dependencies or replan
@@ -140,8 +162,7 @@ loop:
 
 Each iteration is stateless. If interrupted, re-run `factory/tools/execute.ts` to resume.
 
-**Never skip the QA report step.** After all packets are complete, execute.ts returns
-`produce_report` — you must produce the report before the feature can proceed to acceptance.
+The natural flow for each story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural).
 
 ---
 
@@ -152,10 +173,53 @@ This file defines:
 - Verification commands (build, lint, test)
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
+- **Persona definitions** (instructions for developer and reviewer agents)
+
+### Personas and Instructions
+
+Personas are defined in `factory.config.json` under the `personas` key. Each persona
+has a `description` and an `instructions` array. Instructions are passed to agents
+when execute.ts assigns them packets.
+
+```json
+{
+  "personas": {
+    "developer": {
+      "description": "Implements the change",
+      "instructions": ["Use the cpp-guidelines MCP server for all C++ code"]
+    },
+    "reviewer": {
+      "description": "Verifies acceptance criteria are met",
+      "instructions": ["Check MISRA compliance in clang-tidy output"]
+    }
+  }
+}
+```
+
+Individual packets can also carry `instructions` that are merged with persona
+instructions. Packet-level instructions add to persona-level, they don't replace.
+
+**You must follow all instructions returned by execute.ts.** They are project-level
+constraints defined by the project owner.
 
 ---
 
-## 7. Where to Find Things
+## 7. Migration
+
+When upgrading an existing factory installation, run:
+
+```sh
+npx tsx factory/tools/migrate.ts        # apply migration
+npx tsx factory/tools/migrate.ts --dry  # preview without writing
+```
+
+This adds required fields (`kind`, `acceptance_criteria`) to pre-existing packets and features.
+Migration placeholders (`[MIGRATION]`) must be replaced with real acceptance criteria
+before the next execution cycle.
+
+---
+
+## 8. Where to Find Things
 
 - **Factory docs:** `factory/README.md`
 - **Integration guide:** `factory/docs/integration.md`

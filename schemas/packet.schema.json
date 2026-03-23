@@ -6,8 +6,10 @@
   "type": "object",
   "required": [
     "id",
+    "kind",
     "title",
     "intent",
+    "acceptance_criteria",
     "change_class",
     "scope",
     "owner",
@@ -19,6 +21,16 @@
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
       "description": "Kebab-case unique identifier. Must match the filename (without .json)."
     },
+    "kind": {
+      "type": "string",
+      "enum": ["dev", "qa"],
+      "description": "Packet kind. 'dev' packets implement changes. 'qa' packets verify that a dev packet's acceptance criteria are met."
+    },
+    "verifies": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "For QA packets: the ID of the dev packet this packet verifies. Required when kind is 'qa', must be null or absent for 'dev' packets."
+    },
     "title": {
       "type": "string",
       "minLength": 1,
@@ -28,6 +40,12 @@
       "type": "string",
       "minLength": 1,
       "description": "What is changing and why. Must be explicit."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Testable conditions that must all be true for this packet to be considered complete. Each criterion must be independently verifiable."
     },
     "change_class": {
       "type": "string",
@@ -91,11 +109,31 @@
       "type": ["string", "null"],
       "description": "ID of the parent feature, if this packet belongs to a feature."
     },
+    "instructions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "Additional instructions for the agent executing this packet. Merged with persona instructions from config."
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string" },
       "default": [],
       "description": "Freeform tags for filtering."
+    }
+  },
+  "if": {
+    "properties": { "kind": { "const": "qa" } }
+  },
+  "then": {
+    "required": ["verifies"],
+    "properties": {
+      "verifies": { "type": "string", "minLength": 1 }
+    }
+  },
+  "else": {
+    "properties": {
+      "verifies": { "const": null }
     }
   },
   "additionalProperties": false

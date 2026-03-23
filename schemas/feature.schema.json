@@ -7,6 +7,7 @@
   "required": [
     "id",
     "intent",
+    "acceptance_criteria",
     "status",
     "packets",
     "created_by"
@@ -21,6 +22,12 @@
       "type": "string",
       "minLength": 1,
       "description": "What the project should do when this feature is complete. Written by the human."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Testable conditions that must all be true for this feature to be considered delivered. Each criterion must be independently verifiable."
     },
     "status": {
       "type": "string",
