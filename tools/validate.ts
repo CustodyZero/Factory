@@ -340,7 +340,7 @@ interface ArtifactIndex {
   rejectionPacketIds: Set<string>;
   evidenceKeys: Set<string>;
   allDeclaredDeps: Set<string>;
-  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; started_at: string | null; status: string | null }>;
+  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; dependencies: string[]; started_at: string | null; status: string | null }>;
   completions: Array<{ packet_id: string; completed_by_id: string }>;
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
@@ -378,12 +378,14 @@ function buildIndex(
       const packetStatus = typeof data['status'] === 'string' ? data['status'] : null;
       const kind = typeof data['kind'] === 'string' ? data['kind'] : 'dev';
       const verifies = typeof data['verifies'] === 'string' ? data['verifies'] : null;
+      const packetDeps = isStringArray(data['dependencies']) ? data['dependencies'] : [];
       index.packets.push({
         id: data['id'],
         kind,
         verifies,
         change_class: typeof data['change_class'] === 'string' ? data['change_class'] : '',
         packages: pkgs,
+        dependencies: packetDeps,
         started_at: startedAt,
         status: packetStatus,
       });
@@ -596,6 +598,110 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
         error_type: 'invariant',
         message: `FI-7 violation: QA packet '${p.id}' completed by '${qaIdentity}' — same identity as dev packet '${p.verifies}'. Reviewer must differ from implementer.`,
       });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // FI-8: Every dev packet in a feature must have a QA counterpart
+  // -------------------------------------------------------------------------
+  const qaVerifiesMap = new Set<string>();
+  for (const p of index.packets) {
+    if (p.kind === 'qa' && p.verifies !== null) {
+      qaVerifiesMap.add(p.verifies);
+    }
+  }
+  for (const f of index.features) {
+    const featurePacketSet = new Set(f.packets);
+    for (const pid of f.packets) {
+      const packet = index.packets.find((p) => p.id === pid);
+      if (packet === undefined) continue;
+      if (packet.kind !== 'dev') continue;
+      if (packet.status === 'abandoned' || packet.status === 'deferred') continue;
+      // Check that a QA packet verifying this dev packet exists in the same feature
+      const hasQa = index.packets.some((p) =>
+        p.kind === 'qa' && p.verifies === pid && featurePacketSet.has(p.id),
+      );
+      if (!hasQa) {
+        results.push({
+          file: `features/${f.id}.json`,
+          severity: 'error',
+          error_type: 'invariant',
+          message: `FI-8 violation: dev packet '${pid}' in feature '${f.id}' has no QA counterpart. Add a QA packet with verifies: "${pid}".`,
+        });
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // FI-9: No cyclic packet dependencies
+  // -------------------------------------------------------------------------
+  const depGraph = new Map<string, string[]>();
+  for (const p of index.packets) {
+    depGraph.set(p.id, p.dependencies);
+  }
+
+  function hasCycle(startId: string): boolean {
+    const visited = new Set<string>();
+    const stack = new Set<string>();
+    function dfs(id: string): boolean {
+      if (stack.has(id)) return true;
+      if (visited.has(id)) return false;
+      visited.add(id);
+      stack.add(id);
+      for (const dep of depGraph.get(id) ?? []) {
+        if (dfs(dep)) return true;
+      }
+      stack.delete(id);
+      return false;
+    }
+    return dfs(startId);
+  }
+
+  const reportedCycles = new Set<string>();
+  for (const p of index.packets) {
+    if (reportedCycles.has(p.id)) continue;
+    if (hasCycle(p.id)) {
+      results.push({
+        file: `packets/${p.id}.json`,
+        severity: 'error',
+        error_type: 'invariant',
+        message: `FI-9 violation: packet '${p.id}' is part of a dependency cycle`,
+      });
+      reportedCycles.add(p.id);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // FI-10: Feature status transitions must be valid
+  // -------------------------------------------------------------------------
+  const STATUS_ORDER: Record<string, number> = {
+    draft: 0,
+    planned: 1,
+    approved: 2,
+    executing: 3,
+    completed: 4,
+    delivered: 5,
+  };
+
+  for (const f of index.features) {
+    const order = STATUS_ORDER[f.status];
+    if (order === undefined) continue;
+
+    // completed requires all packets to have completions
+    if (f.status === 'completed' || f.status === 'delivered') {
+      for (const pid of f.packets) {
+        if (!index.completionPacketIds.has(pid)) {
+          const packet = index.packets.find((p) => p.id === pid);
+          if (packet !== undefined && packet.status !== 'abandoned' && packet.status !== 'deferred') {
+            results.push({
+              file: `features/${f.id}.json`,
+              severity: 'error',
+              error_type: 'invariant',
+              message: `FI-10 violation: feature '${f.id}' is '${f.status}' but packet '${pid}' has no completion`,
+            });
+          }
+        }
+      }
     }
   }
 
