@@ -208,6 +208,8 @@ Acceptance is **proportional to risk**.
 
 ## Factory Invariants
 
+### Artifact Integrity
+
 **FI-1 — One completion per packet.**
 
 **FI-2 — One acceptance per packet.**
@@ -217,15 +219,45 @@ Only `human`, `cli`, or `ui` identities may author acceptance or rejection recor
 
 **FI-4 — No acceptance without completion.**
 
+### Acceptance Rules
+
 **FI-5 — Architectural packets cannot auto-accept.**
+Architectural dev packets require explicit human acceptance after their QA counterpart completes.
+
+### Execution Governance
 
 **FI-6 — No progression without completion.**
 If a started packet lacks a completion record, no newer packet may have a completion.
 Packets marked `abandoned` or `deferred` are exempt.
 
-**FI-7 — Commit-time completion enforcement.**
+**FI-7 — Commit-time completion enforcement and reviewer separation.**
 A commit must not include implementation files while any started packet lacks
 a completion. Enforced by the pre-commit hook.
+A QA packet must not be completed by the same identity that completed its dev counterpart.
+
+### Structural Integrity
+
+**FI-8 — Every dev packet in a feature must have a QA counterpart.**
+For each dev packet in a feature, a QA packet with `verifies` pointing to that dev packet
+must exist in the same feature. Abandoned/deferred packets are exempt.
+
+**FI-9 — No cyclic packet dependencies.**
+The dependency graph across all packets must be a DAG. Cycles cause permanent blocked state.
+
+**FI-10 — Feature status must reflect reality.**
+Features marked `completed` or `delivered` must have completion records for all
+active (non-abandoned, non-deferred) packets.
+
+### Schema Invariants (enforced at schema and validation levels)
+
+- Packet `kind` must be `dev` or `qa`
+- QA packets must set `verifies` to a valid dev packet ID
+- Dev packets must not set `verifies`
+- Packet and feature `acceptance_criteria` must be non-empty
+- Packet IDs must match filenames (kebab-case)
+- Feature `packets` must reference existing packet IDs
+- Identity objects must have `kind` and `id` fields
+- Orphaned completions, acceptances, and rejections are errors
 
 ---
 
@@ -282,11 +314,11 @@ draft → planned → approved → executing → completed → delivered
 
 Execution protocol:
 1. Run `npx tsx factory/tools/execute.ts <feature-id>`
-2. Spawn parallel agents for each ready packet
+2. Spawn agents for ready packets using the assigned persona (developer/reviewer)
 3. Each agent: implement → complete → commit
 4. Re-run execute
 5. Repeat until all_complete
-6. Produce QA report
+6. Natural flow per story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural)
 
 ---
 
@@ -307,7 +339,6 @@ When installed in a host project:
 │   ├── rejections/          # Audit reversals
 │   ├── evidence/            # Environment dependency proofs
 │   ├── features/            # Feature-level intents
-│   ├── reports/             # QA reports
 │   ├── tools/               # Factory tooling
 │   │   ├── config.ts        # Configuration loader
 │   │   ├── validate.ts      # Schema + integrity validation
@@ -316,6 +347,7 @@ When installed in a host project:
 │   │   ├── complete.ts      # Completion record generator
 │   │   ├── completion-gate.ts # Pre-commit FI-7 enforcement
 │   │   ├── derive.ts        # State derivation
+│   │   ├── migrate.ts       # Schema migration for existing artifacts
 │   │   └── test/            # Tooling tests
 │   ├── hooks/               # Git hooks
 │   │   └── pre-commit       # Build + lint + gate + validate

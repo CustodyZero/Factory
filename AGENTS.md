@@ -130,6 +130,11 @@ Non-trivial changes must include tests. A successful build is not evidence of co
 FI-7: A QA packet cannot be completed by the same identity that completed its dev counterpart.
 The factory validates this. If you implemented the dev packet, you cannot review the QA packet.
 
+### 3.7 Every Dev Packet Needs a QA Counterpart
+
+FI-8: Every dev packet in a feature must have a corresponding QA packet in the same feature.
+The factory validates this. Plan features as dev/qa pairs from the start.
+
 ---
 
 ## 4. Session Reconstruction
@@ -224,4 +229,4 @@ before the next execution cycle.
 - **Factory docs:** `README.md`
 - **Integration guide:** `docs/integration.md`
 - **Schemas:** `schemas/` (JSON schemas for all artifact types)
-- **Factory invariants:** `README.md` § Factory Invariants (FI-1 through FI-7)
+- **Factory invariants:** `README.md` § Factory Invariants (FI-1 through FI-10)
