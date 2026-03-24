@@ -36,11 +36,16 @@ This tells you which packets are ready to implement **and which persona to use**
 ### After Completing Implementation
 
 ```sh
-npx tsx tools/complete.ts <packet-id>
+npx tsx tools/complete.ts <packet-id>                        # dev packets (uses default identity)
+npx tsx tools/complete.ts <packet-id> --identity claude-qa   # QA packets (distinct identity)
 ```
 
 This runs build + lint + tests and creates a completion record.
 **Do this before committing. Completion is the deliverable, not the packet.**
+
+**QA agents must use `--identity` to distinguish themselves from the developer agent.**
+FI-7 requires that the QA completion identity differs from the dev completion identity.
+If both use the default, validation will reject the QA completion.
 
 The pre-commit hook will reject commits that include implementation files
 without a matching completion record.

@@ -7,7 +7,7 @@
  * populate verification fields truthfully.
  *
  * Usage:
- *   npx tsx tools/complete.ts <packet-id> [--summary "..."]
+ *   npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]
  *
  * Behavior:
  *   1. Validates the packet exists and has no existing completion
@@ -37,12 +37,17 @@ const args = process.argv.slice(2);
 const packetId = args[0];
 const summaryIdx = args.indexOf('--summary');
 const customSummary = summaryIdx !== -1 ? args[summaryIdx + 1] : undefined;
+const identityIdx = args.indexOf('--identity');
+const identityOverride = identityIdx !== -1 ? args[identityIdx + 1] : undefined;
 
 if (packetId == null || packetId === '' || packetId.startsWith('--')) {
-  console.error('Usage: npx tsx tools/complete.ts <packet-id> [--summary "..."]');
+  console.error('Usage: npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]');
   console.error('');
   console.error('Creates a completion record after running verification checks.');
   console.error('The completion record is the factory deliverable — not the packet.');
+  console.error('');
+  console.error('Options:');
+  console.error('  --identity <id>  Override completed_by.id (e.g., "claude-qa" for QA agents)');
   process.exit(1);
 }
 
@@ -144,7 +149,9 @@ const summary = customSummary ?? `Completed implementation for packet ${packetId
 const completion = {
   packet_id: packetId,
   completed_at: new Date().toISOString(),
-  completed_by: config.completed_by_default,
+  completed_by: identityOverride !== undefined
+    ? { ...config.completed_by_default, id: identityOverride }
+    : config.completed_by_default,
   summary,
   files_changed: filesChanged,
   verification: {
