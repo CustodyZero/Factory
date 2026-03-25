@@ -83,7 +83,7 @@ describe('resolveExecuteAction', () => {
       packets: [makeDevPacket('p1')],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'p1', persona: 'developer', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{ packet_id: 'p1', persona: 'developer', model: 'opus', instructions: [] }]);
   });
 
   it('EX-U4: dev/qa pair — QA blocked until dev completes', () => {
@@ -104,7 +104,7 @@ describe('resolveExecuteAction', () => {
       completionIds: new Set(['dev-1']),
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
   });
 
   it('EX-U6: independent dev packets are all ready for parallel spawn', () => {
@@ -162,7 +162,7 @@ describe('resolveExecuteAction', () => {
       packets: [makeDevPacket('p1', [], '2026-03-21T00:00:00Z')],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.in_progress_packets).toEqual([{ packet_id: 'p1', persona: 'developer', instructions: [] }]);
+    expect(action.in_progress_packets).toEqual([{ packet_id: 'p1', persona: 'developer', model: 'opus', instructions: [] }]);
     expect(action.ready_packets).toEqual([]);
   });
 
@@ -246,7 +246,7 @@ describe('resolveExecuteAction', () => {
     }));
     // QA is ready to execute, not awaiting_acceptance
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
   });
 
   it('EX-U19: mixed dev/qa — only architectural dev packets need acceptance', () => {
@@ -272,12 +272,12 @@ describe('resolveExecuteAction', () => {
     // Step 1: dev ready
     const a1 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket] }));
     expect(a1.kind).toBe('spawn_packets');
-    expect(a1.ready_packets).toEqual([{ packet_id: 'dev-1', persona: 'developer', instructions: [] }]);
+    expect(a1.ready_packets).toEqual([{ packet_id: 'dev-1', persona: 'developer', model: 'opus', instructions: [] }]);
 
     // Step 2: dev complete, qa ready
     const a2 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1']) }));
     expect(a2.kind).toBe('spawn_packets');
-    expect(a2.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', instructions: [] }]);
+    expect(a2.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
 
     // Step 3: both complete, awaiting acceptance
     const a3 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1', 'qa-1']) }));
@@ -290,8 +290,8 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U21: persona instructions from config are included in assignment', () => {
     const personas = {
-      developer: { description: 'dev', instructions: ['Use MCP server X'] },
-      reviewer: { description: 'qa', instructions: ['Check compliance'] },
+      developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'opus' as const },
+      reviewer: { description: 'qa', instructions: ['Check compliance'], model: 'sonnet' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -303,14 +303,15 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual([{
       packet_id: 'dev-1',
       persona: 'developer',
+      model: 'opus',
       instructions: ['Use MCP server X'],
     }]);
   });
 
   it('EX-U22: packet-level instructions merge with persona instructions', () => {
     const personas = {
-      developer: { description: 'dev', instructions: ['Always lint'] },
-      reviewer: { description: 'qa', instructions: [] },
+      developer: { description: 'dev', instructions: ['Always lint'], model: 'opus' as const },
+      reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
     };
     const packet = { ...makeDevPacket('dev-1'), instructions: ['Requires GPU access'] };
     const action = resolveExecuteAction({
@@ -325,8 +326,8 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U23: QA packet gets reviewer persona instructions', () => {
     const personas = {
-      developer: { description: 'dev', instructions: ['Dev instruction'] },
-      reviewer: { description: 'qa', instructions: ['Review instruction'] },
+      developer: { description: 'dev', instructions: ['Dev instruction'], model: 'opus' as const },
+      reviewer: { description: 'qa', instructions: ['Review instruction'], model: 'sonnet' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -337,14 +338,81 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(action.ready_packets[0]!.persona).toBe('reviewer');
+    expect(action.ready_packets[0]!.model).toBe('sonnet');
     expect(action.ready_packets[0]!.instructions).toEqual(['Review instruction']);
   });
 
-  it('EX-U24: no personas provided defaults to empty instructions', () => {
+  it('EX-U24: no personas provided defaults to empty instructions and opus model', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1'] }),
       packets: [makeDevPacket('dev-1')],
     }));
     expect(action.ready_packets[0]!.instructions).toEqual([]);
+    expect(action.ready_packets[0]!.model).toBe('opus');
+  });
+
+  it('EX-U25: model resolves from persona config', () => {
+    const personas = {
+      developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
+      reviewer: { description: 'qa', instructions: [], model: 'haiku' as const },
+    };
+    const action = resolveExecuteAction({
+      ...makeInput({
+        feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
+        packets: [makeDevPacket('dev-1'), makeQaPacket('qa-1', 'dev-1', ['dev-1'])],
+      }),
+      personas,
+    });
+    expect(action.ready_packets[0]!.model).toBe('sonnet');
+  });
+
+  it('EX-U26: packet-level model overrides persona model', () => {
+    const personas = {
+      developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
+      reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
+    };
+    const packet = { ...makeDevPacket('dev-1'), model: 'opus' as const };
+    const action = resolveExecuteAction({
+      ...makeInput({
+        feature: makeFeature({ packets: ['dev-1'] }),
+        packets: [packet],
+      }),
+      personas,
+    });
+    expect(action.ready_packets[0]!.model).toBe('opus');
+  });
+
+  it('EX-U27: model fallback chain — packet > persona > opus default', () => {
+    // No persona config, no packet model → defaults to opus
+    const a1 = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [makeDevPacket('dev-1')],
+    }));
+    expect(a1.ready_packets[0]!.model).toBe('opus');
+
+    // Persona model set, no packet model → persona model
+    const personas = {
+      developer: { description: 'dev', instructions: [], model: 'haiku' as const },
+      reviewer: { description: 'qa', instructions: [] },
+    };
+    const a2 = resolveExecuteAction({
+      ...makeInput({
+        feature: makeFeature({ packets: ['dev-1'] }),
+        packets: [makeDevPacket('dev-1')],
+      }),
+      personas,
+    });
+    expect(a2.ready_packets[0]!.model).toBe('haiku');
+
+    // Packet model set → packet model wins
+    const packet = { ...makeDevPacket('dev-1'), model: 'sonnet' as const };
+    const a3 = resolveExecuteAction({
+      ...makeInput({
+        feature: makeFeature({ packets: ['dev-1'] }),
+        packets: [packet],
+      }),
+      personas,
+    });
+    expect(a3.ready_packets[0]!.model).toBe('sonnet');
   });
 });

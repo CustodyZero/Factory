@@ -71,12 +71,35 @@ the factory will not assign a QA packet until its dev packet is complete.
 
 ### Persona Assignment
 
-Execute.ts returns each ready packet with a **persona**:
+Execute.ts returns each ready packet with a **persona** and a **model**:
 - Dev packets → `developer` persona
 - QA packets → `reviewer` persona
 
-The planner spawns the agent with the persona the factory specifies.
+The planner spawns the agent with the persona and model the factory specifies.
 **FI-7**: A QA packet must not be completed by the same identity that completed its dev counterpart.
+
+### Model Selection
+
+Execute.ts resolves the model tier for each packet using a fallback chain:
+1. **Packet-level `model`** — overrides everything (set in the packet JSON)
+2. **Persona-level `model`** — default for that persona (set in `factory.config.json`)
+3. **Hardcoded default** — `"opus"` if nothing is configured
+
+Default persona models:
+- `developer`: `"opus"`
+- `reviewer`: `"sonnet"`
+
+Suggested override convention by change class (not enforced in code):
+
+| Change class | Dev | QA |
+|---|---|---|
+| architectural | opus | opus |
+| cross-cutting | opus | sonnet |
+| local | sonnet | sonnet |
+| trivial | sonnet | haiku |
+
+Use packet-level `model` to escalate or downgrade specific packets (e.g., escalate an
+architectural QA packet to opus, or downgrade a trivial dev packet to sonnet).
 
 ### Artifacts
 
@@ -196,11 +219,13 @@ when execute.ts assigns them packets.
   "personas": {
     "developer": {
       "description": "Implements the change",
-      "instructions": ["Use the cpp-guidelines MCP server for all C++ code"]
+      "instructions": ["Use the cpp-guidelines MCP server for all C++ code"],
+      "model": "opus"
     },
     "reviewer": {
       "description": "Verifies acceptance criteria are met",
-      "instructions": ["Check MISRA compliance in clang-tidy output"]
+      "instructions": ["Check MISRA compliance in clang-tidy output"],
+      "model": "sonnet"
     }
   }
 }

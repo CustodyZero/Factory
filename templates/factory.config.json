@@ -30,11 +30,13 @@
   "personas": {
     "developer": {
       "description": "Implements the change",
-      "instructions": []
+      "instructions": [],
+      "model": "opus"
     },
     "reviewer": {
       "description": "Verifies acceptance criteria are met",
-      "instructions": []
+      "instructions": [],
+      "model": "sonnet"
     }
   }
 }

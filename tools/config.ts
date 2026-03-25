@@ -16,9 +16,12 @@ import { join } from 'node:path';
 // Types
 // ---------------------------------------------------------------------------
 
+export type ModelTier = 'opus' | 'sonnet' | 'haiku';
+
 export interface PersonaConfig {
   readonly description: string;
   readonly instructions: ReadonlyArray<string>;
+  readonly model?: ModelTier;
 }
 
 export interface PersonasConfig {

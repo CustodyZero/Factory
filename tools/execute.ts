@@ -21,7 +21,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, resolveFactoryRoot } from './config.js';
-import type { FactoryConfig, PersonasConfig } from './config.js';
+import type { FactoryConfig, PersonasConfig, ModelTier } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -60,6 +60,7 @@ export type Persona = 'developer' | 'reviewer';
 export interface PacketAssignment {
   readonly packet_id: string;
   readonly persona: Persona;
+  readonly model: ModelTier;
   readonly instructions: ReadonlyArray<string>;
 }
 
@@ -87,6 +88,7 @@ interface RawPacket {
   readonly started_at?: string | null;
   readonly status?: string | null;
   readonly dependencies?: ReadonlyArray<string>;
+  readonly model?: ModelTier;
   readonly instructions?: ReadonlyArray<string>;
 }
 
@@ -179,11 +181,14 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
 
   function assignPacket(packet: RawPacket): PacketAssignment {
     const persona: Persona = packet.kind === 'qa' ? 'reviewer' : 'developer';
-    const personaInstructions = input.personas?.[persona]?.instructions ?? [];
+    const personaConfig = input.personas?.[persona];
+    const personaInstructions = personaConfig?.instructions ?? [];
     const packetInstructions = packet.instructions ?? [];
+    const model: ModelTier = packet.model ?? personaConfig?.model ?? 'opus';
     return {
       packet_id: packet.id,
       persona,
+      model,
       instructions: [...personaInstructions, ...packetInstructions],
     };
   }
@@ -359,7 +364,7 @@ function renderAction(action: ExecuteAction): string {
   if (action.in_progress_packets.length > 0) {
     lines.push('  \u23f3 In progress:');
     for (const a of action.in_progress_packets) {
-      lines.push(`    - ${a.packet_id} [${a.persona}]`);
+      lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
     }
     lines.push('');
   }
@@ -367,7 +372,7 @@ function renderAction(action: ExecuteAction): string {
   if (action.ready_packets.length > 0) {
     lines.push('  \u2192 Ready to spawn:');
     for (const a of action.ready_packets) {
-      lines.push(`    - ${a.packet_id} [${a.persona}]`);
+      lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
       if (a.instructions.length > 0) {
         for (const instr of a.instructions) {
           lines.push(`      \u2022 ${instr}`);
