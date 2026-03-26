@@ -70,8 +70,53 @@ if (existsSync(completionPath)) {
 
 const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
 const title = typeof packet['title'] === 'string' ? packet['title'] : packetId;
+const packetKind = typeof packet['kind'] === 'string' ? packet['kind'] : 'dev';
+const envDeps = Array.isArray(packet['environment_dependencies'])
+  ? (packet['environment_dependencies'] as string[]).filter((d) => typeof d === 'string')
+  : [];
+
 console.log(`\nCreating completion for: ${title}`);
-console.log(`Packet: ${packetId}\n`);
+console.log(`Packet: ${packetId} (${packetKind})\n`);
+
+// ---------------------------------------------------------------------------
+// QA evidence gate — QA packets with environment_dependencies require evidence
+// ---------------------------------------------------------------------------
+
+if (packetKind === 'qa' && envDeps.length > 0) {
+  const missingEvidence: string[] = [];
+  for (const dep of envDeps) {
+    const evidencePath = join(ARTIFACT_ROOT, 'evidence', `${dep}.json`);
+    if (!existsSync(evidencePath)) {
+      missingEvidence.push(dep);
+    } else {
+      // Check expiration
+      try {
+        const ev = JSON.parse(readFileSync(evidencePath, 'utf-8')) as Record<string, unknown>;
+        if (typeof ev['expires_at'] === 'string' && new Date(ev['expires_at']) < new Date()) {
+          missingEvidence.push(`${dep} (expired)`);
+        }
+      } catch {
+        missingEvidence.push(`${dep} (unreadable)`);
+      }
+    }
+  }
+  if (missingEvidence.length > 0) {
+    console.error('ERROR: QA packet has environment_dependencies without matching evidence records.');
+    console.error('');
+    console.error('  Missing evidence:');
+    for (const m of missingEvidence) {
+      console.error(`    - ${m}`);
+    }
+    console.error('');
+    console.error('QA packets with environment_dependencies require evidence records before');
+    console.error('completion. Evidence records must be created by a human (verified_by.kind');
+    console.error('must be "human", "cli", or "ui" — never "agent").');
+    console.error('');
+    console.error('Create evidence records in evidence/<dependency-key>.json, then retry.');
+    process.exit(1);
+  }
+  console.log('  Environment evidence: all present and valid');
+}
 
 // ---------------------------------------------------------------------------
 // Run verification (commands from factory.config.json)

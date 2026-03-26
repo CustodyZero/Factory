@@ -340,7 +340,7 @@ interface ArtifactIndex {
   rejectionPacketIds: Set<string>;
   evidenceKeys: Set<string>;
   allDeclaredDeps: Set<string>;
-  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; dependencies: string[]; started_at: string | null; status: string | null }>;
+  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; dependencies: string[]; started_at: string | null; status: string | null; environment_dependencies: string[]; acceptance_criteria: string[] }>;
   completions: Array<{ packet_id: string; completed_by_id: string }>;
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
@@ -379,6 +379,8 @@ function buildIndex(
       const kind = typeof data['kind'] === 'string' ? data['kind'] : 'dev';
       const verifies = typeof data['verifies'] === 'string' ? data['verifies'] : null;
       const packetDeps = isStringArray(data['dependencies']) ? data['dependencies'] : [];
+      const envDeps = isStringArray(data['environment_dependencies']) ? data['environment_dependencies'] : [];
+      const acceptanceCriteria = isStringArray(data['acceptance_criteria']) ? data['acceptance_criteria'] : [];
       index.packets.push({
         id: data['id'],
         kind,
@@ -388,9 +390,10 @@ function buildIndex(
         dependencies: packetDeps,
         started_at: startedAt,
         status: packetStatus,
+        environment_dependencies: envDeps,
+        acceptance_criteria: acceptanceCriteria,
       });
-      const deps = isStringArray(data['environment_dependencies']) ? data['environment_dependencies'] : [];
-      for (const d of deps) index.allDeclaredDeps.add(d);
+      for (const d of envDeps) index.allDeclaredDeps.add(d);
     }
   }
 
@@ -739,6 +742,48 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
           });
         }
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // QA evidence enforcement: completed QA packets with environment_dependencies
+  // must have all evidence records present
+  // -------------------------------------------------------------------------
+  for (const p of index.packets) {
+    if (p.kind === 'qa' && p.environment_dependencies.length > 0 && index.completionPacketIds.has(p.id)) {
+      for (const dep of p.environment_dependencies) {
+        if (!index.evidenceKeys.has(dep)) {
+          results.push({
+            file: `completions/${p.id}.json`,
+            severity: 'error',
+            error_type: 'invariant',
+            message: `QA packet '${p.id}' has environment_dependency '${dep}' but no evidence record exists. ` +
+              `QA completions require evidence for all declared environment dependencies.`,
+          });
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Advisory: QA packets with runtime-suggestive acceptance criteria but no
+  // environment_dependencies declared
+  // -------------------------------------------------------------------------
+  const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual)\b/i;
+  for (const p of index.packets) {
+    if (p.kind !== 'qa') continue;
+    if (p.environment_dependencies.length > 0) continue; // already declared, enforcement handles it
+    const runtimeCriteria = p.acceptance_criteria.filter((c) => RUNTIME_HINTS.test(c));
+    if (runtimeCriteria.length > 0) {
+      results.push({
+        file: `packets/${p.id}.json`,
+        severity: 'warning',
+        error_type: 'schema',
+        message: `QA packet '${p.id}' has acceptance criteria that suggest runtime verification ` +
+          `but declares no environment_dependencies. Consider adding environment_dependencies ` +
+          `so the factory can enforce evidence collection. ` +
+          `Criteria: "${runtimeCriteria[0]}"${runtimeCriteria.length > 1 ? ` (+${String(runtimeCriteria.length - 1)} more)` : ''}`,
+      });
     }
   }
 
