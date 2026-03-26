@@ -382,12 +382,12 @@ See [`docs/integration.md`](docs/integration.md) for detailed integration guide.
 
 ---
 
-## License
+## Licensing Commitment
 
-Factory is open source under the MIT License. See [LICENSE](LICENSE).
+Factory is open source under Apache 2.0 and will remain so permanently.
 
-The MIT License governs the source code. It does not grant rights to use
-CustodyZero brand assets. See the
+The Apache 2.0 license governs the source code. It does not grant
+rights to use Factory brand assets. See the
 [CustodyZero brand repository](https://github.com/custodyzero/brand)
 for brand usage policy.
 
