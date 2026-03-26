@@ -15,7 +15,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveArtifactRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -100,8 +100,8 @@ interface RawAcceptance {
   readonly packet_id: string;
 }
 
-function readJsonDir<T>(factoryRoot: string, subdir: string): T[] {
-  const dir = join(factoryRoot, subdir);
+function readJsonDir<T>(artifactRoot: string, subdir: string): T[] {
+  const dir = join(artifactRoot, subdir);
   if (!existsSync(dir)) return [];
 
   return readdirSync(dir)
@@ -380,12 +380,12 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
 
 function main(): void {
   const config = loadConfig();
-  const factoryRoot = resolveFactoryRoot(undefined, config);
+  const artifactRoot = resolveArtifactRoot();
 
-  const packets = readJsonDir<RawPacket>(factoryRoot, 'packets');
-  const completions = readJsonDir<RawCompletion>(factoryRoot, 'completions');
-  const acceptances = readJsonDir<RawAcceptance>(factoryRoot, 'acceptances');
-  const features = readJsonDir<RawFeature>(factoryRoot, 'features');
+  const packets = readJsonDir<RawPacket>(artifactRoot, 'packets');
+  const completions = readJsonDir<RawCompletion>(artifactRoot, 'completions');
+  const acceptances = readJsonDir<RawAcceptance>(artifactRoot, 'acceptances');
+  const features = readJsonDir<RawFeature>(artifactRoot, 'features');
 
   const featureIdx = process.argv.indexOf('--feature');
   const featureFilter = featureIdx !== -1 ? process.argv[featureIdx + 1] : undefined;

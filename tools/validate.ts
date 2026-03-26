@@ -18,7 +18,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveArtifactRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +37,7 @@ interface ValidationResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const FACTORY_ROOT = resolveFactoryRoot(undefined, loadConfig());
+const ARTIFACT_ROOT = resolveArtifactRoot();
 const VALID_CHANGE_CLASSES = ['trivial', 'local', 'cross_cutting', 'architectural'] as const;
 const VALID_IDENTITY_KINDS = ['human', 'agent', 'cli', 'ui'] as const;
 const VALID_FEATURE_STATUSES = ['draft', 'planned', 'approved', 'executing', 'completed', 'delivered'] as const;
@@ -49,7 +49,7 @@ const KEBAB_CASE_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 // ---------------------------------------------------------------------------
 
 function readJsonFiles(subdir: string): Array<{ filename: string; filepath: string; data: unknown; raw: string }> {
-  const dir = join(FACTORY_ROOT, subdir);
+  const dir = join(ARTIFACT_ROOT, subdir);
   if (!existsSync(dir)) return [];
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();

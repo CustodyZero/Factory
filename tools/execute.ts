@@ -20,7 +20,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveArtifactRoot } from './config.js';
 import type { FactoryConfig, PersonasConfig, ModelTier } from './config.js';
 
 // ---------------------------------------------------------------------------
@@ -414,13 +414,13 @@ function main(): void {
   }
 
   const config = loadConfig();
-  const factoryRoot = resolveFactoryRoot(undefined, config);
-  const featurePath = join(factoryRoot, 'features', `${resolvedFeatureId}.json`);
+  const artifactRoot = resolveArtifactRoot();
+  const featurePath = join(artifactRoot, 'features', `${resolvedFeatureId}.json`);
 
   if (!existsSync(featurePath)) {
     console.error(`Feature not found: ${featurePath}`);
     console.error(`Available features:`);
-    const featDir = join(factoryRoot, 'features');
+    const featDir = join(artifactRoot, 'features');
     if (existsSync(featDir)) {
       const files = readdirSync(featDir).filter((f) => f.endsWith('.json'));
       if (files.length === 0) {
@@ -440,9 +440,9 @@ function main(): void {
     process.exit(1);
   }
 
-  const packets = readJsonDir<RawPacket>(join(factoryRoot, 'packets'));
-  const completions = readJsonDir<RawCompletion>(join(factoryRoot, 'completions'));
-  const acceptances = readJsonDir<RawAcceptance>(join(factoryRoot, 'acceptances'));
+  const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
+  const completions = readJsonDir<RawCompletion>(join(artifactRoot, 'completions'));
+  const acceptances = readJsonDir<RawAcceptance>(join(artifactRoot, 'acceptances'));
 
   const completionIds = new Set(completions.map((c) => c.packet_id));
   const acceptanceIds = new Set(acceptances.map((a) => a.packet_id));

@@ -106,15 +106,29 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
 }
 
 /**
- * Resolves the factory artifacts root directory.
+ * Resolves the factory tooling root (where tools, schemas, hooks live).
  *
- * When factory_dir is "." (default), artifacts live alongside factory.config.json.
- * When factory_dir is "factory" (host-project mode), artifacts live under factory/.
+ * When factory_dir is "." (default / factory-is-the-project), returns PROJECT_ROOT.
+ * When factory_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
+ *
+ * This is NOT where artifacts (packets, completions, etc.) live — use
+ * resolveArtifactRoot() for that.
  */
 export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig): string {
   const root = projectRoot ?? findProjectRoot();
   const factoryDir = config?.factory_dir ?? '.';
   return factoryDir === '.' ? root : join(root, factoryDir);
+}
+
+/**
+ * Resolves the artifact root (where packets, completions, features, etc. live).
+ *
+ * Always returns PROJECT_ROOT. Artifacts belong to the host project, not the
+ * factory tooling directory. When Factory is a git submodule, the submodule
+ * is read-only tooling; artifacts live alongside factory.config.json.
+ */
+export function resolveArtifactRoot(projectRoot?: string): string {
+  return projectRoot ?? findProjectRoot();
 }
 
 /**

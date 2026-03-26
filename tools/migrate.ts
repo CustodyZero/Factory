@@ -17,13 +17,13 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveArtifactRoot } from './config.js';
 
 const MIGRATION_MARKER = '[MIGRATION] Define acceptance criteria';
 const isDryRun = process.argv.includes('--dry');
 
 const config = loadConfig();
-const FACTORY_ROOT = resolveFactoryRoot(undefined, config);
+const ARTIFACT_ROOT = resolveArtifactRoot();
 
 interface MigrationChange {
   readonly file: string;
@@ -34,7 +34,7 @@ interface MigrationChange {
 const changes: MigrationChange[] = [];
 
 function migrateJsonFile(dir: string, filename: string, migrations: (data: Record<string, unknown>, filepath: string) => void): void {
-  const filepath = join(FACTORY_ROOT, dir, filename);
+  const filepath = join(ARTIFACT_ROOT, dir, filename);
   const raw = readFileSync(filepath, 'utf-8');
   const data = JSON.parse(raw) as Record<string, unknown>;
   const before = JSON.stringify(data);
@@ -48,7 +48,7 @@ function migrateJsonFile(dir: string, filename: string, migrations: (data: Recor
 }
 
 function migratePackets(): void {
-  const dir = join(FACTORY_ROOT, 'packets');
+  const dir = join(ARTIFACT_ROOT, 'packets');
   if (!existsSync(dir)) return;
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -69,7 +69,7 @@ function migratePackets(): void {
 }
 
 function migrateFeatures(): void {
-  const dir = join(FACTORY_ROOT, 'features');
+  const dir = join(ARTIFACT_ROOT, 'features');
   if (!existsSync(dir)) return;
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));

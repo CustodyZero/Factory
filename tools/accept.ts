@@ -22,11 +22,11 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadConfig, findProjectRoot, resolveFactoryRoot } from './config.js';
+import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
-const FACTORY_ROOT = resolveFactoryRoot(PROJECT_ROOT, config);
+const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -49,20 +49,20 @@ if (packetId == null || packetId === '' || packetId.startsWith('--')) {
 // Validate preconditions
 // ---------------------------------------------------------------------------
 
-const packetPath = join(FACTORY_ROOT, 'packets', `${packetId}.json`);
+const packetPath = join(ARTIFACT_ROOT, 'packets', `${packetId}.json`);
 if (!existsSync(packetPath)) {
   console.error(`ERROR: Packet not found: packets/${packetId}.json`);
   process.exit(1);
 }
 
-const completionPath = join(FACTORY_ROOT, 'completions', `${packetId}.json`);
+const completionPath = join(ARTIFACT_ROOT, 'completions', `${packetId}.json`);
 if (!existsSync(completionPath)) {
   console.error(`ERROR: No completion found: completions/${packetId}.json`);
   console.error('FI-4 requires a completion before acceptance. Run complete.ts first.');
   process.exit(1);
 }
 
-const acceptancePath = join(FACTORY_ROOT, 'acceptances', `${packetId}.json`);
+const acceptancePath = join(ARTIFACT_ROOT, 'acceptances', `${packetId}.json`);
 if (existsSync(acceptancePath)) {
   console.error(`ERROR: Acceptance already exists: acceptances/${packetId}.json`);
   console.error('FI-2 forbids duplicate acceptances.');
@@ -79,7 +79,7 @@ const featureId = typeof packet['feature_id'] === 'string' ? packet['feature_id'
 const packetKind = typeof packet['kind'] === 'string' ? packet['kind'] : 'dev';
 if (changeClass === 'architectural' && packetKind === 'dev') {
   // Find the QA packet that verifies this dev packet
-  const packetsDir = join(FACTORY_ROOT, 'packets');
+  const packetsDir = join(ARTIFACT_ROOT, 'packets');
   const allPacketFiles = existsSync(packetsDir)
     ? readdirSync(packetsDir).filter((f) => f.endsWith('.json'))
     : [];
@@ -96,7 +96,7 @@ if (changeClass === 'architectural' && packetKind === 'dev') {
     console.error('  A QA packet with verifies: "' + packetId + '" must exist.');
     process.exit(1);
   }
-  const qaCompletionPath = join(FACTORY_ROOT, 'completions', `${qaPacketId}.json`);
+  const qaCompletionPath = join(ARTIFACT_ROOT, 'completions', `${qaPacketId}.json`);
   if (!existsSync(qaCompletionPath)) {
     console.error(`ERROR: Architectural packet '${packetId}' requires QA verification before acceptance.`);
     console.error(`  QA packet: ${qaPacketId}`);

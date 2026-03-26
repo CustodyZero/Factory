@@ -18,7 +18,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, isInfrastructureFile, resolveFactoryRoot } from './config.js';
+import { loadConfig, isInfrastructureFile, resolveArtifactRoot } from './config.js';
 import type { FactoryConfig } from './config.js';
 
 // ---------------------------------------------------------------------------
@@ -117,8 +117,8 @@ export function evaluateCompletionGate(input: GateInput): GateResult {
 // I/O layer
 // ---------------------------------------------------------------------------
 
-function readPacketInfos(factoryRoot: string): PacketInfo[] {
-  const dir = join(factoryRoot, 'packets');
+function readPacketInfos(artifactRoot: string): PacketInfo[] {
+  const dir = join(artifactRoot, 'packets');
   if (!existsSync(dir)) return [];
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -141,8 +141,8 @@ function readPacketInfos(factoryRoot: string): PacketInfo[] {
   return results;
 }
 
-function readCompletionIds(factoryRoot: string): Set<string> {
-  const dir = join(factoryRoot, 'completions');
+function readCompletionIds(artifactRoot: string): Set<string> {
+  const dir = join(artifactRoot, 'completions');
   if (!existsSync(dir)) return new Set();
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -169,14 +169,14 @@ function readCompletionIds(factoryRoot: string): Set<string> {
 
 function main(): void {
   const config = loadConfig();
-  const factoryRoot = resolveFactoryRoot(undefined, config);
+  const artifactRoot = resolveArtifactRoot();
 
   // Get staged files from git
   let stagedFiles: string[];
   try {
     const { execSync } = require('node:child_process') as typeof import('node:child_process');
     const output = execSync('git diff --cached --name-only', {
-      cwd: factoryRoot,
+      cwd: artifactRoot,
       encoding: 'utf-8',
       timeout: 10_000,
     }).trim();
@@ -190,8 +190,8 @@ function main(): void {
     process.exit(0);
   }
 
-  const packets = readPacketInfos(factoryRoot);
-  const completionIds = readCompletionIds(factoryRoot);
+  const packets = readPacketInfos(artifactRoot);
+  const completionIds = readCompletionIds(artifactRoot);
 
   const result = evaluateCompletionGate({
     stagedFiles,

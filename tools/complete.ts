@@ -23,11 +23,11 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadConfig, findProjectRoot, resolveFactoryRoot } from './config.js';
+import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
-const FACTORY_ROOT = resolveFactoryRoot(PROJECT_ROOT, config);
+const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -55,13 +55,13 @@ if (packetId == null || packetId === '' || packetId.startsWith('--')) {
 // Validate preconditions
 // ---------------------------------------------------------------------------
 
-const packetPath = join(FACTORY_ROOT, 'packets', `${packetId}.json`);
+const packetPath = join(ARTIFACT_ROOT, 'packets', `${packetId}.json`);
 if (!existsSync(packetPath)) {
   console.error(`ERROR: Packet not found: packets/${packetId}.json`);
   process.exit(1);
 }
 
-const completionPath = join(FACTORY_ROOT, 'completions', `${packetId}.json`);
+const completionPath = join(ARTIFACT_ROOT, 'completions', `${packetId}.json`);
 if (existsSync(completionPath)) {
   console.error(`ERROR: Completion already exists: completions/${packetId}.json`);
   console.error('FI-1 forbids duplicate completions. Delete the existing one first if re-completing.');

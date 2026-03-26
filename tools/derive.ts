@@ -14,7 +14,7 @@
 
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveFactoryRoot } from './config.js';
+import { loadConfig, resolveArtifactRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -117,10 +117,10 @@ interface DerivedState {
 // File reading helpers
 // ---------------------------------------------------------------------------
 
-const FACTORY_ROOT = resolveFactoryRoot(undefined, loadConfig());
+const ARTIFACT_ROOT = resolveArtifactRoot();
 
 function readJsonDir<T>(subdir: string): ReadonlyArray<{ filename: string; data: T }> {
-  const dir = join(FACTORY_ROOT, subdir);
+  const dir = join(ARTIFACT_ROOT, subdir);
   if (!existsSync(dir)) return [];
 
   const files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
@@ -355,7 +355,7 @@ function main(): void {
   const json = JSON.stringify(state, null, 2);
 
   if (process.argv.includes('--write')) {
-    const outPath = join(FACTORY_ROOT, 'derived-state.json');
+    const outPath = join(ARTIFACT_ROOT, 'derived-state.json');
     writeFileSync(outPath, json + '\n', 'utf-8');
     console.error(`Derived state written to ${outPath}`);
     console.error(`  ${state.summary.total} packets: ${state.summary.accepted} accepted, ${state.summary.completed} completed, ${state.summary.in_progress} in-progress, ${state.summary.not_started} not-started`);
