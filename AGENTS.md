@@ -103,6 +103,10 @@ architectural QA packet to opus, or downgrade a trivial dev packet to sonnet).
 
 ### Artifacts
 
+Artifacts always live at the **project root** (alongside `factory.config.json`).
+When Factory is installed as a git submodule, the submodule contains only tooling —
+artifacts are never written inside the submodule.
+
 | Directory | Purpose |
 |---|---|
 | `features/` | Feature-level intents (multi-packet) |

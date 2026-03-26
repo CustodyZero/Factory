@@ -103,12 +103,15 @@ architectural QA packet to opus, or downgrade a trivial dev packet to sonnet).
 
 ### Artifacts
 
+Artifacts live at the **project root**, not inside the `factory/` submodule.
+The submodule contains only tooling (tools, schemas, hooks).
+
 | Directory | Purpose |
 |---|---|
-| `factory/features/` | Feature-level intents (multi-packet) |
-| `factory/packets/` | Individual work units (dev and qa) |
-| `factory/completions/` | Verification evidence (build/lint/test results) |
-| `factory/acceptances/` | Human approval records |
+| `features/` | Feature-level intents (multi-packet) |
+| `packets/` | Individual work units (dev and qa) |
+| `completions/` | Verification evidence (build/lint/test results) |
+| `acceptances/` | Human approval records |
 
 ### Commands
 

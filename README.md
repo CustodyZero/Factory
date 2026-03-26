@@ -35,8 +35,8 @@ the implementer.
 ### Add to an Existing Project
 
 ```sh
-# Clone factory as a subdirectory
-git clone https://github.com/custodyzero/factory.git factory
+# Add factory as a git submodule
+git submodule add https://github.com/custodyzero/factory.git factory
 
 # Run setup (installs deps, copies templates, configures hooks)
 ./factory/setup.sh
@@ -324,21 +324,21 @@ Execution protocol:
 
 ## Directory Structure
 
-When installed in a host project:
+When installed in a host project as a git submodule:
 
 ```
 .                            # Host project root
 ├── factory.config.json      # Project-specific configuration
 ├── CLAUDE.md                # AI instructions for the project
 ├── AGENTS.md                # Agent operating constraints
-├── factory/                 # Factory (this repo, cloned)
+├── packets/                 # Work unit declarations
+├── completions/             # Implementation evidence
+├── acceptances/             # Human approval records
+├── rejections/              # Audit reversals
+├── evidence/                # Environment dependency proofs
+├── features/                # Feature-level intents
+├── factory/                 # Factory submodule (read-only tooling)
 │   ├── schemas/             # JSON schemas for all artifact types
-│   ├── packets/             # Work unit declarations
-│   ├── completions/         # Implementation evidence
-│   ├── acceptances/         # Human approval records
-│   ├── rejections/          # Audit reversals
-│   ├── evidence/            # Environment dependency proofs
-│   ├── features/            # Feature-level intents
 │   ├── tools/               # Factory tooling
 │   │   ├── config.ts        # Configuration loader
 │   │   ├── validate.ts      # Schema + integrity validation
@@ -358,13 +358,18 @@ When installed in a host project:
 └── src/                     # Host project source (any language)
 ```
 
+**Key separation:** Artifacts (packets, completions, features, etc.) live at the
+project root. The `factory/` submodule contains only tooling, schemas, and hooks.
+Tools resolve artifact paths via `resolveArtifactRoot()` (always returns project root)
+and tooling paths via `resolveFactoryRoot()` (returns `factory/` in submodule mode).
+
 ---
 
 ## Installation
 
 ```sh
 # From your project root
-git clone https://github.com/custodyzero/factory.git factory
+git submodule add https://github.com/custodyzero/factory.git factory
 ./factory/setup.sh
 ```
 
