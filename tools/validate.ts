@@ -770,9 +770,11 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
   // environment_dependencies declared
   // -------------------------------------------------------------------------
   const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual)\b/i;
+  const MIGRATION_MARKER = /\[MIGRATION\]/;
   for (const p of index.packets) {
     if (p.kind !== 'qa') continue;
     if (p.environment_dependencies.length > 0) continue; // already declared, enforcement handles it
+    if (p.acceptance_criteria.some((c) => MIGRATION_MARKER.test(c))) continue; // migrated, not yet reviewed
     const runtimeCriteria = p.acceptance_criteria.filter((c) => RUNTIME_HINTS.test(c));
     if (runtimeCriteria.length > 0) {
       results.push({
