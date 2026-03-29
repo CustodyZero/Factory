@@ -29,6 +29,11 @@ export interface PersonasConfig {
   readonly reviewer: PersonaConfig;
 }
 
+export interface SupervisorConfig {
+  readonly enabled: boolean;
+  readonly identity: { readonly kind: string; readonly id: string };
+}
+
 export interface FactoryConfig {
   readonly project_name: string;
   readonly factory_dir: string;
@@ -46,6 +51,7 @@ export interface FactoryConfig {
     readonly id: string;
   };
   readonly personas: PersonasConfig;
+  readonly supervisor?: SupervisorConfig;
 }
 
 // ---------------------------------------------------------------------------

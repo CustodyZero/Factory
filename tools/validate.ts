@@ -890,6 +890,55 @@ function main(): void {
     }
   }
 
+  // Supervisor state validation (if supervisor/state.json exists)
+  const supervisorStatePath = join(ARTIFACT_ROOT, 'supervisor', 'state.json');
+  if (existsSync(supervisorStatePath)) {
+    try {
+      const rawSupervisor = JSON.parse(readFileSync(supervisorStatePath, 'utf-8')) as Record<string, unknown>;
+
+      // Basic schema checks
+      if (typeof rawSupervisor['version'] !== 'number') {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'version' must be a number" });
+      }
+      if (typeof rawSupervisor['updated_at'] !== 'string') {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'updated_at' must be a string" });
+      }
+      if (!isObject(rawSupervisor['updated_by'])) {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'updated_by' must be an object" });
+      }
+      if (!isObject(rawSupervisor['features'])) {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'features' must be an object" });
+      }
+      if (!Array.isArray(rawSupervisor['pending_escalations'])) {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'pending_escalations' must be an array" });
+      }
+      if (!Array.isArray(rawSupervisor['audit_log'])) {
+        allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: "'audit_log' must be an array" });
+      }
+
+      // SI-1: Check that tracked features reference real features
+      if (isObject(rawSupervisor['features'])) {
+        const featureIndex = new Set(features.map((f) => {
+          const d = f.data as Record<string, unknown> | null;
+          return d !== null && typeof d['id'] === 'string' ? d['id'] : '';
+        }).filter((id) => id !== ''));
+
+        for (const key of Object.keys(rawSupervisor['features'] as Record<string, unknown>)) {
+          if (!featureIndex.has(key)) {
+            allResults.push({
+              file: 'supervisor/state.json',
+              severity: 'warning',
+              error_type: 'referential',
+              message: `SI-1: supervisor tracks feature '${key}' which does not exist in features/`,
+            });
+          }
+        }
+      }
+    } catch {
+      allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: 'Failed to parse supervisor state JSON' });
+    }
+  }
+
   // Report
   const errors = allResults.filter((r) => r.severity === 'error');
   const warnings = allResults.filter((r) => r.severity === 'warning');

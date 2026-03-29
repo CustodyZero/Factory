@@ -392,10 +392,50 @@ function main(): void {
 
   const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features });
 
+  // Read supervisor state if present
+  const supervisorStatePath = join(artifactRoot, 'supervisor', 'state.json');
+  let supervisorSummary: { enabled: boolean; tracked_features: number; pending_escalations: number; phases: Record<string, number> } | null = null;
+  if (existsSync(supervisorStatePath)) {
+    try {
+      const rawState = JSON.parse(readFileSync(supervisorStatePath, 'utf-8')) as Record<string, unknown>;
+      const feats = rawState['features'] as Record<string, Record<string, unknown>> | undefined;
+      const escalations = rawState['pending_escalations'] as Array<Record<string, unknown>> | undefined;
+      const phases: Record<string, number> = {};
+      if (feats !== undefined) {
+        for (const ft of Object.values(feats)) {
+          const phase = typeof ft['phase'] === 'string' ? ft['phase'] : 'unknown';
+          phases[phase] = (phases[phase] ?? 0) + 1;
+        }
+      }
+      const unresolvedEscalations = (escalations ?? []).filter((e) => e['resolved'] !== true).length;
+      supervisorSummary = {
+        enabled: true,
+        tracked_features: feats !== undefined ? Object.keys(feats).length : 0,
+        pending_escalations: unresolvedEscalations,
+        phases,
+      };
+    } catch {
+      // Ignore parse errors — validate.ts will catch them
+    }
+  }
+
   if (process.argv.includes('--json')) {
-    process.stdout.write(JSON.stringify(status, null, 2) + '\n');
+    const output = supervisorSummary !== null ? { ...status, supervisor: supervisorSummary } : status;
+    process.stdout.write(JSON.stringify(output, null, 2) + '\n');
   } else {
-    process.stdout.write(renderStatus(status, config.project_name));
+    let rendered = renderStatus(status, config.project_name);
+    if (supervisorSummary !== null) {
+      const lines: string[] = [];
+      lines.push('');
+      lines.push('  Supervisor:');
+      lines.push(`    Tracked features: ${String(supervisorSummary.tracked_features)}`);
+      lines.push(`    Pending escalations: ${String(supervisorSummary.pending_escalations)}`);
+      if (Object.keys(supervisorSummary.phases).length > 0) {
+        lines.push(`    Phases: ${Object.entries(supervisorSummary.phases).map(([p, c]) => `${p}(${String(c)})`).join(' ')}`);
+      }
+      rendered += lines.join('\n') + '\n';
+    }
+    process.stdout.write(rendered);
   }
 }
 
