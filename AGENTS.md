@@ -123,6 +123,8 @@ artifacts are never written inside the submodule.
 | `npx tsx tools/complete.ts <packet-id>` | After implementation, before committing |
 | `npx tsx tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx tools/validate.ts` | Verify factory integrity |
+| `npx tsx tools/supervise.ts` | Supervisor tick — next orchestration action |
+| `npx tsx tools/supervise.ts --init` | Initialize supervisor state |
 
 ---
 
@@ -203,7 +205,58 @@ The natural flow for each story: dev packet (developer) → QA packet (reviewer)
 
 ---
 
-## 6. Configuration
+## 6. Supervisor Protocol
+
+The factory includes a **supervisor actor** for automated orchestration. The supervisor
+is a stateless tick function that reads factory state and returns the next action.
+
+### When to Use
+
+Use the supervisor when you want automated orchestration of feature execution.
+The supervisor replaces the manual `execute.ts` loop with a higher-level actor
+that tracks feature phases, spawns agents, and escalates to humans.
+
+### How It Works
+
+```
+1. Human creates feature + packets
+2. Human approves feature
+3. Run: npx tsx tools/supervise.ts --init   (first time only)
+4. Run: npx tsx tools/supervise.ts --json
+5. Perform the returned action
+6. Repeat step 4 until idle
+```
+
+The supervisor returns one action per tick:
+- `execute_feature` — spawn agents for ready packets
+- `escalate_acceptance` — present to human for acceptance
+- `escalate_blocked` — present to human, something is stuck
+- `update_state` — state has been refreshed, re-tick
+- `idle` — nothing to do
+
+### State Files
+
+| File | Purpose |
+|---|---|
+| `supervisor/state.json` | Feature tracking, escalations, audit log |
+| `supervisor/memory.md` | Cross-session context for any inference engine |
+| `supervisor/SUPERVISOR.md` | Behavioral contract (copy from `factory/templates/SUPERVISOR.md`) |
+
+### Supervisor Invariants (SI-1 through SI-7)
+
+| ID | Rule |
+|---|---|
+| SI-1 | State must be consistent with factory artifacts |
+| SI-2 | Supervisor never performs human-authority actions |
+| SI-3 | Actions are idempotent |
+| SI-4 | Audit log is append-only |
+| SI-5 | Reuses resolveExecuteAction — does not bypass factory contracts |
+| SI-6 | Pending escalations block feature progression |
+| SI-7 | One action per tick |
+
+---
+
+## 7. Configuration
 
 The factory reads its configuration from `factory.config.json` in the project root.
 This file defines:
@@ -243,7 +296,7 @@ constraints defined by the project owner.
 
 ---
 
-## 7. Migration
+## 8. Migration
 
 When upgrading an existing factory installation, run:
 
@@ -258,7 +311,7 @@ before the next execution cycle.
 
 ---
 
-## 8. Where to Find Things
+## 9. Where to Find Things
 
 - **Factory docs:** `README.md`
 - **Integration guide:** `docs/integration.md`

@@ -17,6 +17,8 @@ npx tsx factory/tools/status.ts              # What is the factory state?
 npx tsx factory/tools/execute.ts <feature>   # What packets are ready? (returns packet + persona)
 npx tsx factory/tools/complete.ts <packet>   # Create completion record (--identity <id> for QA)
 npx tsx factory/tools/accept.ts <packet>     # Accept a completed packet (human action)
+npx tsx factory/tools/supervise.ts           # Supervisor tick — next orchestration action
+npx tsx factory/tools/supervise.ts --init    # Initialize supervisor state
 npx tsx factory/tools/validate.ts            # Validate factory integrity
 npx tsx factory/tools/migrate.ts             # Migrate pre-existing artifacts to new schema
 npx vitest run --config factory/vitest.config.ts  # Run factory tooling tests
