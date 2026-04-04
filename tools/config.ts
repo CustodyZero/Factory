@@ -37,6 +37,7 @@ export interface SupervisorConfig {
 export interface FactoryConfig {
   readonly project_name: string;
   readonly factory_dir: string;
+  readonly artifact_dir: string;
   readonly verification: {
     readonly build: string;
     readonly lint: string;
@@ -104,7 +105,7 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
       reviewer: { ...defaultPersonas.reviewer, ...rawPersonas?.reviewer },
     };
-    return { factory_dir: '.', ...parsed, personas } as FactoryConfig;
+    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
@@ -129,12 +130,18 @@ export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig)
 /**
  * Resolves the artifact root (where packets, completions, features, etc. live).
  *
- * Always returns PROJECT_ROOT. Artifacts belong to the host project, not the
- * factory tooling directory. When Factory is a git submodule, the submodule
- * is read-only tooling; artifacts live alongside factory.config.json.
+ * When artifact_dir is "." (default), returns PROJECT_ROOT.
+ * When artifact_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
+ *
+ * Artifacts belong to the host project, not the factory tooling directory.
+ * In submodule installs, artifacts consolidate under a single visible directory
+ * (e.g., factory/) while tooling hides in .factory/.
  */
-export function resolveArtifactRoot(projectRoot?: string): string {
-  return projectRoot ?? findProjectRoot();
+export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig): string {
+  const root = projectRoot ?? findProjectRoot();
+  const cfg = config ?? loadConfig(root);
+  const artifactDir = cfg.artifact_dir ?? '.';
+  return artifactDir === '.' ? root : join(root, artifactDir);
 }
 
 /**

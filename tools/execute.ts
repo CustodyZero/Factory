@@ -414,7 +414,7 @@ function main(): void {
   }
 
   const config = loadConfig();
-  const artifactRoot = resolveArtifactRoot();
+  const artifactRoot = resolveArtifactRoot(undefined, config);
   const featurePath = join(artifactRoot, 'features', `${resolvedFeatureId}.json`);
 
   if (!existsSync(featurePath)) {

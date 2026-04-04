@@ -26,7 +26,7 @@ import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
-const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT);
+const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT, config);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing

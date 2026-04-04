@@ -8,18 +8,42 @@ How to add the factory to an existing project.
 
 ```sh
 # From your project root
-git clone https://github.com/custodyzero/factory.git factory
-./factory/setup.sh
+git submodule add https://github.com/custodyzero/factory.git .factory
+./.factory/setup.sh
 ```
 
 The setup script:
 
-1. Installs factory dependencies (isolated in `factory/node_modules/`)
+1. Installs factory dependencies (isolated in `.factory/node_modules/`)
 2. Copies template files to your project root (no-clobber):
    - `factory.config.json` — project configuration
    - `CLAUDE.md` — AI agent instructions
    - `AGENTS.md` — agent operating constraints
-3. Configures `git config core.hooksPath factory/hooks`
+3. Creates `factory/` directory with artifact subdirectories:
+   - `factory/features/`, `factory/packets/`, `factory/completions/`, etc.
+   - `factory/supervisor/` with SUPERVISOR.md and memory.md
+4. Configures `git config core.hooksPath .factory/hooks`
+
+### Directory Layout
+
+After setup, your project will have:
+
+```
+.factory/                # Tooling submodule (hidden)
+factory/                 # Artifacts (visible, one directory)
+├── features/
+├── packets/
+├── completions/
+├── acceptances/
+├── rejections/
+├── evidence/
+└── supervisor/
+factory.config.json      # Configuration
+CLAUDE.md                # AI instructions
+AGENTS.md                # Agent constraints
+```
+
+Tooling is hidden in `.factory/`. Artifacts are visible in `factory/`.
 
 ---
 
@@ -31,18 +55,20 @@ Edit the template at your project root:
 
 ```json
 {
-  "$schema": "./factory/schemas/factory-config.schema.json",
+  "$schema": "./.factory/schemas/factory-config.schema.json",
   "project_name": "my-project",
-  "factory_dir": "factory",
+  "factory_dir": ".factory",
+  "artifact_dir": "factory",
   "verification": {
     "build": "dotnet build",
     "lint": "true",
     "test": "dotnet test"
   },
   "validation": {
-    "command": "npx tsx factory/tools/validate.ts"
+    "command": "npx tsx .factory/tools/validate.ts"
   },
   "infrastructure_patterns": [
+    ".factory/",
     "factory/",
     ".github/",
     "package.json",
@@ -64,7 +90,8 @@ Edit the template at your project root:
 | Field | Type | Description |
 |---|---|---|
 | `project_name` | string | Used in status output headers |
-| `factory_dir` | string | Path to factory directory relative to project root (default: `"."`) |
+| `factory_dir` | string | Path to factory tooling relative to project root (default: `"."`) |
+| `artifact_dir` | string | Path to artifact directory relative to project root (default: `"."`) |
 | `verification.build` | string | Shell command for build verification |
 | `verification.lint` | string | Shell command for lint verification |
 | `verification.test` | string | Shell command for test verification |
@@ -99,7 +126,7 @@ Adjust these patterns to match your project structure. Common additions:
 | jq | Pre-commit hook reads config without Node.js for speed |
 
 Factory's Node.js dependencies (tsx, vitest, typescript) are installed
-inside `factory/node_modules/` and do not affect the host project.
+inside `.factory/node_modules/` and do not affect the host project.
 
 ---
 
@@ -124,7 +151,7 @@ subdirectory.
 ## Testing the Factory Tooling
 
 ```sh
-cd factory
+cd .factory
 npx vitest run
 ```
 
@@ -139,31 +166,30 @@ All tests are pure function tests — no I/O, no mocking.
 
 ## Git Considerations
 
-### Committing factory as part of your repo
+### Committing factory artifacts
 
-Factory artifacts (packets, completions, acceptances, etc.) are meant to
-be committed alongside your code. They are the governance trail.
+Factory artifacts (packets, completions, acceptances, etc.) under `factory/`
+are meant to be committed alongside your code. They are the governance trail.
 
-### Updating factory
+### Updating factory tooling
 
 To update factory tooling from upstream:
 
 ```sh
-cd factory
+cd .factory
 git pull origin main
+cd ..
+git add .factory
+git commit -m "Update factory tooling"
 ```
-
-Since factory is a cloned repo inside your project, its `.git` directory
-is independent. You can pull updates without affecting your project's
-git history.
 
 ### .gitignore
 
 Add to your project's `.gitignore`:
 
 ```
-factory/node_modules/
-factory/derived-state.json
+.factory/node_modules/
+.factory/derived-state.json
 ```
 
 The setup script does not modify your `.gitignore` — add these entries

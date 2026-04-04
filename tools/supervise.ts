@@ -570,7 +570,7 @@ function main(): void {
 
   const config = loadConfig();
   const projectRoot = findProjectRoot();
-  const artifactRoot = resolveArtifactRoot(projectRoot);
+  const artifactRoot = resolveArtifactRoot(projectRoot, config);
   const now = new Date();
 
   const identity = config.completed_by_default;

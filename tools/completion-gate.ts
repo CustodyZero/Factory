@@ -169,7 +169,7 @@ function readCompletionIds(artifactRoot: string): Set<string> {
 
 function main(): void {
   const config = loadConfig();
-  const artifactRoot = resolveArtifactRoot();
+  const artifactRoot = resolveArtifactRoot(undefined, config);
 
   // Get staged files from git
   let stagedFiles: string[];

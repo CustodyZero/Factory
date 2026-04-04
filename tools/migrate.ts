@@ -23,7 +23,7 @@ const MIGRATION_MARKER = '[MIGRATION] Define acceptance criteria';
 const isDryRun = process.argv.includes('--dry');
 
 const config = loadConfig();
-const ARTIFACT_ROOT = resolveArtifactRoot();
+const ARTIFACT_ROOT = resolveArtifactRoot(undefined, config);
 
 interface MigrationChange {
   readonly file: string;

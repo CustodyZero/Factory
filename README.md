@@ -35,11 +35,11 @@ the implementer.
 ### Add to an Existing Project
 
 ```sh
-# Add factory as a git submodule
-git submodule add https://github.com/custodyzero/factory.git factory
+# Add factory as a git submodule (hidden — tooling only)
+git submodule add https://github.com/custodyzero/factory.git .factory
 
-# Run setup (installs deps, copies templates, configures hooks)
-./factory/setup.sh
+# Run setup (installs deps, copies templates, creates artifact dirs, configures hooks)
+./.factory/setup.sh
 
 # Configure for your project
 # Edit factory.config.json — set project_name and verification commands
@@ -52,16 +52,18 @@ Edit `factory.config.json` at the project root:
 ```json
 {
   "project_name": "my-project",
-  "factory_dir": "factory",
+  "factory_dir": ".factory",
+  "artifact_dir": "factory",
   "verification": {
     "build": "dotnet build",
     "lint": "true",
     "test": "dotnet test"
   },
   "validation": {
-    "command": "npx tsx factory/tools/validate.ts"
+    "command": "npx tsx .factory/tools/validate.ts"
   },
   "infrastructure_patterns": [
+    ".factory/",
     "factory/",
     ".github/",
     "package.json",
@@ -263,18 +265,21 @@ active (non-abandoned, non-deferred) packets.
 
 ## Tooling
 
+When installed as a submodule at `.factory/`, tool paths use `.factory/tools/...`.
+When working in the factory repo itself, use `tools/...` directly.
+
 ### Status
 
 ```sh
-npx tsx factory/tools/status.ts              # human-readable report
-npx tsx factory/tools/status.ts --json       # machine-readable JSON
-npx tsx factory/tools/status.ts --feature <id>  # scoped to a feature
+npx tsx .factory/tools/status.ts              # human-readable report
+npx tsx .factory/tools/status.ts --json       # machine-readable JSON
+npx tsx .factory/tools/status.ts --feature <id>  # scoped to a feature
 ```
 
 ### Complete
 
 ```sh
-npx tsx factory/tools/complete.ts <packet-id> [--summary "..."]
+npx tsx .factory/tools/complete.ts <packet-id> [--summary "..."]
 ```
 
 Runs verification (build, lint, test), then creates a completion record.
@@ -282,8 +287,8 @@ Runs verification (build, lint, test), then creates a completion record.
 ### Execute
 
 ```sh
-npx tsx factory/tools/execute.ts <feature-id>
-npx tsx factory/tools/execute.ts <feature-id> --json
+npx tsx .factory/tools/execute.ts <feature-id>
+npx tsx .factory/tools/execute.ts <feature-id> --json
 ```
 
 Stateless action resolver for feature-level execution.
@@ -291,7 +296,7 @@ Stateless action resolver for feature-level execution.
 ### Validate
 
 ```sh
-npx tsx factory/tools/validate.ts
+npx tsx .factory/tools/validate.ts
 ```
 
 Schema validation + referential integrity + invariant enforcement.
@@ -299,8 +304,8 @@ Schema validation + referential integrity + invariant enforcement.
 ### Derive
 
 ```sh
-npx tsx factory/tools/derive.ts              # print to stdout
-npx tsx factory/tools/derive.ts --write      # write to derived-state.json
+npx tsx .factory/tools/derive.ts              # print to stdout
+npx tsx .factory/tools/derive.ts --write      # write to derived-state.json
 ```
 
 ---
@@ -313,7 +318,7 @@ draft → planned → approved → executing → completed → delivered
 ```
 
 Execution protocol:
-1. Run `npx tsx factory/tools/execute.ts <feature-id>`
+1. Run `npx tsx .factory/tools/execute.ts <feature-id>`
 2. Spawn agents for ready packets using the assigned persona (developer/reviewer)
 3. Each agent: implement → complete → commit
 4. Re-run execute
@@ -331,13 +336,7 @@ When installed in a host project as a git submodule:
 ├── factory.config.json      # Project-specific configuration
 ├── CLAUDE.md                # AI instructions for the project
 ├── AGENTS.md                # Agent operating constraints
-├── packets/                 # Work unit declarations
-├── completions/             # Implementation evidence
-├── acceptances/             # Human approval records
-├── rejections/              # Audit reversals
-├── evidence/                # Environment dependency proofs
-├── features/                # Feature-level intents
-├── factory/                 # Factory submodule (read-only tooling)
+├── .factory/                # Factory submodule (hidden, tooling only)
 │   ├── schemas/             # JSON schemas for all artifact types
 │   ├── tools/               # Factory tooling
 │   │   ├── config.ts        # Configuration loader
@@ -355,13 +354,22 @@ When installed in a host project as a git submodule:
 │   ├── setup.sh             # Installation script
 │   └── docs/
 │       └── integration.md   # Detailed integration guide
+├── factory/                 # Factory artifacts (visible, one directory)
+│   ├── features/            # Feature-level intents
+│   ├── packets/             # Work unit declarations
+│   ├── completions/         # Implementation evidence
+│   ├── acceptances/         # Human approval records
+│   ├── rejections/          # Audit reversals
+│   ├── evidence/            # Environment dependency proofs
+│   └── supervisor/          # Supervisor state and memory
 └── src/                     # Host project source (any language)
 ```
 
-**Key separation:** Artifacts (packets, completions, features, etc.) live at the
-project root. The `factory/` submodule contains only tooling, schemas, and hooks.
-Tools resolve artifact paths via `resolveArtifactRoot()` (always returns project root)
-and tooling paths via `resolveFactoryRoot()` (returns `factory/` in submodule mode).
+**Key separation:** Tooling lives in `.factory/` (hidden submodule).
+Artifacts live in `factory/` (visible, single directory). The `factory_dir`
+config field points to the tooling submodule, `artifact_dir` points to
+the artifact directory. Tools resolve paths via `resolveArtifactRoot()`
+and `resolveFactoryRoot()`.
 
 ---
 
@@ -369,14 +377,15 @@ and tooling paths via `resolveFactoryRoot()` (returns `factory/` in submodule mo
 
 ```sh
 # From your project root
-git submodule add https://github.com/custodyzero/factory.git factory
-./factory/setup.sh
+git submodule add https://github.com/custodyzero/factory.git .factory
+./.factory/setup.sh
 ```
 
 The setup script:
-1. Installs factory dependencies (isolated in `factory/node_modules/`)
+1. Installs factory dependencies (isolated in `.factory/node_modules/`)
 2. Copies template `factory.config.json`, `CLAUDE.md`, and `AGENTS.md` to your project root (no-clobber)
-3. Configures `git config core.hooksPath factory/hooks`
+3. Creates `factory/` directory with artifact subdirectories and supervisor files
+4. Configures `git config core.hooksPath .factory/hooks`
 
 See [`docs/integration.md`](docs/integration.md) for detailed integration guide.
 

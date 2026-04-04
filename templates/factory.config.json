@@ -1,16 +1,18 @@
 {
-  "$schema": "./factory/schemas/factory-config.schema.json",
+  "$schema": "./.factory/schemas/factory-config.schema.json",
   "project_name": "my-project",
-  "factory_dir": "factory",
+  "factory_dir": ".factory",
+  "artifact_dir": "factory",
   "verification": {
     "build": "true",
     "lint": "true",
     "test": "true"
   },
   "validation": {
-    "command": "npx tsx factory/tools/validate.ts"
+    "command": "npx tsx .factory/tools/validate.ts"
   },
   "infrastructure_patterns": [
+    ".factory/",
     "factory/",
     ".githooks/",
     ".github/",

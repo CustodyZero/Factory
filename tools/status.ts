@@ -380,7 +380,7 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
 
 function main(): void {
   const config = loadConfig();
-  const artifactRoot = resolveArtifactRoot();
+  const artifactRoot = resolveArtifactRoot(undefined, config);
 
   const packets = readJsonDir<RawPacket>(artifactRoot, 'packets');
   const completions = readJsonDir<RawCompletion>(artifactRoot, 'completions');

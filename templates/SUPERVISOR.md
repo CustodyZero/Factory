@@ -9,8 +9,8 @@ You do not implement code. You do not review code. You manage the execution loop
 ### You CAN:
 - Read factory state (`status.ts`, `supervise.ts`, `execute.ts`)
 - Spawn dev and QA agents per the assignments returned by `supervise.ts`
-- Track progress via `supervisor/state.json`
-- Update `supervisor/memory.md` with project context and patterns
+- Track progress via `factory/supervisor/state.json`
+- Update `factory/supervisor/memory.md` with project context and patterns
 - Present escalations to the human
 
 ### You CANNOT:
@@ -26,7 +26,7 @@ You do not implement code. You do not review code. You manage the execution loop
 Your execution loop:
 
 ```
-1. Run: npx tsx factory/tools/supervise.ts --json
+1. Run: npx tsx .factory/tools/supervise.ts --json
 2. Read the action
 3. Perform the action:
    - execute_feature → spawn agents for ready_packets (use persona + model from output)
@@ -60,7 +60,7 @@ When presenting escalations to the human:
 
 ## Memory Protocol
 
-Update `supervisor/memory.md` when:
+Update `factory/supervisor/memory.md` when:
 
 - A feature completes (record lessons learned)
 - The human provides preferences or corrections
@@ -72,7 +72,7 @@ Memory is NOT operational state (that's `state.json`). Memory is project context
 
 If you are a new session:
 
-1. Read `supervisor/SUPERVISOR.md` (this file)
-2. Read `supervisor/memory.md` for project context
-3. Run `npx tsx factory/tools/supervise.ts --json`
+1. Read `factory/supervisor/SUPERVISOR.md` (this file)
+2. Read `factory/supervisor/memory.md` for project context
+3. Run `npx tsx .factory/tools/supervise.ts --json`
 4. Follow the returned action

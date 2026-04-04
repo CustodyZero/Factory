@@ -17,7 +17,7 @@ The factory is the source of truth for what work exists, what is in progress, an
 ### Before Starting Any Work
 
 ```sh
-npx tsx factory/tools/status.ts
+npx tsx ..factory/tools/status.ts
 ```
 
 This tells you:
@@ -28,7 +28,7 @@ This tells you:
 
 **If a feature is active:**
 ```sh
-npx tsx factory/tools/execute.ts <feature-id>
+npx tsx ..factory/tools/execute.ts <feature-id>
 ```
 
 This tells you which packets are ready to implement **and which persona to use**.
@@ -36,8 +36,8 @@ This tells you which packets are ready to implement **and which persona to use**
 ### After Completing Implementation
 
 ```sh
-npx tsx factory/tools/complete.ts <packet-id>                        # dev packets (uses default identity)
-npx tsx factory/tools/complete.ts <packet-id> --identity claude-qa   # QA packets (distinct identity)
+npx tsx ..factory/tools/complete.ts <packet-id>                        # dev packets (uses default identity)
+npx tsx ..factory/tools/complete.ts <packet-id> --identity claude-qa   # QA packets (distinct identity)
 ```
 
 This runs build + lint + tests and creates a completion record.
@@ -103,27 +103,28 @@ architectural QA packet to opus, or downgrade a trivial dev packet to sonnet).
 
 ### Artifacts
 
-Artifacts live at the **project root**, not inside the `factory/` submodule.
-The submodule contains only tooling (tools, schemas, hooks).
+Artifacts live under the `factory/` directory at the project root.
+The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 
 | Directory | Purpose |
 |---|---|
-| `features/` | Feature-level intents (multi-packet) |
-| `packets/` | Individual work units (dev and qa) |
-| `completions/` | Verification evidence (build/lint/test results) |
-| `acceptances/` | Human approval records |
+| `factory/features/` | Feature-level intents (multi-packet) |
+| `factory/packets/` | Individual work units (dev and qa) |
+| `factory/completions/` | Verification evidence (build/lint/test results) |
+| `factory/acceptances/` | Human approval records |
+| `factory/supervisor/` | Supervisor state and memory |
 
 ### Commands
 
 | Command | When to Use |
 |---|---|
-| `npx tsx factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
-| `npx tsx factory/tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
-| `npx tsx factory/tools/complete.ts <packet-id>` | After implementation, before committing |
-| `npx tsx factory/tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
-| `npx tsx factory/tools/validate.ts` | Verify factory integrity |
-| `npx tsx factory/tools/supervise.ts` | Supervisor tick — next orchestration action |
-| `npx tsx factory/tools/supervise.ts --init` | Initialize supervisor state |
+| `npx tsx ..factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
+| `npx tsx ..factory/tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
+| `npx tsx ..factory/tools/complete.ts <packet-id>` | After implementation, before committing |
+| `npx tsx ..factory/tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
+| `npx tsx ..factory/tools/validate.ts` | Verify factory integrity |
+| `npx tsx ..factory/tools/supervise.ts` | Supervisor tick — next orchestration action |
+| `npx tsx ..factory/tools/supervise.ts --init` | Initialize supervisor state |
 
 ---
 
@@ -136,7 +137,7 @@ Do not write code and then create the packet after the fact.
 
 ### 3.2 No Commit Without Completion
 
-Run `npx tsx factory/tools/complete.ts <packet-id>` before committing.
+Run `npx tsx ..factory/tools/complete.ts <packet-id>` before committing.
 The pre-commit hook enforces this. If it blocks you, create the completion first.
 
 ### 3.3 No Facades
@@ -174,9 +175,9 @@ The factory validates this. Plan features as dev/qa pairs from the start.
 
 If you are starting a new session or have lost context:
 
-1. Run `npx tsx factory/tools/status.ts`
+1. Run `npx tsx ..factory/tools/status.ts`
 2. Read the output — it tells you exactly where things stand
-3. If a feature is active, run `npx tsx factory/tools/execute.ts <feature-id>`
+3. If a feature is active, run `npx tsx ..factory/tools/execute.ts <feature-id>`
 4. The output tells you what to do next **and which persona to use**
 
 Do not rely on memory. Do not guess. Read the factory state.
@@ -190,7 +191,7 @@ Do not decide when to stop or what step comes next — always ask execute.ts.
 
 ```
 loop:
-  1. Run: npx tsx factory/tools/execute.ts <feature-id>
+  1. Run: npx tsx ..factory/tools/execute.ts <feature-id>
   2. Read the action kind in the output:
      - spawn_packets  → spawn agents for ready packets using the assigned persona, complete each, go to 1
      - awaiting_acceptance → stop, inform human that architectural packets need acceptance
@@ -198,7 +199,7 @@ loop:
      - blocked        → resolve dependencies or replan
 ```
 
-Each iteration is stateless. If interrupted, re-run `factory/tools/execute.ts` to resume.
+Each iteration is stateless. If interrupted, re-run `.factory/tools/execute.ts` to resume.
 
 The natural flow for each story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural).
 
@@ -220,8 +221,8 @@ that tracks feature phases, spawns agents, and escalates to humans.
 ```
 1. Human creates feature + packets
 2. Human approves feature
-3. Run: npx tsx factory/tools/supervise.ts --init   (first time only)
-4. Run: npx tsx factory/tools/supervise.ts --json
+3. Run: npx tsx ..factory/tools/supervise.ts --init   (first time only)
+4. Run: npx tsx ..factory/tools/supervise.ts --json
 5. Perform the returned action
 6. Repeat step 4 until idle
 ```
@@ -237,9 +238,9 @@ The supervisor returns one action per tick:
 
 | File | Purpose |
 |---|---|
-| `supervisor/state.json` | Feature tracking, escalations, audit log |
-| `supervisor/memory.md` | Cross-session context for any inference engine |
-| `supervisor/SUPERVISOR.md` | Behavioral contract (copy from `factory/templates/SUPERVISOR.md`) |
+| `factory/supervisor/state.json` | Feature tracking, escalations, audit log |
+| `factory/supervisor/memory.md` | Cross-session context for any inference engine |
+| `factory/supervisor/SUPERVISOR.md` | Behavioral contract (copy from `.factory/templates/SUPERVISOR.md`) |
 
 ### Supervisor Invariants (SI-1 through SI-7)
 
@@ -300,8 +301,8 @@ constraints defined by the project owner.
 When upgrading an existing factory installation, run:
 
 ```sh
-npx tsx factory/tools/migrate.ts        # apply migration
-npx tsx factory/tools/migrate.ts --dry  # preview without writing
+npx tsx ..factory/tools/migrate.ts        # apply migration
+npx tsx ..factory/tools/migrate.ts --dry  # preview without writing
 ```
 
 This adds required fields (`kind`, `acceptance_criteria`) to pre-existing packets and features.
@@ -312,7 +313,7 @@ before the next execution cycle.
 
 ## 9. Where to Find Things
 
-- **Factory docs:** `factory/README.md`
-- **Integration guide:** `factory/docs/integration.md`
-- **Schemas:** `factory/schemas/` (JSON schemas for all artifact types)
-- **Factory invariants:** `factory/README.md` § Factory Invariants (FI-1 through FI-10)
+- **Factory docs:** `.factory/README.md`
+- **Integration guide:** `.factory/docs/integration.md`
+- **Schemas:** `.factory/schemas/` (JSON schemas for all artifact types)
+- **Factory invariants:** `.factory/README.md` § Factory Invariants (FI-1 through FI-10)

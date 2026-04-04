@@ -4,15 +4,20 @@
     Factory setup script for Windows hosts.
 
 .DESCRIPTION
-    Run this from the HOST PROJECT ROOT after cloning factory as a subdirectory:
+    Run this from the HOST PROJECT ROOT after adding factory as a submodule:
 
-        git clone https://github.com/custodyzero/factory.git factory
-        .\factory\setup.ps1
+        git submodule add https://github.com/custodyzero/factory.git .factory
+        .\.factory\setup.ps1
+
+    Layout after setup:
+        .factory\     - tooling (git submodule, hidden)
+        factory\      - artifacts (features, packets, completions, etc.)
 
     What this script does:
-        1. Installs factory dependencies (inside factory/)
+        1. Installs factory dependencies (inside .factory/)
         2. Copies template files to host project root (no-clobber)
-        3. Configures git hooks to use factory/hooks/
+        3. Creates artifact directories under factory/
+        4. Configures git hooks
 #>
 
 Set-StrictMode -Version Latest
@@ -21,12 +26,14 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $FactoryDir = Split-Path -Leaf $ScriptDir
+$ArtifactDir = 'factory'
 
 Write-Host ''
 Write-Host 'Factory Setup'
 Write-Host '============='
-Write-Host "  Project root: $ProjectRoot"
-Write-Host "  Factory dir:  $FactoryDir/"
+Write-Host "  Project root:  $ProjectRoot"
+Write-Host "  Tooling dir:   $FactoryDir/   (submodule)"
+Write-Host "  Artifact dir:  $ArtifactDir/  (features, packets, completions)"
 Write-Host ''
 
 # -- 1. Install factory dependencies ------------------------------------------
@@ -71,12 +78,25 @@ try {
     Copy-Template "$FactoryDir/templates/factory.config.json" 'factory.config.json'
     Copy-Template "$FactoryDir/templates/CLAUDE.md" 'CLAUDE.md'
     Copy-Template "$FactoryDir/templates/AGENTS.md" 'AGENTS.md'
+
+    # -- 3. Create artifact directories ----------------------------------------
+
+    Write-Host ''
+    Write-Host 'Creating artifact directories...'
+    foreach ($subdir in @('features', 'packets', 'completions', 'acceptances', 'rejections', 'evidence', 'supervisor')) {
+        $path = "$ArtifactDir/$subdir"
+        if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
+        Write-Host "  MKDIR $path/"
+    }
+
+    Copy-Template "$FactoryDir/templates/SUPERVISOR.md" "$ArtifactDir/supervisor/SUPERVISOR.md"
+    Copy-Template "$FactoryDir/templates/memory.md" "$ArtifactDir/supervisor/memory.md"
 }
 finally {
     Pop-Location
 }
 
-# -- 3. Configure git hooks ---------------------------------------------------
+# -- 4. Configure git hooks ---------------------------------------------------
 
 Write-Host ''
 Write-Host 'Configuring git hooks...'
@@ -97,5 +117,6 @@ Write-Host ''
 Write-Host 'Next steps:'
 Write-Host "  1. Edit factory.config.json - set project_name and verification commands"
 Write-Host '  2. Edit CLAUDE.md - customize for your project'
-Write-Host "  3. Run: npx tsx $FactoryDir/tools/status.ts"
+Write-Host "  3. Run: npx tsx $FactoryDir/tools/supervise.ts --init  (initialize supervisor)"
+Write-Host "  4. Run: npx tsx $FactoryDir/tools/status.ts"
 Write-Host ''
