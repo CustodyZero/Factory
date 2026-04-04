@@ -1,9 +1,11 @@
 # Agent Operating Instructions
 
-This file defines how AI agents must operate in this repository.
-It applies to all agents regardless of provider (Claude, GPT, Gemini, Copilot, Cursor, etc.).
+This file defines how all contributors — AI agents and humans — must operate
+in this repository. It is the complete operational reference for the factory
+workflow. AI agents must follow it as hard constraints; humans should treat
+it as the authoritative process guide.
 
-These are not guidelines. They are constraints. Violating them produces incorrect work.
+It applies to all agents regardless of provider (Claude, GPT, Gemini, Copilot, Cursor, etc.).
 
 ---
 

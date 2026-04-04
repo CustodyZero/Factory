@@ -82,10 +82,138 @@ Edit `factory.config.json` at the project root:
 
 ---
 
+## Your First Change
+
+Factory has no `create` command — features and packets are JSON files you
+write by hand (or have an AI agent write). This walkthrough shows the full
+cycle for a single change using a standalone packet.
+
+### 1. Create a dev packet
+
+```json
+// factory/packets/add-health-endpoint-dev.json
+{
+  "id": "add-health-endpoint-dev",
+  "kind": "dev",
+  "title": "Add /health endpoint",
+  "intent": "Expose a health check endpoint so load balancers can verify the service is running.",
+  "acceptance_criteria": [
+    "GET /health returns 200 with { \"status\": \"ok\" }",
+    "Response time is under 50ms",
+    "Endpoint is included in API tests"
+  ],
+  "change_class": "local",
+  "scope": { "packages": ["api"] },
+  "owner": "alice",
+  "created_at": "2025-01-15T10:00:00Z",
+  "started_at": null,
+  "dependencies": [],
+  "feature_id": null
+}
+```
+
+### 2. Create its QA counterpart
+
+```json
+// factory/packets/add-health-endpoint-qa.json
+{
+  "id": "add-health-endpoint-qa",
+  "kind": "qa",
+  "verifies": "add-health-endpoint-dev",
+  "title": "Verify /health endpoint",
+  "intent": "Confirm the health endpoint meets all acceptance criteria from the dev packet.",
+  "acceptance_criteria": [
+    "All dev packet acceptance criteria verified",
+    "No regressions in existing API tests"
+  ],
+  "change_class": "local",
+  "scope": { "packages": ["api"] },
+  "owner": "alice",
+  "created_at": "2025-01-15T10:00:00Z",
+  "started_at": null,
+  "dependencies": ["add-health-endpoint-dev"]
+}
+```
+
+### 3. Check factory status
+
+```sh
+npx tsx .factory/tools/status.ts
+```
+
+You'll see both packets listed as `not_started`.
+
+### 4. Implement the dev packet
+
+Set `started_at` in the dev packet to mark work as in progress. Write the
+code, then run completion:
+
+```sh
+npx tsx .factory/tools/complete.ts add-health-endpoint-dev
+```
+
+This runs build + lint + tests and writes `factory/completions/add-health-endpoint-dev.json`.
+Since the change class is `local`, it auto-accepts.
+
+### 5. Review the QA packet
+
+The QA packet is now unblocked (its dependency is complete). A different
+agent or human reviews the dev work against the acceptance criteria, then:
+
+```sh
+npx tsx .factory/tools/complete.ts add-health-endpoint-qa --identity claude-qa
+```
+
+The `--identity` flag ensures the QA completion is attributed to a different
+identity than the dev completion (FI-7).
+
+### 6. Commit
+
+The pre-commit hook verifies that all started packets have completions.
+Your commit includes the implementation files alongside the factory
+artifacts — the governance trail is part of the repo history.
+
+### Using features for larger work
+
+For multi-packet work, wrap packets in a feature:
+
+```json
+// factory/features/health-monitoring.json
+{
+  "id": "health-monitoring",
+  "intent": "Add health monitoring so ops can verify service availability.",
+  "acceptance_criteria": [
+    "Health endpoint exists and is tested",
+    "Monitoring dashboard updated"
+  ],
+  "status": "approved",
+  "packets": [
+    "add-health-endpoint-dev",
+    "add-health-endpoint-qa"
+  ],
+  "created_by": { "kind": "human", "id": "alice" },
+  "created_at": "2025-01-15T09:00:00Z"
+}
+```
+
+Then use `execute.ts` to drive the execution loop — it tells you which
+packets are ready, which persona to use, and what to do next:
+
+```sh
+npx tsx .factory/tools/execute.ts health-monitoring
+```
+
+---
+
 ## Artifact Types
 
-The factory has six artifact types. Each is a JSON file validated
-against a schema in `schemas/`.
+The factory has six artifact types. Each is a JSON file validated against
+a schema in `.factory/schemas/` (or `schemas/` when working in the factory
+repo itself).
+
+All artifact paths below are relative to the artifact root. In submodule
+installs this is `factory/` (e.g., `factory/packets/my-packet.json`). When
+factory is the project, this is the repo root.
 
 ### Packet
 
@@ -96,26 +224,42 @@ A scoped unit of work. Declares **what** is changing, **why**, and
 packets/<packet-id>.json
 ```
 
+Every packet has a **kind**: `dev` (implements a change) or `qa` (verifies
+a dev packet's acceptance criteria were met). Each dev packet in a feature
+must have a corresponding QA packet (FI-8).
+
+A QA packet sets `verifies` to the ID of the dev packet it reviews, and
+lists that dev packet in `dependencies` so the factory sequences them
+automatically — QA only becomes ready after dev completes.
+
 Required fields:
 - `id` — kebab-case identifier (must match filename)
+- `kind` — `dev` or `qa`
 - `title` — one-line summary
 - `intent` — what is changing and why
+- `acceptance_criteria` — testable conditions for completeness
 - `change_class` — `trivial`, `local`, `cross_cutting`, or `architectural`
 - `scope.packages` — which packages are affected
 - `owner` — who is responsible
 - `created_at` — ISO 8601 timestamp
 
+QA-specific fields:
+- `verifies` — ID of the dev packet this QA packet reviews (required for `qa`, forbidden for `dev`)
+
 Optional fields:
 - `started_at` — when work began
-- `dependencies` — packet IDs that must be accepted first
-- `environment_dependencies` — external dependencies
+- `dependencies` — packet IDs that must be completed first
+- `environment_dependencies` — external dependencies requiring evidence
+- `model` — model tier override (`opus`, `sonnet`, `haiku`)
+- `instructions` — additional agent instructions (merged with persona instructions)
 - `status` — `abandoned` or `deferred` (exempt from FI-6/FI-7)
 - `feature_id` — parent feature ID
 - `tags` — freeform labels
 
 ### Completion
 
-Evidence that a packet's implementation is done.
+Evidence that a packet's implementation is done. Created by `complete.ts`,
+not by hand.
 
 ```
 completions/<packet-id>.json
@@ -130,7 +274,7 @@ Required fields:
 
 ### Acceptance
 
-Human approval that a completed packet is accepted.
+Human approval that a completed packet is accepted. Created by `accept.ts`.
 
 ```
 acceptances/<packet-id>.json
@@ -159,7 +303,7 @@ evidence/<dependency-key>.json
 
 ### Feature
 
-A high-level intent that decomposes into multiple packets.
+A high-level intent that decomposes into dev/qa packet pairs.
 
 ```
 features/<feature-id>.json
@@ -168,8 +312,9 @@ features/<feature-id>.json
 Required fields:
 - `id` — kebab-case identifier (must match filename)
 - `intent` — what the project should do when this feature is complete
+- `acceptance_criteria` — feature-level success conditions
 - `status` — `draft`, `planned`, `approved`, `executing`, `completed`, `delivered`
-- `packets` — ordered list of packet IDs
+- `packets` — ordered list of packet IDs (dev and qa)
 - `created_by` — identity
 
 ---
