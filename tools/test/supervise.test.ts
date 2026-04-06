@@ -429,4 +429,57 @@ describe('resolveSupervisorAction', () => {
     expect(action.kind).toBe('execute_feature');
     expect(action.dispatches[0].dispatch_id).toBe('dispatch-f1-p1-existing');
   });
+
+  it('SV-U17: dispatches ready packets across multiple independent features in one tick', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing'),
+        f2: trackingFor('f2', 'executing'),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [
+        makeFeature({ id: 'f1', packets: ['p1'] }),
+        makeFeature({ id: 'f2', packets: ['p2'] }),
+      ],
+      packets: [makeDevPacket('p1'), makeDevPacket('p2')],
+    }));
+
+    expect(action.kind).toBe('execute_feature');
+    expect(action.feature_id).toBeNull();
+    expect(action.feature_ids).toEqual(['f1', 'f2']);
+    expect(action.ready_packets.map((packet) => packet.packet_id)).toEqual(['p1', 'p2']);
+    expect(action.dispatches.map((dispatch) => dispatch.packet_id)).toEqual(['p1', 'p2']);
+    expect(action.state_patch?.features?.['f1']?.packets_spawned).toContain('p1');
+    expect(action.state_patch?.features?.['f2']?.packets_spawned).toContain('p2');
+  });
+
+  it('SV-U18: does not let one waiting feature block another ready feature', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing', { packets_spawned: ['p1'] }),
+        f2: trackingFor('f2', 'executing'),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [
+        makeFeature({ id: 'f1', packets: ['p1'] }),
+        makeFeature({ id: 'f2', packets: ['p2'] }),
+      ],
+      packets: [
+        makeDevPacket('p1', [], '2026-03-28T10:00:00Z'),
+        makeDevPacket('p2'),
+      ],
+    }));
+
+    expect(action.kind).toBe('execute_feature');
+    expect(action.feature_ids).toEqual(['f2']);
+    expect(action.ready_packets.map((packet) => packet.packet_id)).toEqual(['p2']);
+  });
 });

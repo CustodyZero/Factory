@@ -49,6 +49,7 @@ When `execute_feature` returns ready packets:
 - Each packet includes `start_command` — the assigned agent should run it before implementation
 - Each packet dispatch includes a stable `dispatch_id` — treat it as the supervisor-issued authorization token
 - Do not start or spawn packets that were not returned in the current `ready_packets` list
+- A single `execute_feature` action may include packets from multiple independent features
 - Dev agents use default identity; QA agents must use `--identity claude-qa` on `complete.ts`
 - Do not spawn the same identity for a dev packet and its QA counterpart
 

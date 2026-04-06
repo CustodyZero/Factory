@@ -203,6 +203,7 @@ Supervisor mode is stricter than the manual `execute.ts` loop:
 - Runtime-style QA packets must declare `environment_dependencies`
 - Active dispatch records in `factory/supervisor/state.json` are the source of truth for legal packet starts
 - The planner is upstream only; it does not execute or approve work
+- A single `execute_feature` action may authorize packet work across multiple independent features
 
 ---
 

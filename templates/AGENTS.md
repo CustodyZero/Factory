@@ -284,6 +284,7 @@ In `execute_feature`:
 - `ready_packets` describe the human-readable assignment details
 - agents must run the returned `start_command` before implementation
 - the outer orchestrator must not spawn any packet missing from `dispatches`
+- one `execute_feature` action may include packets from multiple independent features
 
 ### State Files
 
@@ -303,7 +304,7 @@ In `execute_feature`:
 | SI-4 | Audit log is append-only |
 | SI-5 | Reuses resolveExecuteAction — does not bypass factory contracts |
 | SI-6 | Pending escalations block feature progression |
-| SI-7 | One action per tick |
+| SI-7 | One action per tick (an action may authorize work across multiple features) |
 
 ---
 

@@ -107,6 +107,7 @@ export interface SupervisorState {
 export interface SupervisorAction {
   readonly kind: SupervisorActionKind;
   readonly feature_id: string | null;
+  readonly feature_ids: ReadonlyArray<string>;
   readonly ready_packets: ReadonlyArray<PacketAssignment>;
   readonly dispatches: ReadonlyArray<DispatchRecord>;
   readonly escalation: Escalation | null;
@@ -151,6 +152,7 @@ function makeAction(
   return {
     kind,
     feature_id,
+    feature_ids: feature_id === null ? [] : [feature_id],
     ready_packets: [],
     dispatches: [],
     escalation: null,
@@ -324,6 +326,13 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
   // Priority 3: Process each tracked feature (SI-5: via resolveExecuteAction)
   // ---------------------------------------------------------------------------
 
+  const aggregatedReadyPackets: PacketAssignment[] = [];
+  const aggregatedDispatches: DispatchRecord[] = [];
+  const aggregatedFeatureIds: string[] = [];
+  const aggregatedFeaturePatches: Record<string, FeatureTracking> = {};
+  const aggregatedAuditEntries: AuditEntry[] = [];
+  let hasInProgressOnlyFeature = false;
+
   for (const feature of targetFeatures) {
     const tracking = supervisorState.features[feature.id];
     if (tracking === undefined) continue; // Should have been handled by P1
@@ -373,32 +382,26 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
             ],
             tick_count: tracking.tick_count + 1,
           };
-          return makeAction('execute_feature', feature.id,
-            `Feature '${feature.id}': ${String(executeAction.ready_packets.length)} packet(s) ready to spawn.`,
-            {
-              ready_packets: executeAction.ready_packets,
-              dispatches,
-              state_patch: {
-                updated_at: nowIso,
-                features: { ...supervisorState.features, [feature.id]: updatedTracking },
-                audit_log: [
-                  ...supervisorState.audit_log,
-                  ...executeAction.ready_packets.map((rp) => ({
-                    timestamp: nowIso,
-                    action_kind: 'execute_feature' as const,
-                    feature_id: feature.id,
-                    packet_id: rp.packet_id,
-                    message: `Spawning ${rp.persona} agent for packet '${rp.packet_id}' (${rp.model}).`,
-                  })),
-                ],
-              },
-            },
+          aggregatedReadyPackets.push(...executeAction.ready_packets);
+          aggregatedDispatches.push(...dispatches);
+          aggregatedFeatureIds.push(feature.id);
+          aggregatedFeaturePatches[feature.id] = updatedTracking;
+          aggregatedAuditEntries.push(
+            ...executeAction.ready_packets.map((rp) => ({
+              timestamp: nowIso,
+              action_kind: 'execute_feature' as const,
+              feature_id: feature.id,
+              packet_id: rp.packet_id,
+              message: `Spawning ${rp.persona} agent for packet '${rp.packet_id}' (${rp.model}).`,
+            })),
           );
+          continue;
         }
         // Only in-progress packets — waiting
-        return makeAction('idle', feature.id,
-          `Feature '${feature.id}': ${String(executeAction.in_progress_packets.length)} packet(s) in progress. Waiting for completion.`,
-        );
+        if (executeAction.in_progress_packets.length > 0) {
+          hasInProgressOnlyFeature = true;
+        }
+        continue;
       }
 
       case 'awaiting_acceptance': {
@@ -514,7 +517,31 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
     }
   }
 
+  if (aggregatedReadyPackets.length > 0) {
+    const featureSummary = aggregatedFeatureIds.length === 1
+      ? `Feature '${aggregatedFeatureIds[0]}': ${String(aggregatedReadyPackets.length)} packet(s) ready to spawn.`
+      : `${String(aggregatedReadyPackets.length)} packet(s) ready to spawn across ${String(aggregatedFeatureIds.length)} feature(s): ${aggregatedFeatureIds.join(', ')}.`;
+    const primaryFeatureId = aggregatedFeatureIds.length === 1 ? aggregatedFeatureIds[0]! : null;
+    return makeAction('execute_feature', primaryFeatureId, featureSummary, {
+      feature_ids: aggregatedFeatureIds,
+      ready_packets: aggregatedReadyPackets,
+      dispatches: aggregatedDispatches,
+      state_patch: {
+        updated_at: nowIso,
+        features: { ...supervisorState.features, ...aggregatedFeaturePatches },
+        audit_log: [
+          ...supervisorState.audit_log,
+          ...aggregatedAuditEntries,
+        ],
+      },
+    });
+  }
+
   // All features are either complete, not approved, or waiting
+  if (hasInProgressOnlyFeature) {
+    return makeAction('idle', null, 'No new packets are ready. Active features are waiting on in-progress work or external action.');
+  }
+
   return makeAction('idle', null, 'All tracked features are complete or awaiting external action.');
 }
 
@@ -533,6 +560,8 @@ function renderAction(action: SupervisorAction): string {
 
   if (action.feature_id !== null) {
     lines.push(`  Feature: ${action.feature_id}`);
+  } else if (action.feature_ids.length > 0) {
+    lines.push(`  Features: ${action.feature_ids.join(', ')}`);
   }
   lines.push(`  Action:  ${action.kind}`);
   lines.push('');

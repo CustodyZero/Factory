@@ -615,6 +615,7 @@ through developer and QA agents:
 
 The key rule is that the outer orchestrator must never invent its own packet assignments.
 It should only spawn agents from the current tick’s `dispatches`.
+A single `execute_feature` action may contain dispatches for multiple independent features.
 
 ### End-to-End Planner + Supervisor Flow
 
@@ -630,7 +631,7 @@ This is the full factory-native flow with planning and execution separated:
 4. Human reviews the planned feature and packet set
 5. Human sets the feature status to `approved`
 6. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
-7. Supervisor dispatches only approved packet work
+7. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
 8. Developer and reviewer agents execute packets exactly as assigned
 9. Human handles architectural acceptance when escalated
 10. Delivery occurs when the approved feature completes and the intent can be considered delivered
