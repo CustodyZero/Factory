@@ -7,6 +7,7 @@
  *   - packet.kind (defaults to "dev")
  *   - packet.acceptance_criteria (migration placeholder)
  *   - feature.acceptance_criteria (migration placeholder)
+ *   - intents/ directory for planner-native flow
  *
  * Safe to run multiple times. Reports what it changed.
  *
@@ -15,7 +16,7 @@
  *   npx tsx tools/migrate.ts --dry    # preview changes without writing
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, resolveArtifactRoot } from './config.js';
 
@@ -84,6 +85,18 @@ function migrateFeatures(): void {
   }
 }
 
+function ensurePlannerArtifacts(): void {
+  const dir = join(ARTIFACT_ROOT, 'intents');
+  if (existsSync(dir)) {
+    return;
+  }
+
+  changes.push({ file: 'intents/', field: 'directory', value: 'created' });
+  if (!isDryRun) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -96,6 +109,7 @@ console.log('');
 
 migratePackets();
 migrateFeatures();
+ensurePlannerArtifacts();
 
 if (changes.length === 0) {
   console.log('  No migration needed — all artifacts are up to date.');
@@ -112,4 +126,6 @@ console.log('');
 if (!isDryRun && changes.length > 0) {
   console.log('  Migration complete. Run npx tsx tools/validate.ts to verify.');
   console.log('  Replace [MIGRATION] placeholders with real acceptance criteria.');
+  console.log('  Planner-native flow is opt-in: existing features can continue without intent_id.');
+  console.log('  New work can start from intents/<intent-id>.json and npx tsx tools/plan.ts <intent-id>.');
 }

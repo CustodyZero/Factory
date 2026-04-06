@@ -99,6 +99,7 @@ function makeInput(overrides: Partial<SuperviseInput> = {}): SuperviseInput {
     completionIds: overrides.completionIds ?? new Set(),
     acceptanceIds: overrides.acceptanceIds ?? new Set(),
     personas: overrides.personas ?? {
+      planner: { description: 'Planner', instructions: [] },
       developer: { description: 'Dev', instructions: [] },
       reviewer: { description: 'QA', instructions: [] },
     },

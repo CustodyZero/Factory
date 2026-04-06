@@ -26,11 +26,13 @@ The setup script:
 
 After setup, the normal first-run sequence for an agent-driven project is:
 
-1. Create feature and packet JSON artifacts under `factory/`
-2. Mark the feature `approved`
-3. Run `npx tsx .factory/tools/supervise.ts --init`
-4. Run `npx tsx .factory/tools/supervise.ts --json`
-5. Spawn only the agents returned in `dispatches`
+1. Create an intent/spec artifact under `factory/intents/`
+2. Run `npx tsx .factory/tools/plan.ts <intent-id>`
+3. Let the planner write one planned feature plus dev/qa packet pairs
+4. Human reviews the planned feature and marks it `approved`
+5. Run `npx tsx .factory/tools/supervise.ts --init`
+6. Run `npx tsx .factory/tools/supervise.ts --json`
+7. Spawn only the agents returned in `dispatches`
 
 ### Directory Layout
 
@@ -39,6 +41,7 @@ After setup, your project will have:
 ```
 .factory/                # Tooling submodule (hidden)
 factory/                 # Artifacts (visible, one directory)
+├── intents/
 ├── features/
 ├── packets/
 ├── completions/
@@ -89,6 +92,23 @@ Edit the template at your project root:
   "completed_by_default": {
     "kind": "agent",
     "id": "claude"
+  },
+  "personas": {
+    "planner": {
+      "description": "Decomposes intent into feature and packet artifacts",
+      "instructions": [],
+      "model": "opus"
+    },
+    "developer": {
+      "description": "Implements the change",
+      "instructions": [],
+      "model": "opus"
+    },
+    "reviewer": {
+      "description": "Verifies acceptance criteria are met",
+      "instructions": [],
+      "model": "sonnet"
+    }
   }
 }
 ```
@@ -106,6 +126,7 @@ Edit the template at your project root:
 | `validation.command` | string | Shell command to run factory validation |
 | `infrastructure_patterns` | string[] | File paths/prefixes that are not "implementation work" |
 | `completed_by_default` | identity | Default identity written into completion records |
+| `personas` | object | Planner, developer, and reviewer persona defaults |
 
 ### Infrastructure patterns
 
@@ -156,25 +177,32 @@ subdirectory.
 
 ---
 
-## End-to-End Supervisor Flow
+## End-to-End Planner + Supervisor Flow
 
 For automated orchestration with an external agent runner:
 
-1. Human authors `factory/features/<feature-id>.json`
-2. Human authors matching dev/QA packet pairs in `factory/packets/`
-3. Human sets the feature to `approved`
-4. Supervisor runs `npx tsx .factory/tools/supervise.ts --init` once
-5. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
-6. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
-7. Each spawned agent runs `npx tsx .factory/tools/start.ts <packet-id>` using the returned `start_command`
-8. The agent performs only that packet’s scope, then runs `complete.ts`
-9. QA agents use a distinct identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
-10. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
+1. Human authors `factory/intents/<intent-id>.json`
+2. Planner runs `npx tsx .factory/tools/plan.ts <intent-id> --json`
+3. If the action is `plan_feature`, the planner writes:
+   - one `factory/features/<feature-id>.json` artifact with `status: "planned"`
+   - matching dev/qa packet pairs in `factory/packets/`
+   - packet dependencies, change classes, and acceptance criteria
+   - `feature.intent_id` and `intent.feature_id` linkage
+4. Human reviews the planned feature and marks it `approved`
+5. Supervisor runs `npx tsx .factory/tools/supervise.ts --init` once
+6. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
+7. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
+8. Each spawned developer or reviewer agent runs the returned `start_command`
+9. The agent performs only that packet’s scope, then runs `complete.ts`
+10. QA agents use a distinct identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
+11. Human handles any explicit architectural acceptance with `accept.ts`
+12. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
 
 Supervisor mode is stricter than the manual `execute.ts` loop:
 - Feature packets cannot be started unless they were dispatched by `supervise.ts`
 - Runtime-style QA packets must declare `environment_dependencies`
 - Active dispatch records in `factory/supervisor/state.json` are the source of truth for legal packet starts
+- The planner is upstream only; it does not execute or approve work
 
 ---
 
@@ -226,3 +254,14 @@ Add to your project's `.gitignore`:
 
 The setup script does not modify your `.gitignore` — add these entries
 manually.
+
+---
+
+## Migration Guidance
+
+Planner-native flow is backward-compatible with existing downstream repos.
+
+- Existing features and packets remain valid without `intent_id`
+- Existing approved features can continue through `execute.ts` or `supervise.ts` unchanged
+- `npx tsx .factory/tools/migrate.ts` now ensures `factory/intents/` exists for new planner-driven work
+- New work should start from `factory/intents/<intent-id>.json`, then flow through `plan.ts` before approval and execution

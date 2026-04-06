@@ -334,6 +334,7 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U21: persona instructions from config are included in assignment', () => {
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'opus' as const },
       reviewer: { description: 'qa', instructions: ['Check compliance'], model: 'sonnet' as const },
     };
@@ -355,6 +356,7 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U22: packet-level instructions merge with persona instructions', () => {
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Always lint'], model: 'opus' as const },
       reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
     };
@@ -372,6 +374,7 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U23: QA packet gets reviewer persona instructions', () => {
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Dev instruction'], model: 'opus' as const },
       reviewer: { description: 'qa', instructions: ['Review instruction'], model: 'sonnet' as const },
     };
@@ -399,6 +402,7 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U25: model resolves from persona config', () => {
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
       reviewer: { description: 'qa', instructions: [], model: 'haiku' as const },
     };
@@ -414,6 +418,7 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U26: packet-level model overrides persona model', () => {
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
       reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
     };
@@ -438,6 +443,7 @@ describe('resolveExecuteAction', () => {
 
     // Persona model set, no packet model → persona model
     const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'haiku' as const },
       reviewer: { description: 'qa', instructions: [] },
     };

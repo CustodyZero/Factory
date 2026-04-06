@@ -23,6 +23,10 @@ Every change must declare its intent and scope before implementation
 begins. Acceptance criteria are determined by change class, not by
 the implementer.
 
+The native factory flow is:
+
+`intent/spec -> planner -> feature + dev/qa packets -> human approval -> supervisor -> developer/reviewer agents -> acceptance -> delivery`
+
 ---
 
 ## Quick Start
@@ -76,17 +80,48 @@ Edit `factory.config.json` at the project root:
   "completed_by_default": {
     "kind": "agent",
     "id": "claude"
+  },
+  "personas": {
+    "planner": {
+      "description": "Decomposes intent into feature and packet artifacts",
+      "instructions": [],
+      "model": "opus"
+    },
+    "developer": {
+      "description": "Implements the change",
+      "instructions": [],
+      "model": "opus"
+    },
+    "reviewer": {
+      "description": "Verifies acceptance criteria are met",
+      "instructions": [],
+      "model": "sonnet"
+    }
   }
 }
 ```
 
 ---
 
+## Planner-Native Flow
+
+Factory now has a first-class planning layer. The preferred flow is:
+
+1. Human creates an intent/spec artifact in `intents/`
+2. Planner agent runs `tools/plan.ts <intent-id>`
+3. Planner writes one planned feature plus dev/qa packet pairs
+4. Human reviews and approves the feature
+5. Supervisor executes only approved packet work
+
+The planner and supervisor are intentionally separate:
+- planner decomposes work into artifacts
+- supervisor executes approved artifacts deterministically
+
 ## Your First Change
 
-Factory has no `create` command — features and packets are JSON files you
-write by hand (or have an AI agent write). This walkthrough shows the full
-cycle for a single change using a standalone packet.
+Factory has no `create` command — intent, feature, and packet artifacts are JSON
+files you write by hand (or have an AI agent write). The planner-native flow above
+is the preferred path. The walkthrough below shows the lower-level direct packet flow.
 
 ### 1. Create a dev packet
 
@@ -207,17 +242,72 @@ packets are ready, which persona to use, and what to do next:
 npx tsx .factory/tools/execute.ts health-monitoring
 ```
 
+### Using intents for planner-native work
+
+For planner-driven work, start with an intent artifact:
+
+```json
+// factory/intents/customer-dashboard.json
+{
+  "id": "customer-dashboard",
+  "title": "Customer dashboard",
+  "spec": "Provide a dashboard where users can view account activity and billing status.",
+  "constraints": [
+    "Preserve the existing public API",
+    "Split work into auditable dev/qa packet pairs"
+  ],
+  "status": "proposed",
+  "feature_id": null,
+  "created_by": { "kind": "human", "id": "alice" },
+  "created_at": "2025-01-15T09:00:00Z"
+}
+```
+
+Then run the planner handoff resolver:
+
+```sh
+npx tsx .factory/tools/plan.ts customer-dashboard
+```
+
+`plan.ts` returns the planner persona, model, and instructions for generating:
+- one planned feature artifact
+- dev/qa packet pairs
+- dependencies and change classes
+- explicit acceptance criteria
+
 ---
 
 ## Artifact Types
 
-The factory has six artifact types. Each is a JSON file validated against
+The factory has seven artifact types. Each is a JSON file validated against
 a schema in `.factory/schemas/` (or `schemas/` when working in the factory
 repo itself).
 
 All artifact paths below are relative to the artifact root. In submodule
 installs this is `factory/` (e.g., `factory/packets/my-packet.json`). When
 factory is the project, this is the repo root.
+
+### Intent
+
+A high-level spec or problem statement that the planner decomposes into a feature
+and dev/qa packet pairs.
+
+```
+intents/<intent-id>.json
+```
+
+Required fields:
+- `id` — kebab-case identifier (must match filename)
+- `title` — one-line summary of the requested outcome
+- `spec` — planner input describing the desired system behavior or change
+- `status` — `proposed`, `planned`, `superseded`, or `delivered`
+- `created_by` — who created the intent
+- `created_at` — ISO 8601 timestamp
+
+Optional fields:
+- `constraints` — planner constraints or non-goals
+- `feature_id` — generated feature linked to this intent
+- `planned_at` — when planning completed
 
 ### Packet
 
@@ -450,6 +540,16 @@ npx tsx .factory/tools/execute.ts <feature-id> --json
 
 Stateless action resolver for feature-level execution.
 
+### Plan
+
+```sh
+npx tsx .factory/tools/plan.ts <intent-id>
+npx tsx .factory/tools/plan.ts <intent-id> --json
+```
+
+Planner handoff resolver. Reads an intent/spec artifact and tells the planner
+whether it needs to decompose work, wait for approval, or hand off to the supervisor.
+
 ### Supervise
 
 ```sh
@@ -516,6 +616,25 @@ through developer and QA agents:
 The key rule is that the outer orchestrator must never invent its own packet assignments.
 It should only spawn agents from the current tick’s `dispatches`.
 
+### End-to-End Planner + Supervisor Flow
+
+This is the full factory-native flow with planning and execution separated:
+
+1. Human writes `intents/<intent-id>.json`
+2. Planner agent runs `npx tsx .factory/tools/plan.ts <intent-id> --json`
+3. If the action is `plan_feature`, the planner writes:
+   - one `features/<feature-id>.json` artifact with `status: "planned"`
+   - dev/qa packet pairs in `packets/`
+   - packet dependencies, change classes, and acceptance criteria
+   - `feature.intent_id` and `intent.feature_id` linkage
+4. Human reviews the planned feature and packet set
+5. Human sets the feature status to `approved`
+6. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
+7. Supervisor dispatches only approved packet work
+8. Developer and reviewer agents execute packets exactly as assigned
+9. Human handles architectural acceptance when escalated
+10. Delivery occurs when the approved feature completes and the intent can be considered delivered
+
 ---
 
 ## Directory Structure
@@ -533,7 +652,9 @@ When installed in a host project as a git submodule:
 │   │   ├── config.ts        # Configuration loader
 │   │   ├── validate.ts      # Schema + integrity validation
 │   │   ├── status.ts        # Status & next action
+│   │   ├── plan.ts          # Planner handoff resolver
 │   │   ├── execute.ts       # Feature execution resolver
+│   │   ├── start.ts         # Packet claim command
 │   │   ├── complete.ts      # Completion record generator
 │   │   ├── completion-gate.ts # Pre-commit FI-7 enforcement
 │   │   ├── derive.ts        # State derivation
@@ -546,7 +667,8 @@ When installed in a host project as a git submodule:
 │   └── docs/
 │       └── integration.md   # Detailed integration guide
 ├── factory/                 # Factory artifacts (visible, one directory)
-│   ├── features/            # Feature-level intents
+│   ├── intents/             # Planner input specs
+│   ├── features/            # Planned execution units
 │   ├── packets/             # Work unit declarations
 │   ├── completions/         # Implementation evidence
 │   ├── acceptances/         # Human approval records

@@ -326,6 +326,63 @@ function validateFeatureSchema(filepath: string, data: unknown): ValidationResul
     e("'approved_at' must be a valid ISO 8601 timestamp or null");
   }
 
+  if (data['intent_id'] != null && data['intent_id'] !== null && typeof data['intent_id'] !== 'string') {
+    e("'intent_id' must be a string or null");
+  }
+
+  if (data['planned_by'] != null && data['planned_by'] !== null) {
+    const plannedByCheck = isValidIdentity(data['planned_by'], VALID_IDENTITY_KINDS as unknown as string[]);
+    if (!plannedByCheck.valid) e(`'planned_by': ${plannedByCheck.reason}`);
+  }
+
+  if (data['planned_at'] != null && data['planned_at'] !== null && !isValidISO8601(data['planned_at'])) {
+    e("'planned_at' must be a valid ISO 8601 timestamp or null");
+  }
+
+  return results;
+}
+
+function validateIntentSchema(filepath: string, data: unknown): ValidationResult[] {
+  const results: ValidationResult[] = [];
+  const e = (msg: string) => results.push({ file: filepath, severity: 'error', error_type: 'schema', message: msg });
+
+  if (!isObject(data)) { e('intent must be a JSON object'); return results; }
+
+  if (typeof data['id'] !== 'string' || !KEBAB_CASE_RE.test(data['id'])) {
+    e("'id' must be a kebab-case string");
+  }
+  const expectedFilename = `${data['id']}.json`;
+  if (basename(filepath) !== expectedFilename && typeof data['id'] === 'string') {
+    e(`filename must match id: expected '${expectedFilename}', got '${basename(filepath)}'`);
+  }
+
+  if (typeof data['title'] !== 'string' || data['title'].length === 0) e("'title' is required and must be non-empty");
+  if (typeof data['spec'] !== 'string' || data['spec'].length === 0) e("'spec' is required and must be non-empty");
+
+  const validIntentStatuses = ['proposed', 'planned', 'superseded', 'delivered'];
+  if (typeof data['status'] !== 'string' || !validIntentStatuses.includes(data['status'])) {
+    e(`'status' must be one of: ${validIntentStatuses.join(', ')}`);
+  }
+
+  if (data['constraints'] != null && !isStringArray(data['constraints'])) {
+    e("'constraints' must be an array of strings");
+  }
+
+  if (data['feature_id'] != null && data['feature_id'] !== null && typeof data['feature_id'] !== 'string') {
+    e("'feature_id' must be a string or null");
+  }
+
+  const createdByCheck = isValidIdentity(data['created_by'], VALID_IDENTITY_KINDS as unknown as string[]);
+  if (!createdByCheck.valid) e(`'created_by': ${createdByCheck.reason}`);
+
+  if (!isValidISO8601(data['created_at'])) {
+    e("'created_at' must be a valid ISO 8601 timestamp");
+  }
+
+  if (data['planned_at'] != null && data['planned_at'] !== null && !isValidISO8601(data['planned_at'])) {
+    e("'planned_at' must be a valid ISO 8601 timestamp or null");
+  }
+
   return results;
 }
 
@@ -345,6 +402,7 @@ interface ArtifactIndex {
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
   features: Array<{ id: string; status: string; packets: string[] }>;
+  intents: Array<{ id: string; status: string; feature_id: string | null }>;
 }
 
 function buildIndex(
@@ -354,6 +412,7 @@ function buildIndex(
   rejections: Array<{ data: unknown }>,
   evidence: Array<{ data: unknown }>,
   features: Array<{ data: unknown }>,
+  intents: Array<{ data: unknown }>,
 ): ArtifactIndex {
   const index: ArtifactIndex = {
     packetIds: new Set(),
@@ -367,6 +426,7 @@ function buildIndex(
     acceptances: [],
     rejections: [],
     features: [],
+    intents: [],
   };
 
   for (const { data } of packets) {
@@ -443,6 +503,16 @@ function buildIndex(
       const featurePackets = isStringArray(data['packets']) ? data['packets'] : [];
       const featureStatus = typeof data['status'] === 'string' ? data['status'] : '';
       index.features.push({ id: data['id'], status: featureStatus, packets: featurePackets });
+    }
+  }
+
+  for (const { data } of intents) {
+    if (isObject(data) && typeof data['id'] === 'string') {
+      index.intents.push({
+        id: data['id'],
+        status: typeof data['status'] === 'string' ? data['status'] : '',
+        feature_id: typeof data['feature_id'] === 'string' ? data['feature_id'] : null,
+      });
     }
   }
 
@@ -577,6 +647,50 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
         severity: 'error',
         error_type: 'referential',
         message: `Packet '${p.id}' declares feature_id '${p.feature_id}' but the feature does not list this packet`,
+      });
+    }
+  }
+
+  // Intent linkage integrity
+  for (const intent of index.intents) {
+    if (intent.feature_id === null) {
+      if (intent.status === 'planned' || intent.status === 'delivered') {
+        results.push({
+          file: `intents/${intent.id}.json`,
+          severity: 'error',
+          error_type: 'referential',
+          message: `Intent '${intent.id}' is '${intent.status}' but has no linked feature_id`,
+        });
+      }
+      continue;
+    }
+
+    const feature = index.features.find((candidate) => candidate.id === intent.feature_id);
+    if (feature === undefined) {
+      results.push({
+        file: `intents/${intent.id}.json`,
+        severity: 'error',
+        error_type: 'referential',
+        message: `Intent '${intent.id}' references feature '${intent.feature_id}' which does not exist`,
+      });
+      continue;
+    }
+
+    if (intent.status === 'proposed') {
+      results.push({
+        file: `intents/${intent.id}.json`,
+        severity: 'error',
+        error_type: 'invariant',
+        message: `Intent '${intent.id}' is still 'proposed' but already links feature '${intent.feature_id}'`,
+      });
+    }
+
+    if (intent.status === 'delivered' && feature.status !== 'completed' && feature.status !== 'delivered') {
+      results.push({
+        file: `intents/${intent.id}.json`,
+        severity: 'error',
+        error_type: 'invariant',
+        message: `Intent '${intent.id}' is 'delivered' but feature '${feature.id}' is '${feature.status}'`,
       });
     }
   }
@@ -885,6 +999,7 @@ function main(): void {
   const rejections = readJsonFiles('rejections');
   const evidence = readJsonFiles('evidence');
   const features = readJsonFiles('features');
+  const intents = readJsonFiles('intents');
 
   // Check for parse failures
   for (const collection of [
@@ -894,6 +1009,7 @@ function main(): void {
     { name: 'rejections', items: rejections },
     { name: 'evidence', items: evidence },
     { name: 'features', items: features },
+    { name: 'intents', items: intents },
   ]) {
     for (const item of collection.items) {
       if (item.data === null) {
@@ -926,9 +1042,12 @@ function main(): void {
   for (const f of features) {
     if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data));
   }
+  for (const i of intents) {
+    if (i.data != null) allResults.push(...validateIntentSchema(i.filepath, i.data));
+  }
 
   // Referential integrity + invariants (Layers 2-5)
-  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features);
+  const index = buildIndex(packets, completions, acceptances, rejections, evidence, features, intents);
   allResults.push(...validateIntegrity(index));
 
   // FI-1: Check for duplicate completions
@@ -1066,7 +1185,7 @@ function main(): void {
 
   if (allResults.length === 0) {
     console.log('Factory validation: PASS');
-    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
+    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${intents.length} intents`);
     process.exit(0);
   }
 
@@ -1076,7 +1195,7 @@ function main(): void {
     console.log(`Factory validation: PASS with warnings (${warnings.length} warning(s))`);
   }
 
-  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features`);
+  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${intents.length} intents`);
   console.log('');
 
   for (const r of allResults) {

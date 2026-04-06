@@ -83,7 +83,7 @@ try {
 
     Write-Host ''
     Write-Host 'Creating artifact directories...'
-    foreach ($subdir in @('features', 'packets', 'completions', 'acceptances', 'rejections', 'evidence', 'supervisor')) {
+    foreach ($subdir in @('intents', 'features', 'packets', 'completions', 'acceptances', 'rejections', 'evidence', 'supervisor')) {
         $path = "$ArtifactDir/$subdir"
         if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
         Write-Host "  MKDIR $path/"

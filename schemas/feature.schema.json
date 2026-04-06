@@ -65,6 +65,30 @@
       "type": ["string", "null"],
       "format": "date-time",
       "description": "ISO 8601 timestamp when the plan was approved. Null if not yet approved."
+    },
+    "intent_id": {
+      "type": ["string", "null"],
+      "description": "ID of the source intent/spec artifact, if this feature was planner-generated."
+    },
+    "planned_by": {
+      "type": ["object", "null"],
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["human", "agent", "cli", "ui"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "planned_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the planner created this feature."
     }
   },
   "additionalProperties": false

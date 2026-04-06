@@ -30,6 +30,11 @@
     "id": "claude"
   },
   "personas": {
+    "planner": {
+      "description": "Decomposes intent into feature and packet artifacts",
+      "instructions": [],
+      "model": "opus"
+    },
     "developer": {
       "description": "Implements the change",
       "instructions": [],

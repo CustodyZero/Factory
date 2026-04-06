@@ -61,7 +61,7 @@ without a matching completion record.
 ## 2. Factory Lifecycle
 
 ```
-Feature (intent) → Plan (dev/qa packet pairs) → Human Approval → Execution → Delivery
+Intent/Spec → Planner → Feature + Dev/QA Packets → Human Approval → Supervisor → Execution → Delivery
 ```
 
 ### Dev/QA Packet Pairs
@@ -77,11 +77,17 @@ the factory will not assign a QA packet until its dev packet is complete.
 
 ### Persona Assignment
 
+The planner sits above execution:
+- Intent artifacts → `planner`
+- Dev packets → `developer`
+- QA packets → `reviewer`
+
 Execute.ts returns each ready packet with a **persona** and a **model**:
 - Dev packets → `developer` persona
 - QA packets → `reviewer` persona
 
-The planner spawns the agent with the persona and model the factory specifies.
+The outer orchestrator or human spawns the planner, developer, or reviewer agent
+using the persona and model the factory specifies.
 **FI-7**: A QA packet must not be completed by the same identity that completed its dev counterpart.
 
 ### Model Selection
@@ -114,7 +120,8 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 
 | Directory | Purpose |
 |---|---|
-| `factory/features/` | Feature-level intents (multi-packet) |
+| `factory/intents/` | High-level specs for planner decomposition |
+| `factory/features/` | Planned execution units (multi-packet) |
 | `factory/packets/` | Individual work units (dev and qa) |
 | `factory/completions/` | Verification evidence (build/lint/test results) |
 | `factory/acceptances/` | Human approval records |
@@ -125,6 +132,7 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | Command | When to Use |
 |---|---|
 | `npx tsx .factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
+| `npx tsx .factory/tools/plan.ts <intent-id>` | Resolve planner work for an intent/spec and hand off to the planner persona |
 | `npx tsx .factory/tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
 | `npx tsx .factory/tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
 | `npx tsx .factory/tools/complete.ts <packet-id>` | After implementation, before committing |
@@ -184,8 +192,9 @@ If you are starting a new session or have lost context:
 
 1. Run `npx tsx .factory/tools/status.ts`
 2. Read the output — it tells you exactly where things stand
-3. If a feature is active, run `npx tsx .factory/tools/execute.ts <feature-id>`
-4. The output tells you what to do next **and which persona to use**
+3. If an intent is proposed, run `npx tsx .factory/tools/plan.ts <intent-id>`
+4. If a feature is active, run `npx tsx .factory/tools/execute.ts <feature-id>`
+5. The output tells you what to do next **and which persona to use**
 
 Do not rely on memory. Do not guess. Read the factory state.
 
@@ -212,7 +221,36 @@ The natural flow for each story: dev packet (developer) → QA packet (reviewer)
 
 ---
 
-## 6. Supervisor Protocol
+## 6. Planner Protocol
+
+The factory includes a distinct **planner actor** for decomposition. The planner is
+responsible for turning an intent/spec artifact into a planned feature and dev/qa packet pairs.
+
+The planner does not execute work. The supervisor does not plan work.
+
+### Planner Flow
+
+1. Human creates `factory/intents/<intent-id>.json`
+2. Run `npx tsx .factory/tools/plan.ts <intent-id>`
+3. If the action is `plan_feature`, spawn a planner agent using the returned planner assignment
+4. Planner writes:
+   - one feature artifact with `status: "planned"`
+   - dev/qa packet pairs
+   - dependencies
+   - change classes
+   - acceptance criteria
+5. Human reviews the generated plan and marks the feature `approved`
+6. Supervisor takes over only after approval
+
+Planner invariants:
+- Do not approve or execute
+- Do not collapse dev and QA into one packet
+- Do not bypass human approval
+- Preserve the existing completion/acceptance model
+
+---
+
+## 7. Supervisor Protocol
 
 The factory includes a **supervisor actor** for automated orchestration. The supervisor
 is a stateless tick function that reads factory state and returns the next action.
@@ -227,8 +265,7 @@ When supervisor mode is active, only packets returned in `ready_packets` may be 
 ### How It Works
 
 ```
-1. Human creates feature + packets
-2. Human approves feature
+1. Human approves a planned feature (typically produced from an intent by the planner)
 3. Run: npx tsx .factory/tools/supervise.ts --init   (first time only)
 4. Run: npx tsx .factory/tools/supervise.ts --json
 5. Perform the returned action
@@ -270,14 +307,14 @@ In `execute_feature`:
 
 ---
 
-## 7. Configuration
+## 8. Configuration
 
 The factory reads its configuration from `factory.config.json` in the project root.
 This file defines:
 - Verification commands (build, lint, test)
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
-- **Persona definitions** (instructions for developer and reviewer agents)
+- **Persona definitions** (instructions for planner, developer, and reviewer agents)
 
 ### Personas and Instructions
 
@@ -288,6 +325,11 @@ when execute.ts assigns them packets.
 ```json
 {
   "personas": {
+    "planner": {
+      "description": "Decomposes the intent into a planned feature and packet set",
+      "instructions": ["Produce one feature artifact plus dev/qa packet pairs"],
+      "model": "opus"
+    },
     "developer": {
       "description": "Implements the change",
       "instructions": ["Use the cpp-guidelines MCP server for all C++ code"],
@@ -310,7 +352,7 @@ constraints defined by the project owner.
 
 ---
 
-## 8. Migration
+## 9. Migration
 
 When upgrading an existing factory installation, run:
 
@@ -323,9 +365,15 @@ This adds required fields (`kind`, `acceptance_criteria`) to pre-existing packet
 Migration placeholders (`[MIGRATION]`) must be replaced with real acceptance criteria
 before the next execution cycle.
 
+Planner migration guidance:
+- Existing features and packets remain valid without `intent_id`
+- `migrate.ts` now ensures the `factory/intents/` directory exists
+- Downstream repos can adopt planner-native flow incrementally by creating new work under `factory/intents/`
+- Existing approved features can continue through execution unchanged
+
 ---
 
-## 9. Where to Find Things
+## 10. Where to Find Things
 
 - **Factory docs:** `.factory/README.md`
 - **Integration guide:** `.factory/docs/integration.md`

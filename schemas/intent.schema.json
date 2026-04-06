@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "intent.schema.json",
+  "title": "Factory Intent",
+  "description": "A high-level spec or intent that a planner decomposes into a feature and dev/qa packet pairs.",
+  "type": "object",
+  "required": ["id", "title", "spec", "status", "created_by", "created_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case unique identifier. Must match the filename (without .json)."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable summary of the requested outcome."
+    },
+    "spec": {
+      "type": "string",
+      "minLength": 1,
+      "description": "High-level problem statement or desired outcome for the planner to decompose."
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "Optional constraints or requirements the planner must honor."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "planned", "superseded", "delivered"],
+      "description": "Intent lifecycle status. Planning produces a feature; execution remains on the feature and packets."
+    },
+    "feature_id": {
+      "type": ["string", "null"],
+      "description": "Linked feature artifact generated from this intent."
+    },
+    "created_by": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["human", "agent", "cli", "ui"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "planned_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When planning completed and the linked feature/packets were created."
+    }
+  },
+  "additionalProperties": false
+}

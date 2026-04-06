@@ -197,4 +197,27 @@ describe('deriveFactoryStatus', () => {
     expect(status.summary.total).toBe(2);
     expect(status.feature_filter).toBeNull();
   });
+
+  it('FS-U15: proposed intent becomes next planning action when execution is clear', () => {
+    const status = deriveFactoryStatus({
+      packets: [],
+      completions: [],
+      acceptances: [],
+      intents: [{ id: 'customer-dashboard', title: 'Customer dashboard', status: 'proposed', feature_id: null }],
+      features: [],
+    });
+    expect(status.next_action.kind).toBe('plan_intent');
+    expect(status.next_action.command).toContain('customer-dashboard');
+  });
+
+  it('FS-U16: planned feature awaiting approval is surfaced before all_clear', () => {
+    const status = deriveFactoryStatus({
+      packets: [],
+      completions: [],
+      acceptances: [],
+      intents: [],
+      features: [{ id: 'customer-dashboard', intent: 'Dashboard', status: 'planned', packets: [], intent_id: 'customer-dashboard' }],
+    });
+    expect(status.next_action.kind).toBe('review_plan');
+  });
 });

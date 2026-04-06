@@ -37,6 +37,7 @@ const testConfig: FactoryConfig = {
   ],
   completed_by_default: { kind: 'agent', id: 'test' },
   personas: {
+    planner: { description: 'planner', instructions: [] },
     developer: { description: 'dev', instructions: [] },
     reviewer: { description: 'qa', instructions: [] },
   },

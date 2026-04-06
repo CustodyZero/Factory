@@ -41,7 +41,16 @@ export interface PacketSummary {
   readonly started_at: string | null;
 }
 
+export interface IntentSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly feature_id: string | null;
+}
+
 export type NextActionKind =
+  | 'plan_intent'
+  | 'review_plan'
   | 'complete_packet'
   | 'accept_packet'
   | 'resolve_dependency'
@@ -57,6 +66,8 @@ export interface NextAction {
 
 export interface FactoryStatus {
   readonly feature_filter: string | null;
+  readonly intents_pending_planning: ReadonlyArray<IntentSummary>;
+  readonly features_awaiting_approval: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null }>;
   readonly summary: {
     readonly total: number;
     readonly accepted: number;
@@ -125,6 +136,14 @@ export interface RawFeature {
   readonly intent: string;
   readonly status: string;
   readonly packets: ReadonlyArray<string>;
+  readonly intent_id?: string | null;
+}
+
+export interface RawIntent {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly feature_id?: string | null;
 }
 
 export interface StatusInput {
@@ -133,6 +152,7 @@ export interface StatusInput {
   readonly acceptances: ReadonlyArray<RawAcceptance>;
   readonly featureFilter?: string | undefined;
   readonly features?: ReadonlyArray<RawFeature> | undefined;
+  readonly intents?: ReadonlyArray<RawIntent> | undefined;
 }
 
 function verificationPasses(v: RawCompletion['verification']): boolean {
@@ -243,10 +263,28 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
     audit_pending: auditPending.length,
   };
 
-  const nextAction = deriveNextAction(incomplete, awaitingAcceptance, blocked);
+  const intentsPendingPlanning = (input.intents ?? [])
+    .filter((intent) => intent.status === 'proposed')
+    .map((intent) => ({
+      id: intent.id,
+      title: intent.title,
+      status: intent.status,
+      feature_id: typeof intent.feature_id === 'string' ? intent.feature_id : null,
+    }));
+
+  const featuresAwaitingApproval = (input.features ?? [])
+    .filter((feature) => feature.status === 'planned')
+    .map((feature) => ({
+      id: feature.id,
+      intent_id: typeof feature.intent_id === 'string' ? feature.intent_id : null,
+    }));
+
+  const nextAction = deriveNextAction(incomplete, awaitingAcceptance, blocked, featuresAwaitingApproval, intentsPendingPlanning);
 
   return {
     feature_filter: featureFilter,
+    intents_pending_planning: intentsPendingPlanning,
+    features_awaiting_approval: featuresAwaitingApproval,
     summary,
     incomplete,
     awaiting_acceptance: awaitingAcceptance,
@@ -260,6 +298,8 @@ function deriveNextAction(
   incomplete: ReadonlyArray<PacketSummary>,
   awaitingAcceptance: ReadonlyArray<PacketSummary>,
   blocked: ReadonlyArray<PacketSummary>,
+  featuresAwaitingApproval: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null }>,
+  intentsPendingPlanning: ReadonlyArray<IntentSummary>,
 ): NextAction {
   if (incomplete.length > 0) {
     const sorted = [...incomplete].sort((a, b) =>
@@ -292,6 +332,26 @@ function deriveNextAction(
       packet_id: first.id,
       message: `Packet '${first.id}' (${first.change_class}) is completed and requires human acceptance.`,
       command: null,
+    };
+  }
+
+  if (featuresAwaitingApproval.length > 0) {
+    const first = featuresAwaitingApproval[0]!;
+    return {
+      kind: 'review_plan',
+      packet_id: null,
+      message: `Feature '${first.id}' is planned and awaiting human approval before execution.`,
+      command: null,
+    };
+  }
+
+  if (intentsPendingPlanning.length > 0) {
+    const first = intentsPendingPlanning[0]!;
+    return {
+      kind: 'plan_intent',
+      packet_id: null,
+      message: `Intent '${first.id}' is proposed and ready for planner decomposition.`,
+      command: `npx tsx tools/plan.ts ${first.id}`,
     };
   }
 
@@ -346,6 +406,23 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
     lines.push('');
   }
 
+  if (status.features_awaiting_approval.length > 0) {
+    lines.push('  \u23f3 Planned features awaiting human approval:');
+    for (const feature of status.features_awaiting_approval) {
+      lines.push(`    - ${feature.id}${feature.intent_id !== null ? ` (intent: ${feature.intent_id})` : ''}`);
+    }
+    lines.push('');
+  }
+
+  if (status.intents_pending_planning.length > 0) {
+    lines.push('  \u270d Intent specs awaiting planner decomposition:');
+    for (const intent of status.intents_pending_planning) {
+      lines.push(`    - ${intent.id}`);
+      lines.push(`      "${intent.title}"`);
+    }
+    lines.push('');
+  }
+
   if (status.audit_pending.length > 0) {
     lines.push('  \ud83d\udccb Audit pending (accepted, review recommended):');
     for (const p of status.audit_pending) {
@@ -386,11 +463,12 @@ function main(): void {
   const completions = readJsonDir<RawCompletion>(artifactRoot, 'completions');
   const acceptances = readJsonDir<RawAcceptance>(artifactRoot, 'acceptances');
   const features = readJsonDir<RawFeature>(artifactRoot, 'features');
+  const intents = readJsonDir<RawIntent>(artifactRoot, 'intents');
 
   const featureIdx = process.argv.indexOf('--feature');
   const featureFilter = featureIdx !== -1 ? process.argv[featureIdx + 1] : undefined;
 
-  const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features });
+  const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features, intents });
 
   // Read supervisor state if present
   const supervisorStatePath = join(artifactRoot, 'supervisor', 'state.json');

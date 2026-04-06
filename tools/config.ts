@@ -25,6 +25,7 @@ export interface PersonaConfig {
 }
 
 export interface PersonasConfig {
+  readonly planner: PersonaConfig;
   readonly developer: PersonaConfig;
   readonly reviewer: PersonaConfig;
 }
@@ -97,11 +98,13 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
     const raw = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<FactoryConfig>;
     const defaultPersonas: PersonasConfig = {
+      planner: { description: 'Decomposes intent into feature and packet artifacts', instructions: [] },
       developer: { description: 'Implements the change', instructions: [] },
       reviewer: { description: 'Verifies acceptance criteria are met', instructions: [] },
     };
     const rawPersonas = (parsed as Record<string, unknown>)['personas'] as Partial<PersonasConfig> | undefined;
     const personas: PersonasConfig = {
+      planner: { ...defaultPersonas.planner, ...rawPersonas?.planner },
       developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
       reviewer: { ...defaultPersonas.reviewer, ...rawPersonas?.reviewer },
     };
