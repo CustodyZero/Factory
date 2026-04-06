@@ -34,6 +34,10 @@ npx tsx tools/execute.ts <feature-id>
 ```
 
 This tells you which packets are ready to implement **and which persona to use**.
+Before touching implementation, explicitly claim the packet:
+```sh
+npx tsx tools/start.ts <packet-id>
+```
 
 ### After Completing Implementation
 
@@ -122,6 +126,7 @@ artifacts are never written inside the submodule.
 |---|---|
 | `npx tsx tools/status.ts` | Start of session, after context loss, when unsure what to do |
 | `npx tsx tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
+| `npx tsx tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
 | `npx tsx tools/complete.ts <packet-id>` | After implementation, before committing |
 | `npx tsx tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx tools/validate.ts` | Verify factory integrity |
@@ -195,7 +200,7 @@ Do not decide when to stop or what step comes next — always ask execute.ts.
 loop:
   1. Run: npx tsx tools/execute.ts <feature-id>
   2. Read the action kind in the output:
-     - spawn_packets  → spawn agents for ready packets using the assigned persona, complete each, go to 1
+     - spawn_packets  → spawn agents for ready packets using the assigned persona, run `npx tsx tools/start.ts <packet-id>` for each assigned packet, complete each, go to 1
      - awaiting_acceptance → stop, inform human that architectural packets need acceptance
      - all_complete   → feature is done, ready for delivery
      - blocked        → resolve dependencies or replan
@@ -217,6 +222,7 @@ is a stateless tick function that reads factory state and returns the next actio
 Use the supervisor when you want automated orchestration of feature execution.
 The supervisor replaces the manual `execute.ts` loop with a higher-level actor
 that tracks feature phases, spawns agents, and escalates to humans.
+When supervisor mode is active, only packets returned in `ready_packets` may be started.
 
 ### How It Works
 
@@ -230,11 +236,17 @@ that tracks feature phases, spawns agents, and escalates to humans.
 ```
 
 The supervisor returns one action per tick:
-- `execute_feature` — spawn agents for ready packets
+- `execute_feature` — spawn agents for ready packets using the returned dispatch records
 - `escalate_acceptance` — present to human for acceptance
 - `escalate_blocked` — present to human, something is stuck
 - `update_state` — state has been refreshed, re-tick
 - `idle` — nothing to do
+
+In `execute_feature`:
+- `dispatches` are the supervisor-issued authorization records
+- `ready_packets` describe the human-readable assignment details
+- agents must run the returned `start_command` before implementation
+- the outer orchestrator must not spawn any packet missing from `dispatches`
 
 ### State Files
 

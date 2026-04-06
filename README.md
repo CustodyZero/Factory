@@ -145,10 +145,11 @@ You'll see both packets listed as `not_started`.
 
 ### 4. Implement the dev packet
 
-Set `started_at` in the dev packet to mark work as in progress. Write the
+Claim the packet to mark work as in progress. Write the
 code, then run completion:
 
 ```sh
+npx tsx .factory/tools/start.ts add-health-endpoint-dev
 npx tsx .factory/tools/complete.ts add-health-endpoint-dev
 ```
 
@@ -161,11 +162,14 @@ The QA packet is now unblocked (its dependency is complete). A different
 agent or human reviews the dev work against the acceptance criteria, then:
 
 ```sh
+npx tsx .factory/tools/start.ts add-health-endpoint-qa
 npx tsx .factory/tools/complete.ts add-health-endpoint-qa --identity claude-qa
 ```
 
 The `--identity` flag ensures the QA completion is attributed to a different
 identity than the dev completion (FI-7).
+If the QA packet declares `environment_dependencies`, matching evidence records
+must exist before completion.
 
 ### 6. Commit
 
@@ -247,7 +251,7 @@ QA-specific fields:
 - `verifies` — ID of the dev packet this QA packet reviews (required for `qa`, forbidden for `dev`)
 
 Optional fields:
-- `started_at` — when work began
+- `started_at` — when work began (normally set by `tools/start.ts`)
 - `dependencies` — packet IDs that must be completed first
 - `environment_dependencies` — external dependencies requiring evidence
 - `model` — model tier override (`opus`, `sonnet`, `haiku`)
@@ -421,6 +425,14 @@ npx tsx .factory/tools/status.ts --json       # machine-readable JSON
 npx tsx .factory/tools/status.ts --feature <id>  # scoped to a feature
 ```
 
+### Start
+
+```sh
+npx tsx .factory/tools/start.ts <packet-id>
+```
+
+Claims a packet and marks it started before implementation begins.
+
 ### Complete
 
 ```sh
@@ -437,6 +449,17 @@ npx tsx .factory/tools/execute.ts <feature-id> --json
 ```
 
 Stateless action resolver for feature-level execution.
+
+### Supervise
+
+```sh
+npx tsx .factory/tools/supervise.ts --init
+npx tsx .factory/tools/supervise.ts --json
+```
+
+Supervisor tick loop for automated orchestration. In supervisor mode,
+`execute_feature` returns stable dispatch records that act as the only legal
+authorization for packet start/agent spawn.
 
 ### Validate
 
@@ -465,10 +488,33 @@ draft → planned → approved → executing → completed → delivered
 Execution protocol:
 1. Run `npx tsx .factory/tools/execute.ts <feature-id>`
 2. Spawn agents for ready packets using the assigned persona (developer/reviewer)
-3. Each agent: implement → complete → commit
+3. Each agent: run `start.ts` for its assigned packet → implement → complete → commit
 4. Re-run execute
 5. Repeat until all_complete
 6. Natural flow per story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural)
+
+If supervisor mode is enabled, packets must be returned by `supervise.ts` before they can be started.
+Supervisor `execute_feature` actions now include stable dispatch records so an outer orchestrator
+can treat them as the only legal packet authorizations for that tick.
+
+### End-to-End Supervisor Flow
+
+This is the intended automated flow when a human wants the factory to drive a feature
+through developer and QA agents:
+
+1. Human creates the feature JSON and dev/QA packet JSON files.
+2. Human approves the feature (`status: "approved"`).
+3. Initialize supervisor state once: `npx tsx .factory/tools/supervise.ts --init`
+4. Supervisor agent runs `npx tsx .factory/tools/supervise.ts --json`
+5. If the result is `execute_feature`, the supervisor spawns one agent per dispatch in `dispatches`
+6. Each spawned agent runs the returned `start_command`, performs only that packet’s work, then runs `complete.ts`
+7. QA agents use `--identity <qa-id>` and must satisfy any `environment_dependencies` evidence requirement
+8. Supervisor re-runs `supervise.ts --json` after each state change
+9. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
+10. Repeat until the supervisor returns `idle`
+
+The key rule is that the outer orchestrator must never invent its own packet assignments.
+It should only spawn agents from the current tick’s `dispatches`.
 
 ---
 

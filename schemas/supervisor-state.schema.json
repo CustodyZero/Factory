@@ -57,7 +57,7 @@
     },
     "feature_tracking": {
       "type": "object",
-      "required": ["feature_id", "phase", "first_seen_at", "last_tick_at", "packets_spawned", "packets_completed", "packets_accepted", "tick_count"],
+      "required": ["feature_id", "phase", "first_seen_at", "last_tick_at", "packets_spawned", "active_dispatches", "packets_completed", "packets_accepted", "tick_count"],
       "properties": {
         "feature_id": {
           "type": "string",
@@ -83,6 +83,11 @@
           "items": { "type": "string" },
           "description": "Packet IDs that the supervisor has dispatched for execution."
         },
+        "active_dispatches": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dispatch_record" },
+          "description": "Supervisor-authorized dispatches that are currently active."
+        },
         "packets_completed": {
           "type": "array",
           "items": { "type": "string" },
@@ -102,6 +107,24 @@
           "minimum": 0,
           "description": "Number of times this feature has been ticked."
         }
+      },
+      "additionalProperties": false
+    },
+    "dispatch_record": {
+      "type": "object",
+      "required": ["dispatch_id", "feature_id", "packet_id", "persona", "model", "instructions", "start_command", "dispatched_at"],
+      "properties": {
+        "dispatch_id": { "type": "string", "minLength": 1 },
+        "feature_id": { "type": "string", "minLength": 1 },
+        "packet_id": { "type": "string", "minLength": 1 },
+        "persona": { "type": "string", "enum": ["developer", "reviewer"] },
+        "model": { "type": "string", "minLength": 1 },
+        "instructions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "start_command": { "type": "string", "minLength": 1 },
+        "dispatched_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
     },

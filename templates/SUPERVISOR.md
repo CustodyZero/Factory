@@ -29,7 +29,7 @@ Your execution loop:
 1. Run: npx tsx .factory/tools/supervise.ts --json
 2. Read the action
 3. Perform the action:
-   - execute_feature → spawn agents for ready_packets (use persona + model from output)
+   - execute_feature → spawn agents for ready_packets using the returned dispatch records as the only legal authorization
    - escalate_acceptance → present to human, wait for accept.ts
    - escalate_blocked → present to human, wait for resolution
    - escalate_failure → present to human
@@ -46,6 +46,9 @@ When `execute_feature` returns ready packets:
 
 - Each packet includes `persona` (developer or reviewer) and `model` (opus/sonnet/haiku)
 - Each packet includes `instructions` — pass these to the spawned agent
+- Each packet includes `start_command` — the assigned agent should run it before implementation
+- Each packet dispatch includes a stable `dispatch_id` — treat it as the supervisor-issued authorization token
+- Do not start or spawn packets that were not returned in the current `ready_packets` list
 - Dev agents use default identity; QA agents must use `--identity claude-qa` on `complete.ts`
 - Do not spawn the same identity for a dev packet and its QA counterpart
 

@@ -57,10 +57,22 @@ export interface FeatureTracking {
   readonly first_seen_at: string;
   readonly last_tick_at: string;
   readonly packets_spawned: ReadonlyArray<string>;
+  readonly active_dispatches: ReadonlyArray<DispatchRecord>;
   readonly packets_completed: ReadonlyArray<string>;
   readonly packets_accepted: ReadonlyArray<string>;
   readonly blocked_reason: string | null;
   readonly tick_count: number;
+}
+
+export interface DispatchRecord {
+  readonly dispatch_id: string;
+  readonly feature_id: string;
+  readonly packet_id: string;
+  readonly persona: 'developer' | 'reviewer';
+  readonly model: string;
+  readonly instructions: ReadonlyArray<string>;
+  readonly start_command: string;
+  readonly dispatched_at: string;
 }
 
 export interface Escalation {
@@ -96,6 +108,7 @@ export interface SupervisorAction {
   readonly kind: SupervisorActionKind;
   readonly feature_id: string | null;
   readonly ready_packets: ReadonlyArray<PacketAssignment>;
+  readonly dispatches: ReadonlyArray<DispatchRecord>;
   readonly escalation: Escalation | null;
   readonly state_patch: Partial<SupervisorStateMutable> | null;
   readonly message: string;
@@ -139,6 +152,7 @@ function makeAction(
     kind,
     feature_id,
     ready_packets: [],
+    dispatches: [],
     escalation: null,
     state_patch: null,
     message,
@@ -148,6 +162,21 @@ function makeAction(
 
 function escalationId(kind: string, featureId: string, now: Date): string {
   return `${kind}-${featureId}-${now.toISOString().replace(/[:.]/g, '-')}`;
+}
+
+function dispatchId(featureId: string, packetId: string, now: Date): string {
+  return `dispatch-${featureId}-${packetId}-${now.toISOString().replace(/[:.]/g, '-')}`;
+}
+
+function pruneActiveDispatches(
+  activeDispatches: ReadonlyArray<DispatchRecord>,
+  completionIds: ReadonlySet<string>,
+  acceptanceIds: ReadonlySet<string>,
+): DispatchRecord[] {
+  return activeDispatches.filter((dispatch) =>
+    !completionIds.has(dispatch.packet_id) &&
+    !acceptanceIds.has(dispatch.packet_id),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +218,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
         first_seen_at: nowIso,
         last_tick_at: nowIso,
         packets_spawned: [],
+        active_dispatches: [],
         packets_completed: [],
         packets_accepted: [],
         blocked_reason: null,
@@ -220,6 +250,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
         const updatedTracking: FeatureTracking = {
           ...tracking,
           last_tick_at: nowIso,
+          active_dispatches: pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds),
           packets_completed: currentCompleted,
           packets_accepted: currentAccepted,
           tick_count: tracking.tick_count + 1,
@@ -261,6 +292,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           ...tracking,
           phase: 'executing',
           last_tick_at: nowIso,
+          active_dispatches: pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds),
           packets_accepted: [...new Set([...tracking.packets_accepted, ...esc.packet_ids])],
           tick_count: tracking.tick_count + 1,
         };
@@ -311,17 +343,41 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
       case 'spawn_packets': {
         if (executeAction.ready_packets.length > 0) {
           const newSpawned = [...new Set([...tracking.packets_spawned, ...executeAction.ready_packets.map((p) => p.packet_id)])];
+          const retainedDispatches = pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds);
+          const dispatches: DispatchRecord[] = executeAction.ready_packets.map((packet) => {
+            const existing = retainedDispatches.find((dispatch) => dispatch.packet_id === packet.packet_id);
+            if (existing !== undefined) {
+              return existing;
+            }
+            return {
+              dispatch_id: dispatchId(feature.id, packet.packet_id, now),
+              feature_id: feature.id,
+              packet_id: packet.packet_id,
+              persona: packet.persona,
+              model: packet.model,
+              instructions: packet.instructions,
+              start_command: packet.start_command,
+              dispatched_at: nowIso,
+            };
+          });
           const updatedTracking: FeatureTracking = {
             ...tracking,
             phase: 'executing',
             last_tick_at: nowIso,
             packets_spawned: newSpawned,
+            active_dispatches: [
+              ...retainedDispatches.filter((dispatch) =>
+                !dispatches.some((nextDispatch) => nextDispatch.packet_id === dispatch.packet_id)
+              ),
+              ...dispatches,
+            ],
             tick_count: tracking.tick_count + 1,
           };
           return makeAction('execute_feature', feature.id,
             `Feature '${feature.id}': ${String(executeAction.ready_packets.length)} packet(s) ready to spawn.`,
             {
               ready_packets: executeAction.ready_packets,
+              dispatches,
               state_patch: {
                 updated_at: nowIso,
                 features: { ...supervisorState.features, [feature.id]: updatedTracking },
@@ -369,6 +425,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           ...tracking,
           phase: 'awaiting_human',
           last_tick_at: nowIso,
+          active_dispatches: pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds),
           tick_count: tracking.tick_count + 1,
         };
 
@@ -391,6 +448,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           ...tracking,
           phase: 'complete',
           last_tick_at: nowIso,
+          active_dispatches: [],
           tick_count: tracking.tick_count + 1,
         };
         return makeAction('update_state', feature.id,
@@ -426,6 +484,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           phase: 'blocked',
           blocked_reason: blockedDesc,
           last_tick_at: nowIso,
+          active_dispatches: pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds),
           tick_count: tracking.tick_count + 1,
         };
 
@@ -491,6 +550,14 @@ function renderAction(action: SupervisorAction): string {
     lines.push('');
   }
 
+  if (action.dispatches.length > 0) {
+    lines.push('  Dispatches:');
+    for (const dispatch of action.dispatches) {
+      lines.push(`    - ${dispatch.packet_id} -> ${dispatch.dispatch_id}`);
+    }
+    lines.push('');
+  }
+
   if (action.escalation !== null) {
     lines.push('  \u26a0 Escalation:');
     lines.push(`    Kind: ${action.escalation.kind}`);
@@ -535,6 +602,50 @@ function writeSupervisorState(artifactRoot: string, state: SupervisorState): voi
   const dir = join(artifactRoot, 'supervisor');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'state.json'), JSON.stringify(state, null, 2) + '\n', 'utf-8');
+}
+
+function ensureSupervisorMemory(artifactRoot: string): string {
+  const dir = join(artifactRoot, 'supervisor');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const memoryPath = join(dir, 'memory.md');
+  if (!existsSync(memoryPath)) {
+    writeFileSync(
+      memoryPath,
+      '# Supervisor Memory\n\nPersistent project context and notable execution history.\n',
+      'utf-8',
+    );
+  }
+  return memoryPath;
+}
+
+function appendSupervisorMemory(memoryPath: string, note: string): void {
+  const current = existsSync(memoryPath) ? readFileSync(memoryPath, 'utf-8') : '';
+  if (current.includes(note)) return;
+  const next = `${current.trimEnd()}\n\n${note}\n`;
+  writeFileSync(memoryPath, next, 'utf-8');
+}
+
+function memoryNoteForAction(action: SupervisorAction, previousState: SupervisorState): string | null {
+  if (action.feature_id === null) return null;
+
+  if (action.kind === 'escalate_blocked' && action.escalation !== null) {
+    return `## ${action.escalation.created_at} — Blocked Feature\n- Feature: ${action.feature_id}\n- Issue: ${action.escalation.message.replace(/\n/g, ' ')}`;
+  }
+
+  if (action.kind === 'escalate_acceptance' && action.escalation !== null) {
+    return `## ${action.escalation.created_at} — Awaiting Acceptance\n- Feature: ${action.feature_id}\n- Issue: ${action.escalation.message.replace(/\n/g, ' ')}`;
+  }
+
+  if (action.kind === 'update_state' && action.state_patch?.features !== undefined) {
+    const beforePhase = previousState.features[action.feature_id]?.phase ?? null;
+    const afterPhase = action.state_patch.features[action.feature_id]?.phase ?? null;
+    if (beforePhase !== 'complete' && afterPhase === 'complete') {
+      const timestamp = action.state_patch.updated_at ?? new Date().toISOString();
+      return `## ${timestamp} — Feature Complete\n- Feature: ${action.feature_id}\n- Note: Supervisor observed all packets complete and accepted.`;
+    }
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +695,7 @@ function main(): void {
     }
     const state = emptyState(identity, now);
     writeSupervisorState(artifactRoot, state);
+    ensureSupervisorMemory(artifactRoot);
     console.log('Supervisor state initialized: supervisor/state.json');
     return;
   }
@@ -595,6 +707,7 @@ function main(): void {
     console.error('Run: npx tsx tools/supervise.ts --init');
     process.exit(1);
   }
+  const memoryPath = ensureSupervisorMemory(artifactRoot);
 
   // Read factory artifacts
   const features = readJsonDir<Feature>(join(artifactRoot, 'features'));
@@ -632,8 +745,15 @@ function main(): void {
       version: supervisorState.version,
     };
     writeSupervisorState(artifactRoot, patched);
+    const memoryNote = memoryNoteForAction(action, supervisorState);
+    if (memoryNote !== null) {
+      appendSupervisorMemory(memoryPath, memoryNote);
+    }
     if (!jsonMode) {
       console.log('  State updated: supervisor/state.json');
+      if (memoryNote !== null) {
+        console.log('  Memory updated: supervisor/memory.md');
+      }
     }
   }
 }

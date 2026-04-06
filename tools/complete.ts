@@ -71,9 +71,20 @@ if (existsSync(completionPath)) {
 const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
 const title = typeof packet['title'] === 'string' ? packet['title'] : packetId;
 const packetKind = typeof packet['kind'] === 'string' ? packet['kind'] : 'dev';
+const startedAt = typeof packet['started_at'] === 'string' ? packet['started_at'] : null;
 const envDeps = Array.isArray(packet['environment_dependencies'])
   ? (packet['environment_dependencies'] as string[]).filter((d) => typeof d === 'string')
   : [];
+const acceptanceCriteria = Array.isArray(packet['acceptance_criteria'])
+  ? (packet['acceptance_criteria'] as unknown[]).filter((c): c is string => typeof c === 'string')
+  : [];
+const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
+
+if (startedAt === null) {
+  console.error(`ERROR: Packet '${packetId}' has not been started.`);
+  console.error(`Run: npx tsx tools/start.ts ${packetId}`);
+  process.exit(1);
+}
 
 console.log(`\nCreating completion for: ${title}`);
 console.log(`Packet: ${packetId} (${packetKind})\n`);
@@ -116,6 +127,20 @@ if (packetKind === 'qa' && envDeps.length > 0) {
     process.exit(1);
   }
   console.log('  Environment evidence: all present and valid');
+}
+
+if (packetKind === 'qa' && envDeps.length === 0) {
+  const runtimeCriteria = acceptanceCriteria.filter((criterion) => RUNTIME_HINTS.test(criterion));
+  if (runtimeCriteria.length > 0) {
+    console.error('ERROR: QA packet requires runtime-style verification but declares no environment_dependencies.');
+    console.error('');
+    console.error(`  Packet: ${packetId}`);
+    console.error(`  Example criterion: ${runtimeCriteria[0]}`);
+    console.error('');
+    console.error('Declare environment_dependencies in the QA packet so evidence collection is enforceable,');
+    console.error('then create the corresponding evidence/<dependency-key>.json records before completion.');
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------

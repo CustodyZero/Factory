@@ -62,6 +62,7 @@ export interface PacketAssignment {
   readonly persona: Persona;
   readonly model: ModelTier;
   readonly instructions: ReadonlyArray<string>;
+  readonly start_command: string;
 }
 
 export interface ExecuteAction {
@@ -79,7 +80,7 @@ export interface ExecuteAction {
 // Artifact reading
 // ---------------------------------------------------------------------------
 
-interface RawPacket {
+export interface RawPacket {
   readonly id: string;
   readonly kind: 'dev' | 'qa';
   readonly title: string;
@@ -90,6 +91,9 @@ interface RawPacket {
   readonly dependencies?: ReadonlyArray<string>;
   readonly model?: ModelTier;
   readonly instructions?: ReadonlyArray<string>;
+  readonly environment_dependencies?: ReadonlyArray<string>;
+  readonly acceptance_criteria?: ReadonlyArray<string>;
+  readonly feature_id?: string | null;
 }
 
 interface RawCompletion {
@@ -134,6 +138,8 @@ export interface ExecuteInput {
   readonly personas?: PersonasConfig;
 }
 
+const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
+
 function isAccepted(
   packet: RawPacket,
   completionMap: ReadonlyMap<string, boolean>,
@@ -144,6 +150,23 @@ function isAccepted(
   if (passes === undefined) return false;
   const cc = packet.change_class;
   return (cc === 'trivial' || cc === 'local' || cc === 'cross_cutting') && passes;
+}
+
+function runtimeCriteria(packet: RawPacket): string[] {
+  const criteria = packet.acceptance_criteria ?? [];
+  return criteria.filter((criterion) => RUNTIME_HINTS.test(criterion));
+}
+
+function packetBlockingReasons(packet: RawPacket): string[] {
+  const reasons: string[] = [];
+  if (packet.kind === 'qa') {
+    const envDeps = packet.environment_dependencies ?? [];
+    const runtimeChecks = runtimeCriteria(packet);
+    if (envDeps.length === 0 && runtimeChecks.length > 0) {
+      reasons.push(`runtime verification requires environment_dependencies: "${runtimeChecks[0]}"`);
+    }
+  }
+  return reasons;
 }
 
 export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
@@ -183,13 +206,18 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     const persona: Persona = packet.kind === 'qa' ? 'reviewer' : 'developer';
     const personaConfig = input.personas?.[persona];
     const personaInstructions = personaConfig?.instructions ?? [];
-    const packetInstructions = packet.instructions ?? [];
+    const packetInstructions = [...(packet.instructions ?? [])];
+    const envDeps = packet.environment_dependencies ?? [];
+    if (packet.kind === 'qa' && envDeps.length > 0) {
+      packetInstructions.push(`Evidence required before completion for environment_dependencies: ${envDeps.join(', ')}`);
+    }
     const model: ModelTier = packet.model ?? personaConfig?.model ?? 'opus';
     return {
       packet_id: packet.id,
       persona,
       model,
       instructions: [...personaInstructions, ...packetInstructions],
+      start_command: `npx tsx tools/start.ts ${packet.id}`,
     };
   }
 
@@ -211,7 +239,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     }
 
     const deps = packet.dependencies ?? [];
-    const unmetDeps: string[] = [];
+    const unmetDeps: string[] = [...packetBlockingReasons(packet)];
     for (const dep of deps) {
       if (!featurePacketIds.has(dep)) {
         if (!isAccepted(
@@ -373,6 +401,7 @@ function renderAction(action: ExecuteAction): string {
     lines.push('  \u2192 Ready to spawn:');
     for (const a of action.ready_packets) {
       lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
+      lines.push(`      start: ${a.start_command}`);
       if (a.instructions.length > 0) {
         for (const instr of a.instructions) {
           lines.push(`      \u2022 ${instr}`);

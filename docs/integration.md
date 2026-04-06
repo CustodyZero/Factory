@@ -24,6 +24,14 @@ The setup script:
    - `factory/supervisor/` with SUPERVISOR.md and memory.md
 4. Configures `git config core.hooksPath .factory/hooks`
 
+After setup, the normal first-run sequence for an agent-driven project is:
+
+1. Create feature and packet JSON artifacts under `factory/`
+2. Mark the feature `approved`
+3. Run `npx tsx .factory/tools/supervise.ts --init`
+4. Run `npx tsx .factory/tools/supervise.ts --json`
+5. Spawn only the agents returned in `dispatches`
+
 ### Directory Layout
 
 After setup, your project will have:
@@ -148,6 +156,28 @@ subdirectory.
 
 ---
 
+## End-to-End Supervisor Flow
+
+For automated orchestration with an external agent runner:
+
+1. Human authors `factory/features/<feature-id>.json`
+2. Human authors matching dev/QA packet pairs in `factory/packets/`
+3. Human sets the feature to `approved`
+4. Supervisor runs `npx tsx .factory/tools/supervise.ts --init` once
+5. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
+6. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
+7. Each spawned agent runs `npx tsx .factory/tools/start.ts <packet-id>` using the returned `start_command`
+8. The agent performs only that packet’s scope, then runs `complete.ts`
+9. QA agents use a distinct identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
+10. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
+
+Supervisor mode is stricter than the manual `execute.ts` loop:
+- Feature packets cannot be started unless they were dispatched by `supervise.ts`
+- Runtime-style QA packets must declare `environment_dependencies`
+- Active dispatch records in `factory/supervisor/state.json` are the source of truth for legal packet starts
+
+---
+
 ## Testing the Factory Tooling
 
 ```sh
@@ -159,6 +189,8 @@ The factory tooling has its own test suite covering:
 - Completion gate logic
 - Status derivation
 - Execute resolver
+- Supervisor resolver
+- Packet start / supervisor enforcement via validation paths
 
 All tests are pure function tests — no I/O, no mocking.
 

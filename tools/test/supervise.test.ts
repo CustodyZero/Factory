@@ -82,6 +82,7 @@ function trackingFor(featureId: string, phase: FeatureTracking['phase'] = 'execu
     first_seen_at: '2026-03-28T00:00:00Z',
     last_tick_at: '2026-03-28T00:00:00Z',
     packets_spawned: [],
+    active_dispatches: [],
     packets_completed: [],
     packets_accepted: [],
     blocked_reason: null,
@@ -177,6 +178,9 @@ describe('resolveSupervisorAction', () => {
     expect(action.ready_packets.length).toBe(1);
     expect(action.ready_packets[0].packet_id).toBe('p1');
     expect(action.ready_packets[0].persona).toBe('developer');
+    expect(action.ready_packets[0].start_command).toBe('npx tsx tools/start.ts p1');
+    expect(action.dispatches[0].packet_id).toBe('p1');
+    expect(action.dispatches[0].dispatch_id).toContain('dispatch-f1-p1-');
   });
 
   it('SV-U6: returns idle when packets are in-progress but none ready', () => {
@@ -210,6 +214,8 @@ describe('resolveSupervisorAction', () => {
     expect(action.ready_packets.length).toBe(1);
     expect(action.ready_packets[0].packet_id).toBe('q1');
     expect(action.ready_packets[0].persona).toBe('reviewer');
+    expect(action.ready_packets[0].start_command).toBe('npx tsx tools/start.ts q1');
+    expect(action.dispatches[0].packet_id).toBe('q1');
   });
 
   // -----------------------------------------------------------------------
@@ -393,5 +399,33 @@ describe('resolveSupervisorAction', () => {
       completionIds: new Set(['p1']),
     }));
     expect(action.kind).toBe('idle');
+  });
+
+  it('SV-U16: reuses active dispatch ids across repeated ticks', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing', {
+          active_dispatches: [{
+            dispatch_id: 'dispatch-f1-p1-existing',
+            feature_id: 'f1',
+            packet_id: 'p1',
+            persona: 'developer',
+            model: 'opus',
+            instructions: [],
+            start_command: 'npx tsx tools/start.ts p1',
+            dispatched_at: '2026-03-28T11:00:00Z',
+          }],
+        }),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [makeFeature({ id: 'f1', packets: ['p1'] })],
+      packets: [makeDevPacket('p1')],
+    }));
+    expect(action.kind).toBe('execute_feature');
+    expect(action.dispatches[0].dispatch_id).toBe('dispatch-f1-p1-existing');
   });
 });

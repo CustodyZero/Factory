@@ -13,6 +13,8 @@ import type { FactoryConfig } from '../config.js';
 
 const testConfig: FactoryConfig = {
   project_name: 'test-project',
+  factory_dir: '.',
+  artifact_dir: '.',
   verification: { build: 'echo build', lint: 'echo lint', test: 'echo test' },
   validation: { command: 'echo validate' },
   infrastructure_patterns: [
@@ -34,6 +36,10 @@ const testConfig: FactoryConfig = {
     'LICENSE',
   ],
   completed_by_default: { kind: 'agent', id: 'test' },
+  personas: {
+    developer: { description: 'dev', instructions: [] },
+    reviewer: { description: 'qa', instructions: [] },
+  },
 };
 
 function makePacket(id: string, started_at: string | null = '2026-03-20T00:00:00Z', status: string | null = null): PacketInfo {

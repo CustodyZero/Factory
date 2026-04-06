@@ -44,6 +44,14 @@ function makeQaPacket(id: string, verifies: string, deps: string[] = [], started
   };
 }
 
+function makeRuntimeQaPacket(id: string, verifies: string, deps: string[] = [], envDeps: string[] = []) {
+  return {
+    ...makeQaPacket(id, verifies, deps),
+    environment_dependencies: envDeps,
+    acceptance_criteria: ['Run the code and verify the browser UI renders correctly'],
+  };
+}
+
 function makeInput(overrides: Partial<ExecuteInput> = {}): ExecuteInput {
   return {
     feature: overrides.feature ?? makeFeature(),
@@ -83,7 +91,13 @@ describe('resolveExecuteAction', () => {
       packets: [makeDevPacket('p1')],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'p1', persona: 'developer', model: 'opus', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{
+      packet_id: 'p1',
+      persona: 'developer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts p1',
+    }]);
   });
 
   it('EX-U4: dev/qa pair — QA blocked until dev completes', () => {
@@ -104,7 +118,13 @@ describe('resolveExecuteAction', () => {
       completionIds: new Set(['dev-1']),
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{
+      packet_id: 'qa-1',
+      persona: 'reviewer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts qa-1',
+    }]);
   });
 
   it('EX-U6: independent dev packets are all ready for parallel spawn', () => {
@@ -162,7 +182,13 @@ describe('resolveExecuteAction', () => {
       packets: [makeDevPacket('p1', [], '2026-03-21T00:00:00Z')],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.in_progress_packets).toEqual([{ packet_id: 'p1', persona: 'developer', model: 'opus', instructions: [] }]);
+    expect(action.in_progress_packets).toEqual([{
+      packet_id: 'p1',
+      persona: 'developer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts p1',
+    }]);
     expect(action.ready_packets).toEqual([]);
   });
 
@@ -246,7 +272,13 @@ describe('resolveExecuteAction', () => {
     }));
     // QA is ready to execute, not awaiting_acceptance
     expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
+    expect(action.ready_packets).toEqual([{
+      packet_id: 'qa-1',
+      persona: 'reviewer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts qa-1',
+    }]);
   });
 
   it('EX-U19: mixed dev/qa — only architectural dev packets need acceptance', () => {
@@ -272,12 +304,24 @@ describe('resolveExecuteAction', () => {
     // Step 1: dev ready
     const a1 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket] }));
     expect(a1.kind).toBe('spawn_packets');
-    expect(a1.ready_packets).toEqual([{ packet_id: 'dev-1', persona: 'developer', model: 'opus', instructions: [] }]);
+    expect(a1.ready_packets).toEqual([{
+      packet_id: 'dev-1',
+      persona: 'developer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts dev-1',
+    }]);
 
     // Step 2: dev complete, qa ready
     const a2 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1']) }));
     expect(a2.kind).toBe('spawn_packets');
-    expect(a2.ready_packets).toEqual([{ packet_id: 'qa-1', persona: 'reviewer', model: 'opus', instructions: [] }]);
+    expect(a2.ready_packets).toEqual([{
+      packet_id: 'qa-1',
+      persona: 'reviewer',
+      model: 'opus',
+      instructions: [],
+      start_command: 'npx tsx tools/start.ts qa-1',
+    }]);
 
     // Step 3: both complete, awaiting acceptance
     const a3 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1', 'qa-1']) }));
@@ -305,6 +349,7 @@ describe('resolveExecuteAction', () => {
       persona: 'developer',
       model: 'opus',
       instructions: ['Use MCP server X'],
+      start_command: 'npx tsx tools/start.ts dev-1',
     }]);
   });
 
@@ -322,6 +367,7 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(action.ready_packets[0]!.instructions).toEqual(['Always lint', 'Requires GPU access']);
+    expect(action.ready_packets[0]!.start_command).toBe('npx tsx tools/start.ts dev-1');
   });
 
   it('EX-U23: QA packet gets reviewer persona instructions', () => {
@@ -414,5 +460,28 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(a3.ready_packets[0]!.model).toBe('sonnet');
+  });
+
+  it('EX-U28: runtime QA packet without environment_dependencies is blocked before handoff', () => {
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
+      packets: [makeDevPacket('dev-1'), makeRuntimeQaPacket('qa-1', 'dev-1', ['dev-1'])],
+      completionIds: new Set(['dev-1']),
+    }));
+    expect(action.kind).toBe('blocked');
+    expect(action.blocked_packets[0]?.id).toBe('qa-1');
+    expect(action.blocked_packets[0]?.blocked_by[0]).toContain('environment_dependencies');
+  });
+
+  it('EX-U29: QA packet with environment_dependencies advertises evidence requirement', () => {
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
+      packets: [makeDevPacket('dev-1'), makeRuntimeQaPacket('qa-1', 'dev-1', ['dev-1'], ['browser-env'])],
+      completionIds: new Set(['dev-1']),
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.ready_packets[0]?.instructions).toContain(
+      'Evidence required before completion for environment_dependencies: browser-env',
+    );
   });
 });

@@ -340,7 +340,7 @@ interface ArtifactIndex {
   rejectionPacketIds: Set<string>;
   evidenceKeys: Set<string>;
   allDeclaredDeps: Set<string>;
-  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; dependencies: string[]; started_at: string | null; status: string | null; environment_dependencies: string[]; acceptance_criteria: string[] }>;
+  packets: Array<{ id: string; kind: string; verifies: string | null; change_class: string; packages: string[]; dependencies: string[]; started_at: string | null; status: string | null; environment_dependencies: string[]; acceptance_criteria: string[]; feature_id: string | null }>;
   completions: Array<{ packet_id: string; completed_by_id: string }>;
   acceptances: Array<{ packet_id: string; accepted_by_kind: string }>;
   rejections: Array<{ packet_id: string; rejected_by_kind: string }>;
@@ -381,6 +381,7 @@ function buildIndex(
       const packetDeps = isStringArray(data['dependencies']) ? data['dependencies'] : [];
       const envDeps = isStringArray(data['environment_dependencies']) ? data['environment_dependencies'] : [];
       const acceptanceCriteria = isStringArray(data['acceptance_criteria']) ? data['acceptance_criteria'] : [];
+      const featureId = typeof data['feature_id'] === 'string' ? data['feature_id'] : null;
       index.packets.push({
         id: data['id'],
         kind,
@@ -392,6 +393,7 @@ function buildIndex(
         status: packetStatus,
         environment_dependencies: envDeps,
         acceptance_criteria: acceptanceCriteria,
+        feature_id: featureId,
       });
       for (const d of envDeps) index.allDeclaredDeps.add(d);
     }
@@ -556,6 +558,29 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
     }
   }
 
+  // Packet feature_id integrity: if declared, the feature must exist and include the packet
+  for (const p of index.packets) {
+    if (p.feature_id === null) continue;
+    const feature = index.features.find((f) => f.id === p.feature_id);
+    if (feature === undefined) {
+      results.push({
+        file: `packets/${p.id}.json`,
+        severity: 'error',
+        error_type: 'referential',
+        message: `Packet '${p.id}' declares feature_id '${p.feature_id}' but that feature does not exist`,
+      });
+      continue;
+    }
+    if (!feature.packets.includes(p.id)) {
+      results.push({
+        file: `packets/${p.id}.json`,
+        severity: 'error',
+        error_type: 'referential',
+        message: `Packet '${p.id}' declares feature_id '${p.feature_id}' but the feature does not list this packet`,
+      });
+    }
+  }
+
   // -------------------------------------------------------------------------
   // QA packet structural checks
   // -------------------------------------------------------------------------
@@ -709,6 +734,21 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
   }
 
   // -------------------------------------------------------------------------
+  // FI-5.5: Completions require an explicit packet start
+  // -------------------------------------------------------------------------
+  for (const p of index.packets) {
+    if (index.completionPacketIds.has(p.id) && p.started_at === null) {
+      results.push({
+        file: `completions/${p.id}.json`,
+        severity: 'error',
+        error_type: 'invariant',
+        message: `Packet '${p.id}' has a completion record but was never started. ` +
+          `Run tools/start.ts before implementation so the factory can track active work truthfully.`,
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // FI-6: No progression without completion
   // -------------------------------------------------------------------------
   const startedPackets = index.packets
@@ -766,8 +806,8 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
   }
 
   // -------------------------------------------------------------------------
-  // Advisory: QA packets with runtime-suggestive acceptance criteria but no
-  // environment_dependencies declared
+  // QA runtime verification must declare environment dependencies so evidence
+  // can be enforced at completion time.
   // -------------------------------------------------------------------------
   const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual)\b/i;
   const MIGRATION_MARKER = /\[MIGRATION\]/;
@@ -779,13 +819,52 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
     if (runtimeCriteria.length > 0) {
       results.push({
         file: `packets/${p.id}.json`,
-        severity: 'warning',
-        error_type: 'schema',
+        severity: 'error',
+        error_type: 'invariant',
         message: `QA packet '${p.id}' has acceptance criteria that suggest runtime verification ` +
-          `but declares no environment_dependencies. Consider adding environment_dependencies ` +
+          `but declares no environment_dependencies. Add environment_dependencies ` +
           `so the factory can enforce evidence collection. ` +
           `Criteria: "${runtimeCriteria[0]}"${runtimeCriteria.length > 1 ? ` (+${String(runtimeCriteria.length - 1)} more)` : ''}`,
       });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Supervisor dispatch enforcement: if supervisor state exists, started feature
+  // packets must have been dispatched by the supervisor before work began.
+  // -------------------------------------------------------------------------
+  const localSupervisorStatePath = join(ARTIFACT_ROOT, 'supervisor', 'state.json');
+  if (existsSync(localSupervisorStatePath)) {
+    try {
+      const rawSupervisor = JSON.parse(readFileSync(localSupervisorStatePath, 'utf-8')) as Record<string, unknown>;
+      const featureTracking = isObject(rawSupervisor['features'])
+        ? rawSupervisor['features'] as Record<string, unknown>
+        : {};
+
+      for (const p of index.packets) {
+        if (p.started_at === null || p.feature_id === null) continue;
+        const tracked = featureTracking[p.feature_id];
+        if (!isObject(tracked)) continue;
+        const activeDispatchesRaw = Array.isArray(tracked['active_dispatches']) ? tracked['active_dispatches'] : [];
+        const activeDispatchPacketIds = activeDispatchesRaw
+          .filter(isObject)
+          .map((dispatch) => typeof dispatch['packet_id'] === 'string' ? dispatch['packet_id'] : null)
+          .filter((packetId): packetId is string => packetId !== null);
+        const authorizedPacketIds = activeDispatchPacketIds.length > 0
+          ? activeDispatchPacketIds
+          : (isStringArray(tracked['packets_spawned']) ? tracked['packets_spawned'] : []);
+        if (!authorizedPacketIds.includes(p.id)) {
+          results.push({
+            file: `packets/${p.id}.json`,
+            severity: 'error',
+            error_type: 'invariant',
+            message: `Packet '${p.id}' is started under supervisor mode but was never dispatched by supervisor feature '${p.feature_id}'. ` +
+              `Only packets returned by supervise.ts ready_packets may be started.`,
+          });
+        }
+      }
+    } catch {
+      // supervisor state parse issues are handled in main()
     }
   }
 
@@ -922,8 +1001,9 @@ function main(): void {
           const d = f.data as Record<string, unknown> | null;
           return d !== null && typeof d['id'] === 'string' ? d['id'] : '';
         }).filter((id) => id !== ''));
+        const supervisorFeatures = rawSupervisor['features'] as Record<string, unknown>;
 
-        for (const key of Object.keys(rawSupervisor['features'] as Record<string, unknown>)) {
+        for (const key of Object.keys(supervisorFeatures)) {
           if (!featureIndex.has(key)) {
             allResults.push({
               file: 'supervisor/state.json',
@@ -932,10 +1012,51 @@ function main(): void {
               message: `SI-1: supervisor tracks feature '${key}' which does not exist in features/`,
             });
           }
+          const tracking = supervisorFeatures[key];
+          if (isObject(tracking) && !Array.isArray(tracking['active_dispatches'])) {
+            allResults.push({
+              file: 'supervisor/state.json',
+              severity: 'error',
+              error_type: 'schema',
+              message: `feature '${key}' must define active_dispatches as an array`,
+            });
+          }
+          if (isObject(tracking) && Array.isArray(tracking['active_dispatches'])) {
+            for (const dispatch of tracking['active_dispatches']) {
+              if (!isObject(dispatch)) {
+                allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: `feature '${key}' has a non-object active_dispatch entry` });
+                continue;
+              }
+              const packetId = typeof dispatch['packet_id'] === 'string' ? dispatch['packet_id'] : null;
+              const featureId = typeof dispatch['feature_id'] === 'string' ? dispatch['feature_id'] : null;
+              const dispatchIdValue = typeof dispatch['dispatch_id'] === 'string' ? dispatch['dispatch_id'] : null;
+              if (packetId === null || featureId === null || dispatchIdValue === null) {
+                allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: `feature '${key}' has an invalid active_dispatch entry` });
+                continue;
+              }
+              const feature = index.features.find((f) => f.id === key);
+              if (feature === undefined || featureId !== key || !feature.packets.includes(packetId)) {
+                allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'invariant', message: `active dispatch '${dispatchIdValue}' does not match feature '${key}' packet membership` });
+              }
+              if (!index.packetIds.has(packetId)) {
+                allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'referential', message: `active dispatch '${dispatchIdValue}' references missing packet '${packetId}'` });
+              }
+            }
+          }
         }
       }
     } catch {
       allResults.push({ file: 'supervisor/state.json', severity: 'error', error_type: 'schema', message: 'Failed to parse supervisor state JSON' });
+    }
+
+    const supervisorMemoryPath = join(ARTIFACT_ROOT, 'supervisor', 'memory.md');
+    if (!existsSync(supervisorMemoryPath)) {
+      allResults.push({
+        file: 'supervisor/memory.md',
+        severity: 'warning',
+        error_type: 'referential',
+        message: 'Supervisor state exists but supervisor/memory.md is missing',
+      });
     }
   }
 
