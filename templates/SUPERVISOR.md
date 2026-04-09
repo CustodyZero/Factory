@@ -41,6 +41,16 @@ Your execution loop:
 
 Continue until `idle`. Do not invent actions the factory didn't return.
 
+If the native harness is enabled, the preferred command is:
+
+```sh
+npx tsx .factory/tools/orchestrate.ts run
+```
+
+That command wraps this tick loop, re-ticks after `update_state`, retries failed
+planner and packet runs through the configured Codex/Claude ladder, and stops only
+at `idle` or a real human gate.
+
 ## Agent Spawning
 
 When `execute_feature` returns ready packets:

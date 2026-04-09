@@ -106,6 +106,7 @@ Edit `factory.config.json` at the project root:
     },
     "output_dir": "reports/orchestrator",
     "recent_run_limit": 25,
+    "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
       "reviewer": "claude-qa"
@@ -136,6 +137,25 @@ Edit `factory.config.json` at the project root:
           "haiku": "haiku"
         }
       }
+    },
+    "retries": {
+      "max_supervisor_ticks": 50,
+      "planner": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "developer": [
+        { "provider": "codex", "model": "sonnet" },
+        { "provider": "codex", "model": "opus" },
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" }
+      ],
+      "reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ]
     }
   }
 }
@@ -615,11 +635,17 @@ npx tsx .factory/tools/orchestrate.ts health
 npx tsx .factory/tools/orchestrate.ts health --probe
 npx tsx .factory/tools/orchestrate.ts plan <intent-id>
 npx tsx .factory/tools/orchestrate.ts supervise
+npx tsx .factory/tools/orchestrate.ts run
+npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>
 ```
 
 Deterministic shell harness for native orchestration. It consumes `plan.ts`
 and `supervise.ts`, invokes supported LLM CLIs, and stores bounded runtime
 state in `supervisor/orchestrator-state.json`.
+`run` is the autonomous mode: it initializes supervisor state when needed,
+re-ticks after `update_state`, retries planner and packet execution through
+the configured provider/model ladder, and stops only at `idle`, `awaiting_approval`,
+or a real blocking/escalation gate.
 
 ### Validate
 
@@ -664,14 +690,15 @@ through developer and QA agents:
 
 1. Human creates the feature JSON and dev/QA packet JSON files.
 2. Human approves the feature (`status: "approved"`).
-3. Initialize supervisor state once: `npx tsx .factory/tools/supervise.ts --init`
-4. Native option: run `npx tsx .factory/tools/orchestrate.ts supervise`
+3. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run`
+4. Manual option: initialize supervisor state once with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
 5. If the result is `execute_feature`, the orchestrator or external runner spawns one agent per dispatch in `dispatches`
 6. Each spawned agent runs the returned `start_command`, performs only that packet’s work, then runs `complete.ts`
 7. QA agents use a distinct reviewer identity and must satisfy any `environment_dependencies` evidence requirement
-8. Supervisor re-runs `supervise.ts --json` after each state change
-9. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
-10. Repeat until the supervisor returns `idle`
+8. The native orchestrator retries failed planner and packet runs using the configured Codex/Claude ladder before surfacing failure
+9. Supervisor re-runs `supervise.ts --json` after each state change
+10. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
+11. Repeat until the supervisor returns `idle`
 
 The key rule is that the outer orchestrator must never invent its own packet assignments.
 It should only spawn agents from the current tick’s `dispatches`.
@@ -690,11 +717,13 @@ This is the full factory-native flow with planning and execution separated:
    - `feature.intent_id` and `intent.feature_id` linkage
 4. Human reviews the planned feature and packet set
 5. Human sets the feature status to `approved`
-6. Native option: the orchestrator runs `npx tsx .factory/tools/orchestrate.ts supervise`
-7. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
-8. Developer and reviewer agents execute packets exactly as assigned
-9. Human handles architectural acceptance when escalated
-10. Delivery occurs when the approved feature completes and the intent can be considered delivered
+6. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
+7. The orchestrator invokes the planner if needed, then stops at human approval
+8. After approval, rerun `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` to enter supervised execution
+9. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
+10. Developer and reviewer agents execute packets exactly as assigned
+11. Human handles architectural acceptance when escalated
+12. Delivery occurs when the approved feature completes and the intent can be considered delivered
 
 ---
 

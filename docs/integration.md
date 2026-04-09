@@ -31,8 +31,8 @@ After setup, the normal first-run sequence for an agent-driven project is:
 2. Run `npx tsx .factory/tools/plan.ts <intent-id>`
 3. Let the planner write one planned feature plus dev/qa packet pairs
 4. Human reviews the planned feature and marks it `approved`
-5. Run `npx tsx .factory/tools/supervise.ts --init`
-6. Run `npx tsx .factory/tools/supervise.ts --json`
+5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
+6. Manual option: run `npx tsx .factory/tools/supervise.ts --init`, then `npx tsx .factory/tools/supervise.ts --json`
 7. Spawn only the agents returned in `dispatches`
 
 ### Directory Layout
@@ -119,6 +119,7 @@ Edit the template at your project root:
     },
     "output_dir": "reports/orchestrator",
     "recent_run_limit": 25,
+    "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
       "reviewer": "claude-qa"
@@ -149,6 +150,25 @@ Edit the template at your project root:
           "haiku": "haiku"
         }
       }
+    },
+    "retries": {
+      "max_supervisor_ticks": 50,
+      "planner": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "developer": [
+        { "provider": "codex", "model": "sonnet" },
+        { "provider": "codex", "model": "opus" },
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" }
+      ],
+      "reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ]
     }
   }
 }
@@ -231,14 +251,15 @@ For automated orchestration with the native harness or an external runner:
    - packet dependencies, change classes, and acceptance criteria
    - `feature.intent_id` and `intent.feature_id` linkage
 4. Human reviews the planned feature and marks it `approved`
-5. Supervisor runs `npx tsx .factory/tools/supervise.ts --init` once
-6. Native option: run `npx tsx .factory/tools/orchestrate.ts supervise`
+5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
+6. Manual option: initialize supervisor state with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
 7. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
 8. Each spawned developer or reviewer agent runs the returned `start_command`
 9. The agent performs only that packet’s scope, then runs `complete.ts`
 10. QA agents use a distinct reviewer identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
-11. Human handles any explicit architectural acceptance with `accept.ts`
-12. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
+11. The native orchestrator retries failed planner and packet runs using the configured provider/model ladder before surfacing a real failure
+12. Human handles any explicit architectural acceptance with `accept.ts`
+13. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
 
 Supervisor mode is stricter than the manual `execute.ts` loop:
 - Feature packets cannot be started unless they were dispatched by `supervise.ts`

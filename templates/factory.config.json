@@ -54,6 +54,7 @@
     },
     "output_dir": "reports/orchestrator",
     "recent_run_limit": 25,
+    "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
       "reviewer": "claude-qa"
@@ -84,6 +85,25 @@
           "haiku": "haiku"
         }
       }
+    },
+    "retries": {
+      "max_supervisor_ticks": 50,
+      "planner": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "developer": [
+        { "provider": "codex", "model": "sonnet" },
+        { "provider": "codex", "model": "opus" },
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" }
+      ],
+      "reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ]
     }
   }
 }

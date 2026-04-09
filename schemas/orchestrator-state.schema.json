@@ -80,6 +80,22 @@
             },
             "additionalProperties": false
           }
+        },
+        "active_run": {
+          "type": ["object", "null"],
+          "required": ["mode", "intent_id", "feature_id", "started_at", "tick_count"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["plan", "supervise", "run"] },
+            "intent_id": { "type": ["string", "null"] },
+            "feature_id": { "type": ["string", "null"] },
+            "started_at": { "type": "string", "format": "date-time" },
+            "tick_count": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "recent_attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attempt_summary" }
         }
       },
       "additionalProperties": false
@@ -96,10 +112,36 @@
         "dispatch_id": { "type": ["string", "null"] },
         "started_at": { "type": "string", "format": "date-time" },
         "completed_at": { "type": "string", "format": "date-time" },
+        "attempt": { "type": "integer", "minimum": 1 },
         "exit_code": { "type": "integer" },
         "result": { "type": "string", "enum": ["success", "failed", "skipped"] },
         "output_path": { "type": ["string", "null"] },
-        "message": { "type": "string" }
+        "message": { "type": "string" },
+        "failure_kind": {
+          "type": ["string", "null"],
+          "enum": ["provider_unavailable", "provider_error", "task_failed", null]
+        }
+      },
+      "additionalProperties": false
+    },
+    "attempt_summary": {
+      "type": "object",
+      "required": ["kind", "target_id", "persona", "provider", "model", "attempt", "outcome", "failure_kind", "observed_at"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["planner", "packet"] },
+        "target_id": { "type": "string", "minLength": 1 },
+        "feature_id": { "type": ["string", "null"] },
+        "dispatch_id": { "type": ["string", "null"] },
+        "persona": { "type": "string", "enum": ["planner", "developer", "reviewer"] },
+        "provider": { "type": "string", "enum": ["codex", "claude"] },
+        "model": { "type": "string", "enum": ["opus", "sonnet", "haiku"] },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "outcome": { "type": "string", "enum": ["success", "failed", "skipped"] },
+        "failure_kind": {
+          "type": ["string", "null"],
+          "enum": ["provider_unavailable", "provider_error", "task_failed", null]
+        },
+        "observed_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
     }

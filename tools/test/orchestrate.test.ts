@@ -4,7 +4,9 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  boundedAttempts,
   boundedRuns,
+  buildRetrySteps,
   buildPacketPrompt,
   buildPlannerPrompt,
   buildProviderInvocation,
@@ -44,6 +46,7 @@ function makeConfig(): FactoryConfig {
       identity: { kind: 'agent', id: 'orchestrator' },
       output_dir: 'reports/orchestrator',
       recent_run_limit: 3,
+      recent_attempt_limit: 4,
       completion_identities: {
         developer: 'codex-dev',
         reviewer: 'claude-qa',
@@ -52,6 +55,25 @@ function makeConfig(): FactoryConfig {
         planner: 'claude',
         developer: 'codex',
         reviewer: 'claude',
+      },
+      retries: {
+        max_supervisor_ticks: 10,
+        planner: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
+        developer: [
+          { provider: 'codex', model: 'sonnet' },
+          { provider: 'codex', model: 'opus' },
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+        ],
+        reviewer: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
       },
       providers: {
         codex: {
@@ -174,12 +196,35 @@ describe('orchestrate helpers', () => {
   it('OR-U7: orchestrator state keeps bounded recent runs', () => {
     const state = emptyState({ kind: 'agent', id: 'orchestrator' }, '2026-04-09T00:00:00Z');
     const runs = boundedRuns([
-      { id: '1', kind: 'packet', provider: 'codex', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', started_at: '', completed_at: '', exit_code: 0, result: 'success', output_path: null, message: '' },
-      { id: '2', kind: 'packet', provider: 'codex', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', started_at: '', completed_at: '', exit_code: 0, result: 'success', output_path: null, message: '' },
-      { id: '3', kind: 'packet', provider: 'claude', target_id: 'p3', feature_id: 'f3', dispatch_id: 'd3', started_at: '', completed_at: '', exit_code: 0, result: 'success', output_path: null, message: '' },
-      { id: '4', kind: 'planner', provider: 'claude', target_id: 'i1', feature_id: null, dispatch_id: null, started_at: '', completed_at: '', exit_code: 0, result: 'success', output_path: null, message: '' },
+      { id: '1', kind: 'packet', provider: 'codex', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', started_at: '', completed_at: '', attempt: 1, exit_code: 0, result: 'success', output_path: null, message: '', failure_kind: null },
+      { id: '2', kind: 'packet', provider: 'codex', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', started_at: '', completed_at: '', attempt: 1, exit_code: 0, result: 'success', output_path: null, message: '', failure_kind: null },
+      { id: '3', kind: 'packet', provider: 'claude', target_id: 'p3', feature_id: 'f3', dispatch_id: 'd3', started_at: '', completed_at: '', attempt: 1, exit_code: 0, result: 'success', output_path: null, message: '', failure_kind: null },
+      { id: '4', kind: 'planner', provider: 'claude', target_id: 'i1', feature_id: null, dispatch_id: null, started_at: '', completed_at: '', attempt: 1, exit_code: 0, result: 'success', output_path: null, message: '', failure_kind: null },
     ], 3);
     expect(state.version).toBe(1);
+    expect(state.cache.recent_attempts).toEqual([]);
     expect(runs.map((run) => run.id)).toEqual(['2', '3', '4']);
+  });
+
+  it('OR-U8: retry ladder prepends assigned model and dedupes configured steps', () => {
+    const steps = buildRetrySteps('reviewer', 'sonnet', makeConfig().orchestrator!);
+    expect(steps).toEqual([
+      { provider: 'claude', model: 'sonnet' },
+      { provider: 'claude', model: 'opus' },
+      { provider: 'codex', model: 'opus' },
+    ]);
+  });
+
+  it('OR-U9: attempt history is bounded independently from run history', () => {
+    const attempts = boundedAttempts([
+      { kind: 'packet', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', persona: 'developer', provider: 'codex', model: 'sonnet', attempt: 1, outcome: 'failed', failure_kind: 'task_failed', observed_at: '' },
+      { kind: 'packet', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', persona: 'developer', provider: 'codex', model: 'opus', attempt: 2, outcome: 'success', failure_kind: null, observed_at: '' },
+      { kind: 'planner', target_id: 'i1', feature_id: null, dispatch_id: null, persona: 'planner', provider: 'claude', model: 'opus', attempt: 1, outcome: 'success', failure_kind: null, observed_at: '' },
+      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'reviewer', provider: 'claude', model: 'sonnet', attempt: 1, outcome: 'failed', failure_kind: 'task_failed', observed_at: '' },
+      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'reviewer', provider: 'claude', model: 'opus', attempt: 2, outcome: 'success', failure_kind: null, observed_at: '' },
+    ], 4);
+    expect(attempts).toHaveLength(4);
+    expect(attempts[0].provider).toBe('codex');
+    expect(attempts[3].attempt).toBe(2);
   });
 });

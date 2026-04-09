@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 export type OrchestratorProvider = 'codex' | 'claude';
+export type OrchestratorPersona = 'planner' | 'developer' | 'reviewer';
 
 export interface PersonaConfig {
   readonly description: string;
@@ -44,11 +45,24 @@ export interface OrchestratorProviderConfig {
   readonly models: Readonly<Record<ModelTier, string>>;
 }
 
+export interface OrchestratorRetryStep {
+  readonly provider: OrchestratorProvider;
+  readonly model: ModelTier;
+}
+
+export interface OrchestratorRetryConfig {
+  readonly max_supervisor_ticks: number;
+  readonly planner: ReadonlyArray<OrchestratorRetryStep>;
+  readonly developer: ReadonlyArray<OrchestratorRetryStep>;
+  readonly reviewer: ReadonlyArray<OrchestratorRetryStep>;
+}
+
 export interface OrchestratorConfig {
   readonly enabled: boolean;
   readonly identity: { readonly kind: string; readonly id: string };
   readonly output_dir: string;
   readonly recent_run_limit: number;
+  readonly recent_attempt_limit: number;
   readonly completion_identities: {
     readonly developer: string;
     readonly reviewer: string;
@@ -62,6 +76,7 @@ export interface OrchestratorConfig {
     readonly codex: OrchestratorProviderConfig;
     readonly claude: OrchestratorProviderConfig;
   };
+  readonly retries: OrchestratorRetryConfig;
 }
 
 export interface FactoryConfig {
@@ -143,6 +158,7 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       identity: { kind: 'agent', id: 'orchestrator' },
       output_dir: 'reports/orchestrator',
       recent_run_limit: 25,
+      recent_attempt_limit: 50,
       completion_identities: {
         developer: 'codex-dev',
         reviewer: 'claude-qa',
@@ -174,10 +190,30 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
           },
         },
       },
+      retries: {
+        max_supervisor_ticks: 50,
+        planner: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
+        developer: [
+          { provider: 'codex', model: 'sonnet' },
+          { provider: 'codex', model: 'opus' },
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+        ],
+        reviewer: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
+      },
     };
     const rawOrchestrator = (parsed as Record<string, unknown>)['orchestrator'] as Partial<OrchestratorConfig> | undefined;
     const rawOrchestratorProviders = rawOrchestrator?.providers as Partial<OrchestratorConfig['providers']> | undefined;
     const rawOrchestratorPersonas = rawOrchestrator?.personas as Partial<OrchestratorConfig['personas']> | undefined;
+    const rawOrchestratorRetries = rawOrchestrator?.retries as Partial<OrchestratorRetryConfig> | undefined;
     const orchestrator: OrchestratorConfig = {
       ...defaultOrchestrator,
       ...rawOrchestrator,
@@ -202,6 +238,13 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
             ...rawOrchestratorProviders?.claude?.models,
           },
         },
+      },
+      retries: {
+        ...defaultOrchestrator.retries,
+        ...rawOrchestratorRetries,
+        planner: rawOrchestratorRetries?.planner ?? defaultOrchestrator.retries.planner,
+        developer: rawOrchestratorRetries?.developer ?? defaultOrchestrator.retries.developer,
+        reviewer: rawOrchestratorRetries?.reviewer ?? defaultOrchestrator.retries.reviewer,
       },
     };
     return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, orchestrator } as FactoryConfig;

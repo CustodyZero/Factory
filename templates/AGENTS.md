@@ -143,6 +143,8 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | `npx tsx .factory/tools/orchestrate.ts health` | Check native Codex/Claude orchestrator availability |
 | `npx tsx .factory/tools/orchestrate.ts plan <intent-id>` | Invoke the configured planner provider for a plan-ready intent |
 | `npx tsx .factory/tools/orchestrate.ts supervise` | Invoke the deterministic harness for supervisor-issued dispatches |
+| `npx tsx .factory/tools/orchestrate.ts run` | Run the native autonomous loop until idle or a human gate |
+| `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` | Plan an intent, stop at approval, then continue into supervised execution once approved |
 
 ---
 
@@ -267,13 +269,29 @@ When supervisor mode is active, only packets returned in `ready_packets` may be 
 
 ### How It Works
 
+Manual supervisor loop:
+
 ```
 1. Human approves a planned feature (typically produced from an intent by the planner)
-3. Run: npx tsx .factory/tools/supervise.ts --init   (first time only)
-4. Run: npx tsx .factory/tools/supervise.ts --json
-5. Perform the returned action
-6. Repeat step 4 until idle
+2. Run: npx tsx .factory/tools/supervise.ts --init   (first time only)
+3. Run: npx tsx .factory/tools/supervise.ts --json
+4. Perform the returned action
+5. Repeat step 3 until idle
 ```
+
+Native autonomous loop:
+
+```sh
+npx tsx .factory/tools/orchestrate.ts run
+npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>
+```
+
+`orchestrate.ts run` will:
+- initialize supervisor state automatically when needed
+- re-tick after `update_state`
+- invoke planner/developer/reviewer agents through the configured Codex/Claude shell contracts
+- retry failed planner and packet runs through the configured provider/model ladder
+- stop only at `idle`, `awaiting_approval`, or a real blocking/escalation gate after retries are exhausted
 
 The supervisor returns one action per tick:
 - `execute_feature` — spawn agents for ready packets using the returned dispatch records

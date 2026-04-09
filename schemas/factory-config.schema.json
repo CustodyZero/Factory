@@ -69,6 +69,7 @@
         "identity": { "$ref": "#/$defs/identity" },
         "output_dir": { "type": "string", "minLength": 1 },
         "recent_run_limit": { "type": "integer", "minimum": 1 },
+        "recent_attempt_limit": { "type": "integer", "minimum": 1 },
         "completion_identities": {
           "type": "object",
           "required": ["developer", "reviewer"],
@@ -94,6 +95,17 @@
           "properties": {
             "codex": { "$ref": "#/$defs/provider" },
             "claude": { "$ref": "#/$defs/provider" }
+          },
+          "additionalProperties": false
+        },
+        "retries": {
+          "type": "object",
+          "required": ["max_supervisor_ticks", "planner", "developer", "reviewer"],
+          "properties": {
+            "max_supervisor_ticks": { "type": "integer", "minimum": 1 },
+            "planner": { "$ref": "#/$defs/retry_steps" },
+            "developer": { "$ref": "#/$defs/retry_steps" },
+            "reviewer": { "$ref": "#/$defs/retry_steps" }
           },
           "additionalProperties": false
         }
@@ -137,6 +149,23 @@
     "provider_name": {
       "type": "string",
       "enum": ["codex", "claude"]
+    },
+    "retry_step": {
+      "type": "object",
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/provider_name" },
+        "model": {
+          "type": "string",
+          "enum": ["opus", "sonnet", "haiku"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "retry_steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/retry_step" }
     },
     "provider": {
       "type": "object",
