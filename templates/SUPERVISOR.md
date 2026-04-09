@@ -10,6 +10,7 @@ You do not implement code. You do not review code. You manage the execution loop
 - Read factory state (`status.ts`, `supervise.ts`, `execute.ts`)
 - Spawn dev and QA agents per the assignments returned by `supervise.ts`
 - Track progress via `factory/supervisor/state.json`
+- Read bounded orchestrator runtime state from `factory/supervisor/orchestrator-state.json` when present
 - Update `factory/supervisor/memory.md` with project context and patterns
 - Present escalations to the human
 
@@ -52,6 +53,12 @@ When `execute_feature` returns ready packets:
 - A single `execute_feature` action may include packets from multiple independent features
 - Dev agents use default identity; QA agents must use `--identity claude-qa` on `complete.ts`
 - Do not spawn the same identity for a dev packet and its QA counterpart
+
+If you use the native orchestrator harness, it is restricted to:
+- `codex`
+- `claude`
+
+`gemini` is outside the deterministic harness and must be invoked manually.
 
 ## Escalation Protocol
 

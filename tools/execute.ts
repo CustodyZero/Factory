@@ -20,7 +20,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveArtifactRoot } from './config.js';
+import { buildToolCommand, loadConfig, resolveArtifactRoot } from './config.js';
 import type { FactoryConfig, PersonasConfig, ModelTier } from './config.js';
 
 // ---------------------------------------------------------------------------
@@ -136,6 +136,8 @@ export interface ExecuteInput {
   readonly completionIds: ReadonlySet<string>;
   readonly acceptanceIds: ReadonlySet<string>;
   readonly personas?: PersonasConfig;
+  readonly startCommand?: ((packetId: string) => string) | undefined;
+  readonly acceptCommand?: ((packetId: string) => string) | undefined;
 }
 
 const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
@@ -217,7 +219,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       persona,
       model,
       instructions: [...personaInstructions, ...packetInstructions],
-      start_command: `npx tsx tools/start.ts ${packet.id}`,
+      start_command: input.startCommand?.(packet.id) ?? `npx tsx tools/start.ts ${packet.id}`,
     };
   }
 
@@ -292,7 +294,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
         message:
           `Feature '${feature.id}': all packets complete. Awaiting human acceptance for architectural packets:\n` +
           needsAcceptance.map((id) => `  - ${id}`).join('\n') +
-          `\n  Use npx tsx tools/accept.ts <packet-id> for each.`,
+          `\n  Use ${input.acceptCommand?.('<packet-id>') ?? 'npx tsx tools/accept.ts <packet-id>'} for each.`,
       };
     }
 
@@ -482,6 +484,8 @@ function main(): void {
     completionIds,
     acceptanceIds,
     personas: config.personas,
+    startCommand: (packetId) => buildToolCommand('start.ts', [packetId], undefined, config),
+    acceptCommand: (packetId) => buildToolCommand('accept.ts', [packetId], undefined, config),
   });
 
   if (process.argv.includes('--json')) {

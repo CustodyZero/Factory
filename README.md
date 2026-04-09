@@ -97,6 +97,46 @@ Edit `factory.config.json` at the project root:
       "instructions": [],
       "model": "sonnet"
     }
+  },
+  "orchestrator": {
+    "enabled": true,
+    "identity": {
+      "kind": "agent",
+      "id": "orchestrator"
+    },
+    "output_dir": "reports/orchestrator",
+    "recent_run_limit": 25,
+    "completion_identities": {
+      "developer": "codex-dev",
+      "reviewer": "claude-qa"
+    },
+    "personas": {
+      "planner": "claude",
+      "developer": "codex",
+      "reviewer": "claude"
+    },
+    "providers": {
+      "codex": {
+        "enabled": true,
+        "command": "codex",
+        "sandbox": "workspace-write",
+        "models": {
+          "opus": "gpt-5.4",
+          "sonnet": "gpt-5.4-mini",
+          "haiku": "gpt-5.4-mini"
+        }
+      },
+      "claude": {
+        "enabled": true,
+        "command": "claude",
+        "permission_mode": "bypassPermissions",
+        "models": {
+          "opus": "opus",
+          "sonnet": "sonnet",
+          "haiku": "haiku"
+        }
+      }
+    }
   }
 }
 ```
@@ -116,6 +156,13 @@ Factory now has a first-class planning layer. The preferred flow is:
 The planner and supervisor are intentionally separate:
 - planner decomposes work into artifacts
 - supervisor executes approved artifacts deterministically
+
+The native deterministic orchestrator sits beside those actors:
+- planner decides decomposition
+- supervisor decides legal execution
+- orchestrator invokes `codex` and `claude` through fixed shell contracts
+
+`gemini` is intentionally not part of the native harness. Use it manually if needed.
 
 ## Your First Change
 
@@ -561,6 +608,19 @@ Supervisor tick loop for automated orchestration. In supervisor mode,
 `execute_feature` returns stable dispatch records that act as the only legal
 authorization for packet start/agent spawn.
 
+### Orchestrate
+
+```sh
+npx tsx .factory/tools/orchestrate.ts health
+npx tsx .factory/tools/orchestrate.ts health --probe
+npx tsx .factory/tools/orchestrate.ts plan <intent-id>
+npx tsx .factory/tools/orchestrate.ts supervise
+```
+
+Deterministic shell harness for native orchestration. It consumes `plan.ts`
+and `supervise.ts`, invokes supported LLM CLIs, and stores bounded runtime
+state in `supervisor/orchestrator-state.json`.
+
 ### Validate
 
 ```sh
@@ -605,10 +665,10 @@ through developer and QA agents:
 1. Human creates the feature JSON and dev/QA packet JSON files.
 2. Human approves the feature (`status: "approved"`).
 3. Initialize supervisor state once: `npx tsx .factory/tools/supervise.ts --init`
-4. Supervisor agent runs `npx tsx .factory/tools/supervise.ts --json`
-5. If the result is `execute_feature`, the supervisor spawns one agent per dispatch in `dispatches`
+4. Native option: run `npx tsx .factory/tools/orchestrate.ts supervise`
+5. If the result is `execute_feature`, the orchestrator or external runner spawns one agent per dispatch in `dispatches`
 6. Each spawned agent runs the returned `start_command`, performs only that packet’s work, then runs `complete.ts`
-7. QA agents use `--identity <qa-id>` and must satisfy any `environment_dependencies` evidence requirement
+7. QA agents use a distinct reviewer identity and must satisfy any `environment_dependencies` evidence requirement
 8. Supervisor re-runs `supervise.ts --json` after each state change
 9. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
 10. Repeat until the supervisor returns `idle`
@@ -630,7 +690,7 @@ This is the full factory-native flow with planning and execution separated:
    - `feature.intent_id` and `intent.feature_id` linkage
 4. Human reviews the planned feature and packet set
 5. Human sets the feature status to `approved`
-6. Supervisor runs `npx tsx .factory/tools/supervise.ts --json`
+6. Native option: the orchestrator runs `npx tsx .factory/tools/orchestrate.ts supervise`
 7. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
 8. Developer and reviewer agents execute packets exactly as assigned
 9. Human handles architectural acceptance when escalated
@@ -655,6 +715,7 @@ When installed in a host project as a git submodule:
 │   │   ├── status.ts        # Status & next action
 │   │   ├── plan.ts          # Planner handoff resolver
 │   │   ├── execute.ts       # Feature execution resolver
+│   │   ├── orchestrate.ts   # Deterministic Codex/Claude shell harness
 │   │   ├── start.ts         # Packet claim command
 │   │   ├── complete.ts      # Completion record generator
 │   │   ├── completion-gate.ts # Pre-commit FI-7 enforcement
@@ -675,7 +736,8 @@ When installed in a host project as a git submodule:
 │   ├── acceptances/         # Human approval records
 │   ├── rejections/          # Audit reversals
 │   ├── evidence/            # Environment dependency proofs
-│   └── supervisor/          # Supervisor state and memory
+│   ├── reports/             # Orchestrator output capture
+│   └── supervisor/          # Supervisor state, orchestrator cache, and memory
 └── src/                     # Host project source (any language)
 ```
 

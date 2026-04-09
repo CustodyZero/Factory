@@ -45,5 +45,45 @@
       "instructions": [],
       "model": "sonnet"
     }
+  },
+  "orchestrator": {
+    "enabled": true,
+    "identity": {
+      "kind": "agent",
+      "id": "orchestrator"
+    },
+    "output_dir": "reports/orchestrator",
+    "recent_run_limit": 25,
+    "completion_identities": {
+      "developer": "codex-dev",
+      "reviewer": "claude-qa"
+    },
+    "personas": {
+      "planner": "claude",
+      "developer": "codex",
+      "reviewer": "claude"
+    },
+    "providers": {
+      "codex": {
+        "enabled": true,
+        "command": "codex",
+        "sandbox": "workspace-write",
+        "models": {
+          "opus": "gpt-5.4",
+          "sonnet": "gpt-5.4-mini",
+          "haiku": "gpt-5.4-mini"
+        }
+      },
+      "claude": {
+        "enabled": true,
+        "command": "claude",
+        "permission_mode": "bypassPermissions",
+        "models": {
+          "opus": "opus",
+          "sonnet": "sonnet",
+          "haiku": "haiku"
+        }
+      }
+    }
   }
 }

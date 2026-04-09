@@ -27,7 +27,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import { buildToolCommand, loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 import type { PersonasConfig } from './config.js';
 import { resolveExecuteAction } from './execute.js';
 import type { Feature, RawPacket, ExecuteAction, PacketAssignment } from './execute.js';
@@ -137,6 +137,10 @@ export interface SuperviseInput {
   readonly personas: PersonasConfig;
   readonly now: Date;
   readonly featureFilter?: string;
+  readonly commands?: {
+    readonly start?: (packetId: string) => string;
+    readonly accept?: (packetId: string) => string;
+  } | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +350,8 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
       completionIds: input.completionIds,
       acceptanceIds: input.acceptanceIds,
       personas: input.personas,
+      startCommand: input.commands?.start,
+      acceptCommand: input.commands?.accept,
     });
 
     switch (executeAction.kind) {
@@ -419,7 +425,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           created_at: nowIso,
           message: `Feature '${feature.id}': all packets complete. Architectural packets need human acceptance:\n` +
             needsAcceptance.map((id) => `  - ${id}`).join('\n') +
-            `\n  Use: npx tsx tools/accept.ts <packet-id>`,
+            `\n  Use: ${input.commands?.accept?.('<packet-id>') ?? 'npx tsx tools/accept.ts <packet-id>'}`,
           resolved: false,
           resolved_at: null,
         };
@@ -757,6 +763,10 @@ function main(): void {
     personas: config.personas,
     now,
     featureFilter,
+    commands: {
+      start: (packetId) => buildToolCommand('start.ts', [packetId], projectRoot, config),
+      accept: (packetId) => buildToolCommand('accept.ts', [packetId], projectRoot, config),
+    },
   });
 
   // Output

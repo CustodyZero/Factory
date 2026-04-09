@@ -8,6 +8,7 @@
  *   - packet.acceptance_criteria (migration placeholder)
  *   - feature.acceptance_criteria (migration placeholder)
  *   - intents/ directory for planner-native flow
+ *   - reports/orchestrator directory for orchestrator output capture
  *
  * Safe to run multiple times. Reports what it changed.
  *
@@ -97,6 +98,18 @@ function ensurePlannerArtifacts(): void {
   }
 }
 
+function ensureOrchestratorArtifacts(): void {
+  const dir = join(ARTIFACT_ROOT, 'reports', 'orchestrator');
+  if (existsSync(dir)) {
+    return;
+  }
+
+  changes.push({ file: 'reports/orchestrator/', field: 'directory', value: 'created' });
+  if (!isDryRun) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -110,6 +123,7 @@ console.log('');
 migratePackets();
 migrateFeatures();
 ensurePlannerArtifacts();
+ensureOrchestratorArtifacts();
 
 if (changes.length === 0) {
   console.log('  No migration needed — all artifacts are up to date.');
@@ -128,4 +142,5 @@ if (!isDryRun && changes.length > 0) {
   console.log('  Replace [MIGRATION] placeholders with real acceptance criteria.');
   console.log('  Planner-native flow is opt-in: existing features can continue without intent_id.');
   console.log('  New work can start from intents/<intent-id>.json and npx tsx tools/plan.ts <intent-id>.');
+  console.log('  Orchestrator output is stored under reports/orchestrator/ when the native harness is used.');
 }

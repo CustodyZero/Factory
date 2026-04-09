@@ -1179,6 +1179,71 @@ function main(): void {
     }
   }
 
+  // Orchestrator state validation (if supervisor/orchestrator-state.json exists)
+  const orchestratorStatePath = join(ARTIFACT_ROOT, 'supervisor', 'orchestrator-state.json');
+  if (existsSync(orchestratorStatePath)) {
+    try {
+      const rawOrchestrator = JSON.parse(readFileSync(orchestratorStatePath, 'utf-8')) as Record<string, unknown>;
+      if (typeof rawOrchestrator['version'] !== 'number') {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'version' must be a number" });
+      }
+      if (typeof rawOrchestrator['updated_at'] !== 'string') {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'updated_at' must be a string" });
+      }
+      if (!isObject(rawOrchestrator['updated_by'])) {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'updated_by' must be an object" });
+      }
+      if (!isObject(rawOrchestrator['provider_health'])) {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'provider_health' must be an object" });
+      }
+      if (!isObject(rawOrchestrator['cache'])) {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'cache' must be an object" });
+      }
+      if (!Array.isArray(rawOrchestrator['recent_runs'])) {
+        allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: "'recent_runs' must be an array" });
+      }
+
+      if (isObject(rawOrchestrator['provider_health'])) {
+        for (const [provider, value] of Object.entries(rawOrchestrator['provider_health'])) {
+          if (provider !== 'codex' && provider !== 'claude') {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: `unsupported provider_health key '${provider}'` });
+            continue;
+          }
+          if (!isObject(value)) {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: `provider_health['${provider}'] must be an object` });
+            continue;
+          }
+          if (typeof value['available'] !== 'boolean') {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: `provider_health['${provider}'].available must be a boolean` });
+          }
+        }
+      }
+
+      if (Array.isArray(rawOrchestrator['recent_runs'])) {
+        for (const run of rawOrchestrator['recent_runs']) {
+          if (!isObject(run)) {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: 'recent_runs entries must be objects' });
+            continue;
+          }
+          const provider = typeof run['provider'] === 'string' ? run['provider'] : null;
+          const featureId = typeof run['feature_id'] === 'string' ? run['feature_id'] : null;
+          const dispatchIdValue = typeof run['dispatch_id'] === 'string' ? run['dispatch_id'] : null;
+          if (provider !== null && provider !== 'codex' && provider !== 'claude') {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: `recent run references unsupported provider '${provider}'` });
+          }
+          if (featureId !== null && !index.features.some((feature) => feature.id === featureId)) {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'warning', error_type: 'referential', message: `recent run references feature '${featureId}' which does not exist` });
+          }
+          if (dispatchIdValue !== null && !/^dispatch-/.test(dispatchIdValue)) {
+            allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: `recent run has invalid dispatch_id '${dispatchIdValue}'` });
+          }
+        }
+      }
+    } catch {
+      allResults.push({ file: 'supervisor/orchestrator-state.json', severity: 'error', error_type: 'schema', message: 'Failed to parse orchestrator state JSON' });
+    }
+  }
+
   // Report
   const errors = allResults.filter((r) => r.severity === 'error');
   const warnings = allResults.filter((r) => r.severity === 'warning');

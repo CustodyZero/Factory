@@ -15,7 +15,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveArtifactRoot } from './config.js';
+import { buildToolCommand, loadConfig, resolveArtifactRoot } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -153,6 +153,10 @@ export interface StatusInput {
   readonly featureFilter?: string | undefined;
   readonly features?: ReadonlyArray<RawFeature> | undefined;
   readonly intents?: ReadonlyArray<RawIntent> | undefined;
+  readonly commands?: {
+    readonly complete?: (packetId: string) => string;
+    readonly plan?: (intentId: string) => string;
+  } | undefined;
 }
 
 function verificationPasses(v: RawCompletion['verification']): boolean {
@@ -279,7 +283,14 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
       intent_id: typeof feature.intent_id === 'string' ? feature.intent_id : null,
     }));
 
-  const nextAction = deriveNextAction(incomplete, awaitingAcceptance, blocked, featuresAwaitingApproval, intentsPendingPlanning);
+  const nextAction = deriveNextAction(
+    incomplete,
+    awaitingAcceptance,
+    blocked,
+    featuresAwaitingApproval,
+    intentsPendingPlanning,
+    input.commands,
+  );
 
   return {
     feature_filter: featureFilter,
@@ -300,6 +311,10 @@ function deriveNextAction(
   blocked: ReadonlyArray<PacketSummary>,
   featuresAwaitingApproval: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null }>,
   intentsPendingPlanning: ReadonlyArray<IntentSummary>,
+  commands?: {
+    readonly complete?: (packetId: string) => string;
+    readonly plan?: (intentId: string) => string;
+  },
 ): NextAction {
   if (incomplete.length > 0) {
     const sorted = [...incomplete].sort((a, b) =>
@@ -310,7 +325,7 @@ function deriveNextAction(
       kind: 'complete_packet',
       packet_id: first.id,
       message: `Packet '${first.id}' is in-progress but has no completion record. Create the completion before proceeding.`,
-      command: `npx tsx tools/complete.ts ${first.id}`,
+      command: commands?.complete?.(first.id) ?? `npx tsx tools/complete.ts ${first.id}`,
     };
   }
 
@@ -351,7 +366,7 @@ function deriveNextAction(
       kind: 'plan_intent',
       packet_id: null,
       message: `Intent '${first.id}' is proposed and ready for planner decomposition.`,
-      command: `npx tsx tools/plan.ts ${first.id}`,
+      command: commands?.plan?.(first.id) ?? `npx tsx tools/plan.ts ${first.id}`,
     };
   }
 
@@ -468,7 +483,18 @@ function main(): void {
   const featureIdx = process.argv.indexOf('--feature');
   const featureFilter = featureIdx !== -1 ? process.argv[featureIdx + 1] : undefined;
 
-  const status = deriveFactoryStatus({ packets, completions, acceptances, featureFilter, features, intents });
+  const status = deriveFactoryStatus({
+    packets,
+    completions,
+    acceptances,
+    featureFilter,
+    features,
+    intents,
+    commands: {
+      complete: (packetId) => buildToolCommand('complete.ts', [packetId], undefined, config),
+      plan: (intentId) => buildToolCommand('plan.ts', [intentId], undefined, config),
+    },
+  });
 
   // Read supervisor state if present
   const supervisorStatePath = join(artifactRoot, 'supervisor', 'state.json');

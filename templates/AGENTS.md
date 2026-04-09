@@ -140,6 +140,9 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | `npx tsx .factory/tools/validate.ts` | Verify factory integrity |
 | `npx tsx .factory/tools/supervise.ts` | Supervisor tick — next orchestration action |
 | `npx tsx .factory/tools/supervise.ts --init` | Initialize supervisor state |
+| `npx tsx .factory/tools/orchestrate.ts health` | Check native Codex/Claude orchestrator availability |
+| `npx tsx .factory/tools/orchestrate.ts plan <intent-id>` | Invoke the configured planner provider for a plan-ready intent |
+| `npx tsx .factory/tools/orchestrate.ts supervise` | Invoke the deterministic harness for supervisor-issued dispatches |
 
 ---
 
@@ -286,11 +289,15 @@ In `execute_feature`:
 - the outer orchestrator must not spawn any packet missing from `dispatches`
 - one `execute_feature` action may include packets from multiple independent features
 
+Native orchestrator support is restricted to `codex` and `claude`.
+`gemini` is not part of the deterministic harness.
+
 ### State Files
 
 | File | Purpose |
 |---|---|
 | `factory/supervisor/state.json` | Feature tracking, escalations, audit log |
+| `factory/supervisor/orchestrator-state.json` | Bounded orchestrator cache, provider checks, and recent run history |
 | `factory/supervisor/memory.md` | Cross-session context for any inference engine |
 | `factory/supervisor/SUPERVISOR.md` | Behavioral contract (copy from `.factory/templates/SUPERVISOR.md`) |
 
@@ -316,6 +323,7 @@ This file defines:
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
 - **Persona definitions** (instructions for planner, developer, and reviewer agents)
+- **Orchestrator provider mappings** (Codex/Claude only)
 
 ### Personas and Instructions
 

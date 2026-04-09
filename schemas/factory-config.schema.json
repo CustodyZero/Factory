@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "factory-config.schema.json",
+  "title": "Factory Config",
+  "description": "Project-local configuration for Factory tooling, personas, verification, supervisor, and orchestrator behavior.",
+  "type": "object",
+  "required": [
+    "project_name",
+    "factory_dir",
+    "artifact_dir",
+    "verification",
+    "validation",
+    "infrastructure_patterns",
+    "completed_by_default",
+    "personas"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "project_name": { "type": "string", "minLength": 1 },
+    "factory_dir": { "type": "string", "minLength": 1 },
+    "artifact_dir": { "type": "string", "minLength": 1 },
+    "verification": {
+      "type": "object",
+      "required": ["build", "lint", "test"],
+      "properties": {
+        "build": { "type": "string", "minLength": 1 },
+        "lint": { "type": "string", "minLength": 1 },
+        "test": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "infrastructure_patterns": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "completed_by_default": { "$ref": "#/$defs/identity" },
+    "personas": {
+      "type": "object",
+      "required": ["planner", "developer", "reviewer"],
+      "properties": {
+        "planner": { "$ref": "#/$defs/persona" },
+        "developer": { "$ref": "#/$defs/persona" },
+        "reviewer": { "$ref": "#/$defs/persona" }
+      },
+      "additionalProperties": false
+    },
+    "supervisor": {
+      "type": "object",
+      "required": ["enabled", "identity"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "identity": { "$ref": "#/$defs/identity" }
+      },
+      "additionalProperties": false
+    },
+    "orchestrator": {
+      "type": "object",
+      "required": ["enabled", "identity", "personas", "providers"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "output_dir": { "type": "string", "minLength": 1 },
+        "recent_run_limit": { "type": "integer", "minimum": 1 },
+        "completion_identities": {
+          "type": "object",
+          "required": ["developer", "reviewer"],
+          "properties": {
+            "developer": { "type": "string", "minLength": 1 },
+            "reviewer": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "personas": {
+          "type": "object",
+          "required": ["planner", "developer", "reviewer"],
+          "properties": {
+            "planner": { "$ref": "#/$defs/provider_name" },
+            "developer": { "$ref": "#/$defs/provider_name" },
+            "reviewer": { "$ref": "#/$defs/provider_name" }
+          },
+          "additionalProperties": false
+        },
+        "providers": {
+          "type": "object",
+          "required": ["codex", "claude"],
+          "properties": {
+            "codex": { "$ref": "#/$defs/provider" },
+            "claude": { "$ref": "#/$defs/provider" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["human", "agent", "cli", "ui"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "persona": {
+      "type": "object",
+      "required": ["description", "instructions"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "instructions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "model": {
+          "type": "string",
+          "enum": ["opus", "sonnet", "haiku"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider_name": {
+      "type": "string",
+      "enum": ["codex", "claude"]
+    },
+    "provider": {
+      "type": "object",
+      "required": ["enabled", "command", "models"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "command": { "type": "string", "minLength": 1 },
+        "sandbox": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write", "danger-full-access"]
+        },
+        "permission_mode": {
+          "type": "string",
+          "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]
+        },
+        "models": {
+          "type": "object",
+          "required": ["opus", "sonnet", "haiku"],
+          "properties": {
+            "opus": { "type": "string", "minLength": 1 },
+            "sonnet": { "type": "string", "minLength": 1 },
+            "haiku": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

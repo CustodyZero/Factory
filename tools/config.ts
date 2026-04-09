@@ -17,6 +17,7 @@ import { join } from 'node:path';
 // ---------------------------------------------------------------------------
 
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
+export type OrchestratorProvider = 'codex' | 'claude';
 
 export interface PersonaConfig {
   readonly description: string;
@@ -33,6 +34,34 @@ export interface PersonasConfig {
 export interface SupervisorConfig {
   readonly enabled: boolean;
   readonly identity: { readonly kind: string; readonly id: string };
+}
+
+export interface OrchestratorProviderConfig {
+  readonly enabled: boolean;
+  readonly command: string;
+  readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
+  readonly models: Readonly<Record<ModelTier, string>>;
+}
+
+export interface OrchestratorConfig {
+  readonly enabled: boolean;
+  readonly identity: { readonly kind: string; readonly id: string };
+  readonly output_dir: string;
+  readonly recent_run_limit: number;
+  readonly completion_identities: {
+    readonly developer: string;
+    readonly reviewer: string;
+  };
+  readonly personas: {
+    readonly planner: OrchestratorProvider;
+    readonly developer: OrchestratorProvider;
+    readonly reviewer: OrchestratorProvider;
+  };
+  readonly providers: {
+    readonly codex: OrchestratorProviderConfig;
+    readonly claude: OrchestratorProviderConfig;
+  };
 }
 
 export interface FactoryConfig {
@@ -54,6 +83,7 @@ export interface FactoryConfig {
   };
   readonly personas: PersonasConfig;
   readonly supervisor?: SupervisorConfig;
+  readonly orchestrator?: OrchestratorConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,11 +138,97 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
       reviewer: { ...defaultPersonas.reviewer, ...rawPersonas?.reviewer },
     };
-    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas } as FactoryConfig;
+    const defaultOrchestrator: OrchestratorConfig = {
+      enabled: true,
+      identity: { kind: 'agent', id: 'orchestrator' },
+      output_dir: 'reports/orchestrator',
+      recent_run_limit: 25,
+      completion_identities: {
+        developer: 'codex-dev',
+        reviewer: 'claude-qa',
+      },
+      personas: {
+        planner: 'claude',
+        developer: 'codex',
+        reviewer: 'claude',
+      },
+      providers: {
+        codex: {
+          enabled: true,
+          command: 'codex',
+          sandbox: 'workspace-write',
+          models: {
+            opus: 'gpt-5.4',
+            sonnet: 'gpt-5.4-mini',
+            haiku: 'gpt-5.4-mini',
+          },
+        },
+        claude: {
+          enabled: true,
+          command: 'claude',
+          permission_mode: 'bypassPermissions',
+          models: {
+            opus: 'opus',
+            sonnet: 'sonnet',
+            haiku: 'haiku',
+          },
+        },
+      },
+    };
+    const rawOrchestrator = (parsed as Record<string, unknown>)['orchestrator'] as Partial<OrchestratorConfig> | undefined;
+    const rawOrchestratorProviders = rawOrchestrator?.providers as Partial<OrchestratorConfig['providers']> | undefined;
+    const rawOrchestratorPersonas = rawOrchestrator?.personas as Partial<OrchestratorConfig['personas']> | undefined;
+    const orchestrator: OrchestratorConfig = {
+      ...defaultOrchestrator,
+      ...rawOrchestrator,
+      personas: {
+        ...defaultOrchestrator.personas,
+        ...rawOrchestratorPersonas,
+      },
+      providers: {
+        codex: {
+          ...defaultOrchestrator.providers.codex,
+          ...rawOrchestratorProviders?.codex,
+          models: {
+            ...defaultOrchestrator.providers.codex.models,
+            ...rawOrchestratorProviders?.codex?.models,
+          },
+        },
+        claude: {
+          ...defaultOrchestrator.providers.claude,
+          ...rawOrchestratorProviders?.claude,
+          models: {
+            ...defaultOrchestrator.providers.claude.models,
+            ...rawOrchestratorProviders?.claude?.models,
+          },
+        },
+      },
+    };
+    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, orchestrator } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
+}
+
+export function resolveToolScriptPath(script: string, projectRoot?: string, config?: FactoryConfig): string {
+  const root = projectRoot ?? findProjectRoot();
+  const factoryRoot = resolveFactoryRoot(root, config);
+  return join(factoryRoot, 'tools', script);
+}
+
+export function buildToolCommand(
+  script: string,
+  args: ReadonlyArray<string> = [],
+  projectRoot?: string,
+  config?: FactoryConfig,
+): string {
+  const root = projectRoot ?? findProjectRoot();
+  const resolvedConfig = config ?? loadConfig(root);
+  const relativePath = resolvedConfig.factory_dir === '.'
+    ? join('tools', script)
+    : join(resolvedConfig.factory_dir, 'tools', script);
+  return ['npx', 'tsx', relativePath, ...args].join(' ');
 }
 
 /**

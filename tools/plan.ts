@@ -13,7 +13,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, resolveArtifactRoot } from './config.js';
+import { buildToolCommand, loadConfig, resolveArtifactRoot } from './config.js';
 import type { ModelTier } from './config.js';
 
 export interface IntentArtifact {
@@ -65,6 +65,7 @@ export interface PlanInput {
     readonly instructions: ReadonlyArray<string>;
     readonly model?: ModelTier;
   };
+  readonly superviseCommand?: ((featureId: string) => string) | undefined;
 }
 
 function readJson<T>(path: string): T | null {
@@ -144,7 +145,7 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
       intent_id: input.intent.id,
       feature_id: linkedFeature.id,
       planner_assignment: null,
-      command: `npx tsx tools/supervise.ts --json --feature ${linkedFeature.id}`,
+      command: input.superviseCommand?.(linkedFeature.id) ?? `npx tsx tools/supervise.ts --json --feature ${linkedFeature.id}`,
       message: `Intent '${input.intent.id}' has approved feature '${linkedFeature.id}'. Hand off to supervisor for execution.`,
     };
   }
@@ -225,6 +226,7 @@ function main(): void {
     intent,
     features,
     plannerPersona: config.personas.planner,
+    superviseCommand: (featureId) => buildToolCommand('supervise.ts', ['--json', '--feature', featureId], undefined, config),
   });
 
   if (jsonMode) {

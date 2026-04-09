@@ -70,7 +70,7 @@ copy_template "${FACTORY_DIR}/templates/AGENTS.md" "AGENTS.md"
 
 echo ""
 echo "Creating artifact directories..."
-for subdir in intents features packets completions acceptances rejections evidence supervisor; do
+for subdir in intents features packets completions acceptances rejections evidence supervisor reports/orchestrator; do
   mkdir -p "${ARTIFACT_DIR}/${subdir}"
   echo "  MKDIR ${ARTIFACT_DIR}/${subdir}/"
 done

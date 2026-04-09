@@ -140,6 +140,9 @@ artifacts are never written inside the submodule.
 | `npx tsx tools/validate.ts` | Verify factory integrity |
 | `npx tsx tools/supervise.ts` | Supervisor tick — next orchestration action |
 | `npx tsx tools/supervise.ts --init` | Initialize supervisor state |
+| `npx tsx tools/orchestrate.ts health` | Check native Codex/Claude orchestrator availability |
+| `npx tsx tools/orchestrate.ts plan <intent-id>` | Invoke the configured planner provider for a plan-ready intent |
+| `npx tsx tools/orchestrate.ts supervise` | Invoke the deterministic harness for supervisor-issued dispatches |
 
 ---
 
@@ -286,11 +289,15 @@ In `execute_feature`:
 - the outer orchestrator must not spawn any packet missing from `dispatches`
 - one `execute_feature` action may include packets from multiple independent features
 
+Native orchestrator support is restricted to `codex` and `claude`.
+`gemini` is not part of the deterministic harness.
+
 ### State Files
 
 | File | Purpose |
 |---|---|
 | `supervisor/state.json` | Feature tracking, escalations, audit log |
+| `supervisor/orchestrator-state.json` | Bounded orchestrator cache, provider checks, and recent run history |
 | `supervisor/memory.md` | Cross-session context for any inference engine |
 | `supervisor/SUPERVISOR.md` | Behavioral contract (copy from `factory/templates/SUPERVISOR.md`) |
 
@@ -316,6 +323,7 @@ This file defines:
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
 - **Persona definitions** (instructions for planner, developer, and reviewer agents)
+- **Orchestrator provider mappings** (Codex/Claude only)
 
 ### Personas and Instructions
 
