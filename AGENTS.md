@@ -235,7 +235,14 @@ The planner does not execute work. The supervisor does not plan work.
 
 ### Planner Flow
 
-1. Human creates `intents/<intent-id>.json`
+1. Human creates `intents/<intent-id>.json`. The intent must declare exactly one
+   of `spec` (inline body for short intents) or `spec_path` (path relative to the
+   project root pointing at a Markdown file containing the authoritative spec —
+   use this for long, human-authored specs that already live alongside the code,
+   e.g. `docs/specs/016-platform-targets.md`). `spec_path` must be relative, must
+   not escape the project root, and must point at a non-empty file. `validate.ts`
+   enforces these rules; `plan.ts` reads the file at plan time and hands its full
+   contents to the planner.
 2. Run `npx tsx tools/plan.ts <intent-id>`
 3. If the action is `plan_feature`, spawn a planner agent using the returned planner assignment
 4. Planner writes:

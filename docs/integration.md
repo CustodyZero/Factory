@@ -243,7 +243,14 @@ subdirectory.
 
 For automated orchestration with the native harness or an external runner:
 
-1. Human authors `factory/intents/<intent-id>.json`
+1. Human authors `factory/intents/<intent-id>.json`. The intent declares exactly
+   one of `spec` (inline body for short intents) or `spec_path` (path relative
+   to the project root pointing at a Markdown file that holds the authoritative
+   spec — use this for long human-authored specs like
+   `docs/specs/016-platform-targets.md`). `spec_path` must be relative, must not
+   escape the project root, and must point at a non-empty file. `validate.ts`
+   enforces the rules; `plan.ts` reads the file at plan time and hands its full
+   contents to the planner.
 2. Planner runs `npx tsx .factory/tools/plan.ts <intent-id> --json`
 3. If the action is `plan_feature`, the planner writes:
    - one `factory/features/<feature-id>.json` artifact with `status: "planned"`

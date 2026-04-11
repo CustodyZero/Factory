@@ -2,9 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "intent.schema.json",
   "title": "Factory Intent",
-  "description": "A high-level spec or intent that a planner decomposes into a feature and dev/qa packet pairs.",
+  "description": "A high-level spec or intent that a planner decomposes into a feature and dev/qa packet pairs. The spec body may be provided inline via 'spec' (small intents) or by reference via 'spec_path' (large human-authored Markdown specs). Exactly one of the two must be present.",
   "type": "object",
-  "required": ["id", "title", "spec", "status", "created_by", "created_at"],
+  "required": ["id", "title", "status", "created_by", "created_at"],
+  "oneOf": [
+    { "required": ["spec"], "not": { "required": ["spec_path"] } },
+    { "required": ["spec_path"], "not": { "required": ["spec"] } }
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -19,7 +23,12 @@
     "spec": {
       "type": "string",
       "minLength": 1,
-      "description": "High-level problem statement or desired outcome for the planner to decompose."
+      "description": "Inline high-level problem statement or desired outcome for the planner to decompose. Use for short intents. Mutually exclusive with 'spec_path'."
+    },
+    "spec_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path (relative to the project root) to a Markdown file containing the authoritative spec body. Use for large, human-authored specs that already live alongside the code. Must not be absolute and must not escape the project root. Mutually exclusive with 'spec'."
     },
     "constraints": {
       "type": "array",

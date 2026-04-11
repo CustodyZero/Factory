@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolvePlanAction } from '../plan.js';
-import type { PlanInput } from '../plan.js';
+import { hydrateIntent, resolvePlanAction, resolveSpecPath } from '../plan.js';
+import type { PlanInput, RawIntentArtifact } from '../plan.js';
 
 function makeIntent(overrides: Partial<PlanInput['intent']> = {}): PlanInput['intent'] {
   return {
@@ -63,5 +63,117 @@ describe('resolvePlanAction', () => {
       plannerPersona: { instructions: [], model: 'opus' },
     });
     expect(action.kind).toBe('blocked');
+  });
+});
+
+function makeRaw(overrides: Partial<RawIntentArtifact> = {}): RawIntentArtifact {
+  return {
+    id: 'customer-dashboard',
+    title: 'Customer dashboard',
+    status: 'proposed',
+    ...overrides,
+  };
+}
+
+describe('resolveSpecPath', () => {
+  it('SP-U1: rejects empty spec_path', () => {
+    const result = resolveSpecPath('/project', '');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must not be empty/);
+  });
+
+  it('SP-U2: rejects absolute spec_path', () => {
+    const result = resolveSpecPath('/project', '/etc/passwd');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must be relative/);
+  });
+
+  it('SP-U3: rejects path traversal', () => {
+    const result = resolveSpecPath('/project', '../outside.md');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must not escape/);
+  });
+
+  it('SP-U4: rejects embedded .. segments', () => {
+    const result = resolveSpecPath('/project', 'docs/../../../etc/passwd');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must not escape/);
+  });
+
+  it('SP-U5: resolves safe relative path under project root', () => {
+    const result = resolveSpecPath('/project', 'docs/specs/016.md');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.absolutePath).toBe('/project/docs/specs/016.md');
+  });
+
+  it('SP-U6: normalizes redundant segments that stay under root', () => {
+    const result = resolveSpecPath('/project', 'docs/./specs/016.md');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.absolutePath).toBe('/project/docs/specs/016.md');
+  });
+});
+
+describe('hydrateIntent', () => {
+  const neverRead = (): string => {
+    throw new Error('readFile should not be called for inline spec');
+  };
+
+  it('HI-U1: hydrates inline spec without touching the filesystem', () => {
+    const raw = makeRaw({ spec: 'Inline body' });
+    const result = hydrateIntent(raw, '/project', neverRead);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.intent.spec).toBe('Inline body');
+  });
+
+  it('HI-U2: rejects an intent with both spec and spec_path', () => {
+    const raw = makeRaw({ spec: 'Inline', spec_path: 'docs/016.md' });
+    const result = hydrateIntent(raw, '/project', neverRead);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/mutually exclusive|Use exactly one/);
+  });
+
+  it('HI-U3: rejects an intent with neither spec nor spec_path', () => {
+    const raw = makeRaw({});
+    const result = hydrateIntent(raw, '/project', neverRead);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must declare either/);
+  });
+
+  it('HI-U4: hydrates spec_path by reading through the injected reader', () => {
+    const raw = makeRaw({ spec_path: 'docs/specs/016.md' });
+    const readFile = (path: string): string => {
+      expect(path).toBe('/project/docs/specs/016.md');
+      return '# 016 — Platform Targets\n\nFull spec body here.';
+    };
+    const result = hydrateIntent(raw, '/project', readFile);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.intent.spec).toContain('016 — Platform Targets');
+      expect(result.intent.spec).toContain('Full spec body');
+    }
+  });
+
+  it('HI-U5: surfaces file read errors without silent fallback', () => {
+    const raw = makeRaw({ spec_path: 'docs/missing.md' });
+    const readFile = (): string => {
+      throw new Error('ENOENT: no such file');
+    };
+    const result = hydrateIntent(raw, '/project', readFile);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/failed to read spec_path.*ENOENT/);
+  });
+
+  it('HI-U6: rejects empty spec files to prevent silent no-op planner runs', () => {
+    const raw = makeRaw({ spec_path: 'docs/empty.md' });
+    const result = hydrateIntent(raw, '/project', () => '');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/is empty/);
+  });
+
+  it('HI-U7: rejects spec_path that escapes the project root', () => {
+    const raw = makeRaw({ spec_path: '../secret.md' });
+    const result = hydrateIntent(raw, '/project', neverRead);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/must not escape/);
   });
 });

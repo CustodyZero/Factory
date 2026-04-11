@@ -18,7 +18,8 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { loadConfig, resolveArtifactRoot } from './config.js';
+import { findProjectRoot, loadConfig, resolveArtifactRoot } from './config.js';
+import { resolveSpecPath } from './plan.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,7 +38,8 @@ interface ValidationResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const ARTIFACT_ROOT = resolveArtifactRoot();
+const PROJECT_ROOT = findProjectRoot();
+const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT);
 const VALID_CHANGE_CLASSES = ['trivial', 'local', 'cross_cutting', 'architectural'] as const;
 const VALID_IDENTITY_KINDS = ['human', 'agent', 'cli', 'ui'] as const;
 const VALID_FEATURE_STATUSES = ['draft', 'planned', 'approved', 'executing', 'completed', 'delivered'] as const;
@@ -357,7 +359,37 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
   }
 
   if (typeof data['title'] !== 'string' || data['title'].length === 0) e("'title' is required and must be non-empty");
-  if (typeof data['spec'] !== 'string' || data['spec'].length === 0) e("'spec' is required and must be non-empty");
+
+  const hasInlineSpec = typeof data['spec'] === 'string' && (data['spec'] as string).length > 0;
+  const hasSpecPath = typeof data['spec_path'] === 'string' && (data['spec_path'] as string).length > 0;
+  if (data['spec'] != null && typeof data['spec'] !== 'string') {
+    e("'spec' must be a string if present");
+  }
+  if (data['spec_path'] != null && typeof data['spec_path'] !== 'string') {
+    e("'spec_path' must be a string if present");
+  }
+  if (hasInlineSpec && hasSpecPath) {
+    e("'spec' and 'spec_path' are mutually exclusive — provide exactly one");
+  } else if (!hasInlineSpec && !hasSpecPath) {
+    e("either 'spec' or 'spec_path' is required");
+  } else if (hasSpecPath) {
+    const specPath = data['spec_path'] as string;
+    const resolved = resolveSpecPath(PROJECT_ROOT, specPath);
+    if (!resolved.ok) {
+      e(resolved.error);
+    } else if (!existsSync(resolved.absolutePath)) {
+      e(`'spec_path' points to a file that does not exist: '${specPath}'`);
+    } else {
+      try {
+        const contents = readFileSync(resolved.absolutePath, 'utf-8');
+        if (contents.length === 0) {
+          e(`'spec_path' points to an empty file: '${specPath}'`);
+        }
+      } catch (err) {
+        e(`'spec_path' could not be read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
 
   const validIntentStatuses = ['proposed', 'planned', 'superseded', 'delivered'];
   if (typeof data['status'] !== 'string' || !validIntentStatuses.includes(data['status'])) {

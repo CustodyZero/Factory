@@ -311,7 +311,10 @@ npx tsx .factory/tools/execute.ts health-monitoring
 
 ### Using intents for planner-native work
 
-For planner-driven work, start with an intent artifact:
+For planner-driven work, start with an intent artifact. Intents come in two
+shapes, depending on how large the spec is.
+
+**Inline spec** — for short, self-contained intents:
 
 ```json
 // factory/intents/customer-dashboard.json
@@ -329,6 +332,40 @@ For planner-driven work, start with an intent artifact:
   "created_at": "2025-01-15T09:00:00Z"
 }
 ```
+
+**Referenced spec** — for large, human-authored Markdown specs that already
+live in the repository (architectural specs with sections, tables, diagrams,
+phasing plans, alternatives, etc.):
+
+```json
+// factory/intents/016-platform-targets.json
+{
+  "id": "016-platform-targets",
+  "title": "Platform Targets & Application Layer",
+  "spec_path": "docs/specs/016-platform-targets-and-application-layer.md",
+  "constraints": [
+    "Architectural change — must be phased per the spec",
+    "Preserve all invariants listed in the spec's §7"
+  ],
+  "status": "proposed",
+  "feature_id": null,
+  "created_by": { "kind": "human", "id": "alice" },
+  "created_at": "2026-04-11T09:00:00Z"
+}
+```
+
+`spec_path` is resolved relative to the **project root** (not the artifact
+root). At plan time, the factory reads the referenced file and hands its
+full contents to the planner. This lets you keep large specs as Markdown
+in `docs/specs/` — structured, reviewable, and diff-friendly — instead of
+stuffing them into a JSON string.
+
+Rules for `spec_path`:
+- Must be relative (no absolute paths) and must not escape the project root
+- Must point to an existing, non-empty file
+- Mutually exclusive with `spec` — use exactly one
+- Validated at `validate.ts` time so a broken reference fails CI, not at
+  plan time
 
 Then run the planner handoff resolver:
 
