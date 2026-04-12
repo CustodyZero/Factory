@@ -590,8 +590,8 @@ function makeFailedRun(
   };
 }
 
-function parseToolJson<T>(toolScript: string, args: ReadonlyArray<string>, cwd: string): T {
-  const raw = execFileSync('npx', ['tsx', resolveToolScriptPath(toolScript, cwd), ...args], {
+function parseToolJson<T>(toolScript: string, args: ReadonlyArray<string>, cwd: string, config?: FactoryConfig): T {
+  const raw = execFileSync('npx', ['tsx', resolveToolScriptPath(toolScript, cwd, config), ...args], {
     cwd,
     encoding: 'utf-8',
   });
@@ -814,7 +814,7 @@ function runPlanOnce(
   intentId: string,
   dryRun: boolean,
 ): PlanResult {
-  let action = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot);
+  let action = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
   const runs: OrchestratorRunRecord[] = [];
 
   if (action.kind === 'plan_feature' && action.planner_assignment !== null) {
@@ -868,7 +868,7 @@ function runPlanOnce(
         continue;
       }
 
-      const refreshed = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot);
+      const refreshed = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
       if (refreshed.kind === 'plan_feature') {
         runs.push({
           ...run,
@@ -898,7 +898,7 @@ function runSuperviseOnce(
   dryRun: boolean,
 ): SuperviseResult {
   const toolArgs = featureId === undefined ? ['--json'] : ['--json', '--feature', featureId];
-  const action = parseToolJson<SupervisorAction>('supervise.ts', toolArgs, projectRoot);
+  const action = parseToolJson<SupervisorAction>('supervise.ts', toolArgs, projectRoot, config);
   const runs: OrchestratorRunRecord[] = [];
 
   if (action.kind === 'execute_feature') {
@@ -1059,7 +1059,7 @@ function runLoop(
         message: 'Supervisor state is not initialized. Run without --dry-run to let orchestrator initialize it automatically.',
       };
     }
-    execFileSync('npx', ['tsx', resolveToolScriptPath('supervise.ts', projectRoot), '--init'], {
+    execFileSync('npx', ['tsx', resolveToolScriptPath('supervise.ts', projectRoot, config), '--init'], {
       cwd: projectRoot,
       encoding: 'utf-8',
     });
