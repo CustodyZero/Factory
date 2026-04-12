@@ -86,6 +86,31 @@ if (startedAt === null) {
   process.exit(1);
 }
 
+// Dev packets require code review approval before completion
+const packetStatus = typeof packet['status'] === 'string' ? packet['status'] : null;
+if (packetKind === 'dev' && packetStatus !== null && packetStatus !== 'review_approved') {
+  // Legacy packets (null status) are grandfathered — they skip the review gate.
+  // All new dev packets must go through: implementing → review_requested → review_approved → completed.
+  if (packetStatus === 'implementing') {
+    console.error(`ERROR: Dev packet '${packetId}' has not been through code review.`);
+    console.error(`  Current status: implementing`);
+    console.error(`  Run: npx tsx tools/request-review.ts ${packetId}`);
+    console.error(`  Then have the code_reviewer persona run: npx tsx tools/review.ts ${packetId} --approve`);
+    process.exit(1);
+  } else if (packetStatus === 'review_requested') {
+    console.error(`ERROR: Dev packet '${packetId}' is awaiting code review.`);
+    console.error(`  Current status: review_requested`);
+    console.error(`  The code_reviewer must run: npx tsx tools/review.ts ${packetId} --approve`);
+    process.exit(1);
+  } else if (packetStatus === 'changes_requested') {
+    console.error(`ERROR: Dev packet '${packetId}' has changes requested by code review.`);
+    console.error(`  Current status: changes_requested`);
+    console.error(`  Address the feedback, then: npx tsx tools/request-review.ts ${packetId}`);
+    process.exit(1);
+  }
+  // Other statuses (draft, ready, etc.) fall through — they'll fail on other gates
+}
+
 console.log(`\nCreating completion for: ${title}`);
 console.log(`Packet: ${packetId} (${packetKind})\n`);
 

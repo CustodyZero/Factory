@@ -116,6 +116,16 @@
       ],
       "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets."
     },
+    "branch": {
+      "type": ["string", "null"],
+      "description": "Git branch name for code review. Set by request-review.ts when the developer requests review."
+    },
+    "review_iteration": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of review round-trips completed. Incremented each time the developer re-requests review after changes_requested."
+    },
     "feature_id": {
       "type": ["string", "null"],
       "description": "ID of the parent feature, if this packet belongs to a feature."

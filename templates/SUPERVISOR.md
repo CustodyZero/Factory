@@ -63,6 +63,9 @@ When `execute_feature` returns ready packets:
 - A single `execute_feature` action may include packets from multiple independent features
 - Dev agents use default identity; QA agents must use `--identity claude-qa` on `complete.ts`
 - Do not spawn the same identity for a dev packet and its QA counterpart
+- Dev packets go through code review: developer implements → `request-review.ts` → code_reviewer dispatched → `review.ts --approve` or `--request-changes`
+- When execute.ts returns a dev packet with `code_reviewer` persona, it means the packet is in `review_requested` status
+- When a code reviewer requests changes, the developer is re-dispatched to address feedback
 
 If you use the native orchestrator harness, it is restricted to:
 - `codex`

@@ -16,6 +16,8 @@ Read `AGENTS.md` first. It defines all operating constraints.
 npx tsx .factory/tools/status.ts              # What is the factory state?
 npx tsx .factory/tools/execute.ts <feature>   # What packets are ready? (returns packet + persona)
 npx tsx .factory/tools/start.ts <packet>      # Claim a packet before implementation
+npx tsx .factory/tools/request-review.ts <packet>  # Request code review (dev packets only)
+npx tsx .factory/tools/review.ts <packet> --approve|--request-changes  # Code review decision
 npx tsx .factory/tools/complete.ts <packet>   # Create completion record (--identity <id> for QA)
 npx tsx .factory/tools/accept.ts <packet>     # Accept a completed packet (human action)
 npx tsx .factory/tools/supervise.ts           # Supervisor tick — next orchestration action

@@ -521,4 +521,142 @@ describe('resolveExecuteAction', () => {
     }));
     expect(action.kind).toBe('all_complete');
   });
+
+  // -------------------------------------------------------------------------
+  // Code review lifecycle tests (Phase 3)
+  // -------------------------------------------------------------------------
+
+  it('EX-U32: dev packet with review_requested status dispatches code_reviewer persona', () => {
+    const packet = {
+      ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
+      status: 'review_requested' as const,
+      branch: 'feature/dev-1',
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [packet],
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.ready_packets).toHaveLength(1);
+    expect(action.ready_packets[0]!.packet_id).toBe('dev-1');
+    expect(action.ready_packets[0]!.persona).toBe('code_reviewer');
+  });
+
+  it('EX-U33: dev packet with changes_requested status shows as in-progress developer', () => {
+    const packet = {
+      ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
+      status: 'changes_requested' as const,
+      branch: 'feature/dev-1',
+      review_iteration: 1,
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [packet],
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.in_progress_packets).toHaveLength(1);
+    expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
+    expect(action.in_progress_packets[0]!.persona).toBe('developer');
+  });
+
+  it('EX-U34: dev packet with review_approved status shows as in-progress developer', () => {
+    const packet = {
+      ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
+      status: 'review_approved' as const,
+      branch: 'feature/dev-1',
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [packet],
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.in_progress_packets).toHaveLength(1);
+    expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
+    expect(action.in_progress_packets[0]!.persona).toBe('developer');
+  });
+
+  it('EX-U35: code_reviewer gets branch info in instructions', () => {
+    const personas = {
+      planner: { description: 'planner', instructions: [], model: 'opus' as const },
+      developer: { description: 'dev', instructions: [], model: 'opus' as const },
+      code_reviewer: { description: 'cr', instructions: ['Check invariants'], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
+    };
+    const packet = {
+      ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
+      status: 'review_requested' as const,
+      branch: 'feature/dev-1',
+    };
+    const action = resolveExecuteAction({
+      ...makeInput({
+        feature: makeFeature({ packets: ['dev-1'] }),
+        packets: [packet],
+      }),
+      personas,
+    });
+    expect(action.ready_packets[0]!.persona).toBe('code_reviewer');
+    expect(action.ready_packets[0]!.model).toBe('sonnet');
+    expect(action.ready_packets[0]!.instructions).toContain('Check invariants');
+    expect(action.ready_packets[0]!.instructions).toContain('Review branch: feature/dev-1');
+  });
+
+  it('EX-U36: full review lifecycle — implementing → review → changes → re-review → approve → complete', () => {
+    const feature = makeFeature({ packets: ['dev-1', 'qa-1'] });
+    const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
+
+    // Step 1: dev packet is implementing (in-progress)
+    const devImpl = { ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'), status: 'implementing' as const };
+    const a1 = resolveExecuteAction(makeInput({ feature, packets: [devImpl, qaPacket] }));
+    expect(a1.in_progress_packets).toHaveLength(1);
+    expect(a1.in_progress_packets[0]!.persona).toBe('developer');
+
+    // Step 2: review requested — code_reviewer dispatched
+    const devReview = { ...devImpl, status: 'review_requested' as const, branch: 'feature/dev-1' };
+    const a2 = resolveExecuteAction(makeInput({ feature, packets: [devReview, qaPacket] }));
+    expect(a2.ready_packets).toHaveLength(1);
+    expect(a2.ready_packets[0]!.persona).toBe('code_reviewer');
+
+    // Step 3: changes requested — developer back in action
+    const devChanges = { ...devReview, status: 'changes_requested' as const, review_iteration: 1 };
+    const a3 = resolveExecuteAction(makeInput({ feature, packets: [devChanges, qaPacket] }));
+    expect(a3.in_progress_packets).toHaveLength(1);
+    expect(a3.in_progress_packets[0]!.persona).toBe('developer');
+
+    // Step 4: re-request review
+    const devReReview = { ...devChanges, status: 'review_requested' as const };
+    const a4 = resolveExecuteAction(makeInput({ feature, packets: [devReReview, qaPacket] }));
+    expect(a4.ready_packets).toHaveLength(1);
+    expect(a4.ready_packets[0]!.persona).toBe('code_reviewer');
+
+    // Step 5: approved — developer completes
+    const devApproved = { ...devReReview, status: 'review_approved' as const };
+    const a5 = resolveExecuteAction(makeInput({ feature, packets: [devApproved, qaPacket] }));
+    expect(a5.in_progress_packets).toHaveLength(1);
+    expect(a5.in_progress_packets[0]!.persona).toBe('developer');
+
+    // Step 6: completed — QA unblocked
+    const a6 = resolveExecuteAction(makeInput({
+      feature,
+      packets: [devApproved, qaPacket],
+      completionIds: new Set(['dev-1']),
+    }));
+    expect(a6.ready_packets).toHaveLength(1);
+    expect(a6.ready_packets[0]!.persona).toBe('qa');
+  });
+
+  it('EX-U37: QA packets are not affected by review status routing', () => {
+    // QA packets with a status field should still be handled normally
+    const qaPacket = {
+      ...makeQaPacket('qa-1', 'dev-1', ['dev-1']),
+      status: 'implementing' as const,
+      started_at: '2026-03-21T00:00:00Z',
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
+      packets: [makeDevPacket('dev-1'), qaPacket],
+      completionIds: new Set(['dev-1']),
+    }));
+    expect(action.in_progress_packets).toHaveLength(1);
+    expect(action.in_progress_packets[0]!.persona).toBe('qa');
+  });
 });

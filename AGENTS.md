@@ -39,7 +39,25 @@ Before touching implementation, explicitly claim the packet:
 npx tsx tools/start.ts <packet-id>
 ```
 
-### After Completing Implementation
+### After Implementation — Code Review (Dev Packets Only)
+
+Dev packets must pass code review before completion. QA packets skip this step.
+
+```sh
+npx tsx tools/request-review.ts <packet-id>                  # Developer signals code is ready for review
+npx tsx tools/review.ts <packet-id> --approve                # Code reviewer approves
+npx tsx tools/review.ts <packet-id> --request-changes        # Code reviewer requests changes
+```
+
+The developer ↔ code review loop repeats until the reviewer approves:
+```
+implementing → review_requested → [changes_requested → implementing → review_requested →]* review_approved → completed
+```
+
+The `branch` field on the packet identifies the git branch under review.
+Review feedback lives in git (branch diffs, git notes) — not in factory artifacts.
+
+### After Code Review (or for QA Packets)
 
 ```sh
 npx tsx tools/complete.ts <packet-id>                        # dev packets (uses default identity)
@@ -48,6 +66,7 @@ npx tsx tools/complete.ts <packet-id> --identity claude-qa   # QA packets (disti
 
 This runs build + lint + tests and creates a completion record.
 **Do this before committing. Completion is the deliverable, not the packet.**
+**Dev packets must be in `review_approved` status before complete.ts will accept them.**
 
 **QA agents must use `--identity` to distinguish themselves from the developer agent.**
 FI-7 requires that the QA completion identity differs from the dev completion identity.
@@ -151,7 +170,10 @@ artifacts are never written inside the submodule.
 | `npx tsx tools/plan.ts <intent-id>` | Resolve planner work for an intent/spec and hand off to the planner persona |
 | `npx tsx tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
 | `npx tsx tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
-| `npx tsx tools/complete.ts <packet-id>` | After implementation, before committing |
+| `npx tsx tools/request-review.ts <packet-id>` | Developer signals code is ready for code review (dev packets only) |
+| `npx tsx tools/review.ts <packet-id> --approve` | Code reviewer approves the code review |
+| `npx tsx tools/review.ts <packet-id> --request-changes` | Code reviewer requests changes |
+| `npx tsx tools/complete.ts <packet-id>` | After review approval (dev) or implementation (QA), before committing |
 | `npx tsx tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx tools/validate.ts` | Verify factory integrity |
 | `npx tsx tools/supervise.ts` | Supervisor tick — next orchestration action |

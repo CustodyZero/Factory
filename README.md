@@ -720,13 +720,20 @@ Feature lifecycle:
 draft → planned → approved → executing → completed → delivered
 ```
 
+Packet lifecycle:
+```
+Dev packets:  draft → ready → implementing → review_requested → changes_requested → review_approved → completed
+QA packets:   draft → ready → implementing → completed
+```
+
 Execution protocol:
 1. Run `npx tsx .factory/tools/execute.ts <feature-id>`
-2. Spawn agents for ready packets using the assigned persona (developer/qa)
-3. Each agent: run `start.ts` for its assigned packet → implement → complete → commit
-4. Re-run execute
-5. Repeat until all_complete
-6. Natural flow per story: dev packet (developer) → QA packet (qa) → acceptance (human, if architectural)
+2. Spawn agents for ready packets using the assigned persona (developer/code_reviewer/qa)
+3. Dev agent: `start.ts` → implement → `request-review.ts` → code_reviewer runs `review.ts --approve` → `complete.ts`
+4. QA agent: `start.ts` → verify → `complete.ts`
+5. Re-run execute
+6. Repeat until all_complete
+7. Natural flow per story: dev packet (developer ↔ code_reviewer loop) → QA packet (qa) → acceptance (human, if architectural)
 
 If supervisor mode is enabled, packets must be returned by `supervise.ts` before they can be started.
 Supervisor `execute_feature` actions now include stable dispatch records so an outer orchestrator

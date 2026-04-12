@@ -274,7 +274,9 @@ For automated orchestration with the native harness or an external runner:
 6. Manual option: initialize supervisor state with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
 7. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
 8. Each spawned developer or qa agent runs the returned `start_command`
-9. The agent performs only that packet’s scope, then runs `complete.ts`
+9. Dev agents implement, then run `request-review.ts` — the supervisor dispatches a code_reviewer
+10. Code reviewer runs `review.ts --approve` (or `--request-changes` for another iteration)
+11. After review approval, dev agent runs `complete.ts`; QA agents run `complete.ts` directly
 10. QA agents use a distinct qa identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
 11. The native orchestrator retries failed planner and packet runs using the configured provider/model ladder before surfacing a real failure
 12. Human handles any explicit architectural acceptance with `accept.ts`

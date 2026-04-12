@@ -89,6 +89,8 @@ export interface RawPacket {
   readonly started_at?: string | null;
   readonly status?: string | null;
   readonly dependencies?: ReadonlyArray<string>;
+  readonly branch?: string | null;
+  readonly review_iteration?: number;
   readonly model?: ModelTier;
   readonly instructions?: ReadonlyArray<string>;
   readonly environment_dependencies?: ReadonlyArray<string>;
@@ -204,14 +206,17 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const readyPackets: PacketAssignment[] = [];
   const blockedPackets: Array<{ id: string; blocked_by: string[] }> = [];
 
-  function assignPacket(packet: RawPacket): PacketAssignment {
-    const persona: Persona = packet.kind === 'qa' ? 'qa' : 'developer';
+  function assignPacket(packet: RawPacket, personaOverride?: Persona): PacketAssignment {
+    const persona: Persona = personaOverride ?? (packet.kind === 'qa' ? 'qa' : 'developer');
     const personaConfig = input.personas?.[persona];
     const personaInstructions = personaConfig?.instructions ?? [];
     const packetInstructions = [...(packet.instructions ?? [])];
     const envDeps = packet.environment_dependencies ?? [];
     if (packet.kind === 'qa' && envDeps.length > 0) {
       packetInstructions.push(`Evidence required before completion for environment_dependencies: ${envDeps.join(', ')}`);
+    }
+    if (persona === 'code_reviewer' && typeof packet.branch === 'string') {
+      packetInstructions.push(`Review branch: ${packet.branch}`);
     }
     const model: ModelTier = packet.model ?? personaConfig?.model ?? 'opus';
     return {
@@ -232,6 +237,24 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
 
     if (input.completionIds.has(packetId)) {
       completedPackets.push(packetId);
+      continue;
+    }
+
+    // Status-aware routing for dev packets in the review lifecycle
+    const pktStatus = packet.status ?? null;
+    if (packet.kind === 'dev' && pktStatus === 'review_requested') {
+      // Ready for code reviewer dispatch
+      readyPackets.push(assignPacket(packet, 'code_reviewer'));
+      continue;
+    }
+    if (packet.kind === 'dev' && pktStatus === 'changes_requested') {
+      // Developer needs to address review feedback — in progress
+      inProgressPackets.push(assignPacket(packet, 'developer'));
+      continue;
+    }
+    if (packet.kind === 'dev' && pktStatus === 'review_approved') {
+      // Approved — developer needs to call complete.ts. Show as in-progress.
+      inProgressPackets.push(assignPacket(packet, 'developer'));
       continue;
     }
 
