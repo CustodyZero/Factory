@@ -101,7 +101,8 @@ function makeInput(overrides: Partial<SuperviseInput> = {}): SuperviseInput {
     personas: overrides.personas ?? {
       planner: { description: 'Planner', instructions: [] },
       developer: { description: 'Dev', instructions: [] },
-      reviewer: { description: 'QA', instructions: [] },
+      code_reviewer: { description: 'Code Reviewer', instructions: [] },
+      qa: { description: 'QA', instructions: [] },
     },
     now: overrides.now ?? NOW,
     featureFilter: overrides.featureFilter,
@@ -197,7 +198,7 @@ describe('resolveSupervisorAction', () => {
     expect(action.kind).toBe('idle');
   });
 
-  it('SV-U7: QA packets assigned as reviewer persona', () => {
+  it('SV-U7: QA packets assigned as qa persona', () => {
     const state = emptyState();
     const tracking = trackingFor('f1', 'executing', {
       packets_spawned: ['d1'],
@@ -214,7 +215,7 @@ describe('resolveSupervisorAction', () => {
     expect(action.kind).toBe('execute_feature');
     expect(action.ready_packets.length).toBe(1);
     expect(action.ready_packets[0].packet_id).toBe('q1');
-    expect(action.ready_packets[0].persona).toBe('reviewer');
+    expect(action.ready_packets[0].persona).toBe('qa');
     expect(action.ready_packets[0].start_command).toBe('npx tsx tools/start.ts q1');
     expect(action.dispatches[0].packet_id).toBe('q1');
   });

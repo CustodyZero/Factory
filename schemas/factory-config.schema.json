@@ -44,11 +44,12 @@
     "completed_by_default": { "$ref": "#/$defs/identity" },
     "personas": {
       "type": "object",
-      "required": ["planner", "developer", "reviewer"],
+      "required": ["planner", "developer", "code_reviewer", "qa"],
       "properties": {
         "planner": { "$ref": "#/$defs/persona" },
         "developer": { "$ref": "#/$defs/persona" },
-        "reviewer": { "$ref": "#/$defs/persona" }
+        "code_reviewer": { "$ref": "#/$defs/persona" },
+        "qa": { "$ref": "#/$defs/persona" }
       },
       "additionalProperties": false
     },
@@ -72,20 +73,22 @@
         "recent_attempt_limit": { "type": "integer", "minimum": 1 },
         "completion_identities": {
           "type": "object",
-          "required": ["developer", "reviewer"],
+          "required": ["developer", "code_reviewer", "qa"],
           "properties": {
             "developer": { "type": "string", "minLength": 1 },
-            "reviewer": { "type": "string", "minLength": 1 }
+            "code_reviewer": { "type": "string", "minLength": 1 },
+            "qa": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
         "personas": {
           "type": "object",
-          "required": ["planner", "developer", "reviewer"],
+          "required": ["planner", "developer", "code_reviewer", "qa"],
           "properties": {
             "planner": { "$ref": "#/$defs/provider_name" },
             "developer": { "$ref": "#/$defs/provider_name" },
-            "reviewer": { "$ref": "#/$defs/provider_name" }
+            "code_reviewer": { "$ref": "#/$defs/provider_name" },
+            "qa": { "$ref": "#/$defs/provider_name" }
           },
           "additionalProperties": false
         },
@@ -100,12 +103,13 @@
         },
         "retries": {
           "type": "object",
-          "required": ["max_supervisor_ticks", "planner", "developer", "reviewer"],
+          "required": ["max_supervisor_ticks", "planner", "developer", "code_reviewer", "qa"],
           "properties": {
             "max_supervisor_ticks": { "type": "integer", "minimum": 1 },
             "planner": { "$ref": "#/$defs/retry_steps" },
             "developer": { "$ref": "#/$defs/retry_steps" },
-            "reviewer": { "$ref": "#/$defs/retry_steps" }
+            "code_reviewer": { "$ref": "#/$defs/retry_steps" },
+            "qa": { "$ref": "#/$defs/retry_steps" }
           },
           "additionalProperties": false
         }

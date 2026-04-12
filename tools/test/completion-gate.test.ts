@@ -39,7 +39,8 @@ const testConfig: FactoryConfig = {
   personas: {
     planner: { description: 'planner', instructions: [] },
     developer: { description: 'dev', instructions: [] },
-    reviewer: { description: 'qa', instructions: [] },
+    code_reviewer: { description: 'code_reviewer', instructions: [] },
+    qa: { description: 'qa', instructions: [] },
   },
 };
 

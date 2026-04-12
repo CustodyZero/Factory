@@ -76,7 +76,7 @@ export interface AttemptSummary {
   readonly target_id: string;
   readonly feature_id: string | null;
   readonly dispatch_id: string | null;
-  readonly persona: 'planner' | 'developer' | 'reviewer';
+  readonly persona: 'planner' | 'developer' | 'code_reviewer' | 'qa';
   readonly provider: OrchestratorProvider;
   readonly model: ModelTier;
   readonly attempt: number;
@@ -410,9 +410,12 @@ export function buildPacketPrompt(
   config: FactoryConfig,
   orchestrator: OrchestratorConfig,
 ): string {
-  const completeArgs = dispatch.persona === 'reviewer'
-    ? [dispatch.packet_id, '--identity', orchestrator.completion_identities.reviewer]
-    : [dispatch.packet_id, '--identity', orchestrator.completion_identities.developer];
+  const completionIdentity = dispatch.persona === 'qa'
+    ? orchestrator.completion_identities.qa
+    : dispatch.persona === 'code_reviewer'
+      ? orchestrator.completion_identities.code_reviewer
+      : orchestrator.completion_identities.developer;
+  const completeArgs = [dispatch.packet_id, '--identity', completionIdentity];
   const completeCommand = buildToolCommand('complete.ts', completeArgs, undefined, config);
 
   const instructions = dispatch.instructions.map((instruction) => `- ${instruction}`).join('\n');
@@ -719,7 +722,7 @@ function persistRunArtifacts(
       }
       attempts.push(summarizeAttempt(
         run,
-        dispatch.persona === 'reviewer' ? 'reviewer' : 'developer',
+        dispatch.persona,
         dispatch.model as ModelTier,
       ));
     }
@@ -906,7 +909,7 @@ function runSuperviseOnce(
       const prompt = buildPacketPrompt(dispatch, config, orchestrator);
       const outcome = runWithRetries({
         kind: 'packet',
-        persona: dispatch.persona === 'reviewer' ? 'reviewer' : 'developer',
+        persona: dispatch.persona,
         targetId: dispatch.packet_id,
         featureId: dispatch.feature_id,
         dispatchId: dispatch.dispatch_id,

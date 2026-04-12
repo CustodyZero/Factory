@@ -25,7 +25,7 @@ the implementer.
 
 The native factory flow is:
 
-`intent/spec -> planner -> feature + dev/qa packets -> human approval -> supervisor -> developer/reviewer agents -> acceptance -> delivery`
+`intent/spec -> planner -> feature + dev/qa packets -> human approval -> supervisor -> developer/code_reviewer/qa agents -> acceptance -> delivery`
 
 ---
 
@@ -92,7 +92,12 @@ Edit `factory.config.json` at the project root:
       "instructions": [],
       "model": "opus"
     },
-    "reviewer": {
+    "code_reviewer": {
+      "description": "Reviews code changes for correctness, design, and contract adherence",
+      "instructions": [],
+      "model": "sonnet"
+    },
+    "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
       "model": "sonnet"
@@ -109,12 +114,14 @@ Edit `factory.config.json` at the project root:
     "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
-      "reviewer": "claude-qa"
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
     "personas": {
       "planner": "claude",
       "developer": "codex",
-      "reviewer": "claude"
+      "code_reviewer": "claude",
+      "qa": "claude"
     },
     "providers": {
       "codex": {
@@ -151,7 +158,12 @@ Edit `factory.config.json` at the project root:
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" }
       ],
-      "reviewer": [
+      "code_reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "qa": [
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" },
         { "provider": "codex", "model": "opus" }
@@ -575,7 +587,7 @@ Architectural dev packets require explicit human acceptance after their QA count
 If a started packet lacks a completion record, no newer packet may have a completion.
 Packets marked `abandoned` or `deferred` are exempt.
 
-**FI-7 — Commit-time completion enforcement and reviewer separation.**
+**FI-7 — Commit-time completion enforcement and identity separation.**
 A commit must not include implementation files while any started packet lacks
 a completion. Enforced by the pre-commit hook.
 A QA packet must not be completed by the same identity that completed its dev counterpart.
@@ -710,11 +722,11 @@ draft → planned → approved → executing → completed → delivered
 
 Execution protocol:
 1. Run `npx tsx .factory/tools/execute.ts <feature-id>`
-2. Spawn agents for ready packets using the assigned persona (developer/reviewer)
+2. Spawn agents for ready packets using the assigned persona (developer/qa)
 3. Each agent: run `start.ts` for its assigned packet → implement → complete → commit
 4. Re-run execute
 5. Repeat until all_complete
-6. Natural flow per story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural)
+6. Natural flow per story: dev packet (developer) → QA packet (qa) → acceptance (human, if architectural)
 
 If supervisor mode is enabled, packets must be returned by `supervise.ts` before they can be started.
 Supervisor `execute_feature` actions now include stable dispatch records so an outer orchestrator
@@ -731,7 +743,7 @@ through developer and QA agents:
 4. Manual option: initialize supervisor state once with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
 5. If the result is `execute_feature`, the orchestrator or external runner spawns one agent per dispatch in `dispatches`
 6. Each spawned agent runs the returned `start_command`, performs only that packet’s work, then runs `complete.ts`
-7. QA agents use a distinct reviewer identity and must satisfy any `environment_dependencies` evidence requirement
+7. QA agents use a distinct qa identity and must satisfy any `environment_dependencies` evidence requirement
 8. The native orchestrator retries failed planner and packet runs using the configured Codex/Claude ladder before surfacing failure
 9. Supervisor re-runs `supervise.ts --json` after each state change
 10. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
@@ -758,7 +770,7 @@ This is the full factory-native flow with planning and execution separated:
 7. The orchestrator invokes the planner if needed, then stops at human approval
 8. After approval, rerun `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` to enter supervised execution
 9. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
-10. Developer and reviewer agents execute packets exactly as assigned
+10. Developer and qa agents execute packets exactly as assigned
 11. Human handles architectural acceptance when escalated
 12. Delivery occurs when the approved feature completes and the intent can be considered delivered
 

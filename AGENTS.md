@@ -79,14 +79,14 @@ the factory will not assign a QA packet until its dev packet is complete.
 
 The planner sits above execution:
 - Intent artifacts → `planner`
-- Dev packets → `developer`
-- QA packets → `reviewer`
+- Dev packets → `developer` (implementation) and `code_reviewer` (review, Phase 3)
+- QA packets → `qa`
 
 Execute.ts returns each ready packet with a **persona** and a **model**:
 - Dev packets → `developer` persona
-- QA packets → `reviewer` persona
+- QA packets → `qa` persona
 
-The outer orchestrator or human spawns the planner, developer, or reviewer agent
+The outer orchestrator or human spawns the planner, developer, code_reviewer, or qa agent
 using the persona and model the factory specifies.
 **FI-7**: A QA packet must not be completed by the same identity that completed its dev counterpart.
 
@@ -99,7 +99,8 @@ Execute.ts resolves the model tier for each packet using a fallback chain:
 
 Default persona models:
 - `developer`: `"opus"`
-- `reviewer`: `"sonnet"`
+- `code_reviewer`: `"sonnet"`
+- `qa`: `"sonnet"`
 
 Suggested override convention by change class (not enforced in code):
 
@@ -222,7 +223,7 @@ loop:
 
 Each iteration is stateless. If interrupted, re-run `tools/execute.ts` to resume.
 
-The natural flow for each story: dev packet (developer) → QA packet (reviewer) → acceptance (human, if architectural).
+The natural flow for each story: dev packet (developer) → QA packet (qa) → acceptance (human, if architectural).
 
 ---
 
@@ -296,7 +297,7 @@ npx tsx tools/orchestrate.ts run --intent <intent-id>
 `orchestrate.ts run` will:
 - initialize supervisor state automatically when needed
 - re-tick after `update_state`
-- invoke planner/developer/reviewer agents through the configured Codex/Claude shell contracts
+- invoke planner/developer/code_reviewer/qa agents through the configured Codex/Claude shell contracts
 - retry failed planner and packet runs through the configured provider/model ladder
 - stop only at `idle`, `awaiting_approval`, or a real blocking/escalation gate after retries are exhausted
 
@@ -347,7 +348,7 @@ This file defines:
 - Verification commands (build, lint, test)
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
-- **Persona definitions** (instructions for planner, developer, and reviewer agents)
+- **Persona definitions** (instructions for planner, developer, code_reviewer, and qa agents)
 - **Orchestrator provider mappings** (Codex/Claude only)
 
 ### Personas and Instructions
@@ -369,7 +370,12 @@ when execute.ts assigns them packets.
       "instructions": ["Use the cpp-guidelines MCP server for all C++ code"],
       "model": "opus"
     },
-    "reviewer": {
+    "code_reviewer": {
+      "description": "Reviews code changes for correctness, design, and contract adherence",
+      "instructions": ["Verify contract invariants are preserved across boundaries"],
+      "model": "sonnet"
+    },
+    "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": ["Check MISRA compliance in clang-tidy output"],
       "model": "sonnet"

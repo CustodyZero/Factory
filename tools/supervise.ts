@@ -68,7 +68,7 @@ export interface DispatchRecord {
   readonly dispatch_id: string;
   readonly feature_id: string;
   readonly packet_id: string;
-  readonly persona: 'developer' | 'reviewer';
+  readonly persona: 'developer' | 'code_reviewer' | 'qa';
   readonly model: string;
   readonly instructions: ReadonlyArray<string>;
   readonly start_command: string;

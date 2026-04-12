@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 export type OrchestratorProvider = 'codex' | 'claude';
-export type OrchestratorPersona = 'planner' | 'developer' | 'reviewer';
+export type OrchestratorPersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
 
 export interface PersonaConfig {
   readonly description: string;
@@ -29,7 +29,8 @@ export interface PersonaConfig {
 export interface PersonasConfig {
   readonly planner: PersonaConfig;
   readonly developer: PersonaConfig;
-  readonly reviewer: PersonaConfig;
+  readonly code_reviewer: PersonaConfig;
+  readonly qa: PersonaConfig;
 }
 
 export interface SupervisorConfig {
@@ -54,7 +55,8 @@ export interface OrchestratorRetryConfig {
   readonly max_supervisor_ticks: number;
   readonly planner: ReadonlyArray<OrchestratorRetryStep>;
   readonly developer: ReadonlyArray<OrchestratorRetryStep>;
-  readonly reviewer: ReadonlyArray<OrchestratorRetryStep>;
+  readonly code_reviewer: ReadonlyArray<OrchestratorRetryStep>;
+  readonly qa: ReadonlyArray<OrchestratorRetryStep>;
 }
 
 export interface OrchestratorConfig {
@@ -65,12 +67,14 @@ export interface OrchestratorConfig {
   readonly recent_attempt_limit: number;
   readonly completion_identities: {
     readonly developer: string;
-    readonly reviewer: string;
+    readonly code_reviewer: string;
+    readonly qa: string;
   };
   readonly personas: {
     readonly planner: OrchestratorProvider;
     readonly developer: OrchestratorProvider;
-    readonly reviewer: OrchestratorProvider;
+    readonly code_reviewer: OrchestratorProvider;
+    readonly qa: OrchestratorProvider;
   };
   readonly providers: {
     readonly codex: OrchestratorProviderConfig;
@@ -145,13 +149,15 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
     const defaultPersonas: PersonasConfig = {
       planner: { description: 'Decomposes intent into feature and packet artifacts', instructions: [] },
       developer: { description: 'Implements the change', instructions: [] },
-      reviewer: { description: 'Verifies acceptance criteria are met', instructions: [] },
+      code_reviewer: { description: 'Reviews code changes for correctness, design, and contract adherence', instructions: [] },
+      qa: { description: 'Verifies acceptance criteria are met', instructions: [] },
     };
     const rawPersonas = (parsed as Record<string, unknown>)['personas'] as Partial<PersonasConfig> | undefined;
     const personas: PersonasConfig = {
       planner: { ...defaultPersonas.planner, ...rawPersonas?.planner },
       developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
-      reviewer: { ...defaultPersonas.reviewer, ...rawPersonas?.reviewer },
+      code_reviewer: { ...defaultPersonas.code_reviewer, ...rawPersonas?.code_reviewer },
+      qa: { ...defaultPersonas.qa, ...rawPersonas?.qa },
     };
     const defaultOrchestrator: OrchestratorConfig = {
       enabled: true,
@@ -161,12 +167,14 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       recent_attempt_limit: 50,
       completion_identities: {
         developer: 'codex-dev',
-        reviewer: 'claude-qa',
+        code_reviewer: 'claude-cr',
+        qa: 'claude-qa',
       },
       personas: {
         planner: 'claude',
         developer: 'codex',
-        reviewer: 'claude',
+        code_reviewer: 'claude',
+        qa: 'claude',
       },
       providers: {
         codex: {
@@ -203,7 +211,12 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
         ],
-        reviewer: [
+        code_reviewer: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
+        qa: [
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
           { provider: 'codex', model: 'opus' },
@@ -244,7 +257,8 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
         ...rawOrchestratorRetries,
         planner: rawOrchestratorRetries?.planner ?? defaultOrchestrator.retries.planner,
         developer: rawOrchestratorRetries?.developer ?? defaultOrchestrator.retries.developer,
-        reviewer: rawOrchestratorRetries?.reviewer ?? defaultOrchestrator.retries.reviewer,
+        code_reviewer: rawOrchestratorRetries?.code_reviewer ?? defaultOrchestrator.retries.code_reviewer,
+        qa: rawOrchestratorRetries?.qa ?? defaultOrchestrator.retries.qa,
       },
     };
     return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, orchestrator } as FactoryConfig;

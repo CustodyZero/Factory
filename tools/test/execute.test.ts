@@ -111,7 +111,7 @@ describe('resolveExecuteAction', () => {
     expect(action.blocked_packets[0]!.id).toBe('qa-1');
   });
 
-  it('EX-U5: dev complete — QA becomes ready with reviewer persona', () => {
+  it('EX-U5: dev complete — QA becomes ready with qa persona', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
       packets: [makeDevPacket('dev-1'), makeQaPacket('qa-1', 'dev-1', ['dev-1'])],
@@ -120,7 +120,7 @@ describe('resolveExecuteAction', () => {
     expect(action.kind).toBe('spawn_packets');
     expect(action.ready_packets).toEqual([{
       packet_id: 'qa-1',
-      persona: 'reviewer',
+      persona: 'qa',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -274,7 +274,7 @@ describe('resolveExecuteAction', () => {
     expect(action.kind).toBe('spawn_packets');
     expect(action.ready_packets).toEqual([{
       packet_id: 'qa-1',
-      persona: 'reviewer',
+      persona: 'qa',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -317,7 +317,7 @@ describe('resolveExecuteAction', () => {
     expect(a2.kind).toBe('spawn_packets');
     expect(a2.ready_packets).toEqual([{
       packet_id: 'qa-1',
-      persona: 'reviewer',
+      persona: 'qa',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -336,7 +336,8 @@ describe('resolveExecuteAction', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'opus' as const },
-      reviewer: { description: 'qa', instructions: ['Check compliance'], model: 'sonnet' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: ['Check compliance'], model: 'sonnet' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -358,7 +359,8 @@ describe('resolveExecuteAction', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Always lint'], model: 'opus' as const },
-      reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
     };
     const packet = { ...makeDevPacket('dev-1'), instructions: ['Requires GPU access'] };
     const action = resolveExecuteAction({
@@ -372,11 +374,12 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.start_command).toBe('npx tsx tools/start.ts dev-1');
   });
 
-  it('EX-U23: QA packet gets reviewer persona instructions', () => {
+  it('EX-U23: QA packet gets qa persona instructions', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Dev instruction'], model: 'opus' as const },
-      reviewer: { description: 'qa', instructions: ['Review instruction'], model: 'sonnet' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: ['Review instruction'], model: 'sonnet' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -386,7 +389,7 @@ describe('resolveExecuteAction', () => {
       }),
       personas,
     });
-    expect(action.ready_packets[0]!.persona).toBe('reviewer');
+    expect(action.ready_packets[0]!.persona).toBe('qa');
     expect(action.ready_packets[0]!.model).toBe('sonnet');
     expect(action.ready_packets[0]!.instructions).toEqual(['Review instruction']);
   });
@@ -404,7 +407,8 @@ describe('resolveExecuteAction', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
-      reviewer: { description: 'qa', instructions: [], model: 'haiku' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: [], model: 'haiku' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -420,7 +424,8 @@ describe('resolveExecuteAction', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
-      reviewer: { description: 'qa', instructions: [], model: 'sonnet' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
+      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
     };
     const packet = { ...makeDevPacket('dev-1'), model: 'opus' as const };
     const action = resolveExecuteAction({
@@ -445,7 +450,8 @@ describe('resolveExecuteAction', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'haiku' as const },
-      reviewer: { description: 'qa', instructions: [] },
+      code_reviewer: { description: 'code_reviewer', instructions: [] },
+      qa: { description: 'qa', instructions: [] },
     };
     const a2 = resolveExecuteAction({
       ...makeInput({

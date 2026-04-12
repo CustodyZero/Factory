@@ -132,7 +132,7 @@
         "target_id": { "type": "string", "minLength": 1 },
         "feature_id": { "type": ["string", "null"] },
         "dispatch_id": { "type": ["string", "null"] },
-        "persona": { "type": "string", "enum": ["planner", "developer", "reviewer"] },
+        "persona": { "type": "string", "enum": ["planner", "developer", "code_reviewer", "qa"] },
         "provider": { "type": "string", "enum": ["codex", "claude"] },
         "model": { "type": "string", "enum": ["opus", "sonnet", "haiku"] },
         "attempt": { "type": "integer", "minimum": 1 },

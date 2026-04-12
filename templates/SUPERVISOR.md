@@ -55,7 +55,7 @@ at `idle` or a real human gate.
 
 When `execute_feature` returns ready packets:
 
-- Each packet includes `persona` (developer or reviewer) and `model` (opus/sonnet/haiku)
+- Each packet includes `persona` (developer, code_reviewer, or qa) and `model` (opus/sonnet/haiku)
 - Each packet includes `instructions` — pass these to the spawned agent
 - Each packet includes `start_command` — the assigned agent should run it before implementation
 - Each packet dispatch includes a stable `dispatch_id` — treat it as the supervisor-issued authorization token

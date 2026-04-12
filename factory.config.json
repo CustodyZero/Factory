@@ -48,7 +48,12 @@
       "instructions": [],
       "model": "opus"
     },
-    "reviewer": {
+    "code_reviewer": {
+      "description": "Reviews code changes for correctness, design, and contract adherence",
+      "instructions": [],
+      "model": "sonnet"
+    },
+    "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
       "model": "sonnet"
@@ -65,12 +70,14 @@
     "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
-      "reviewer": "claude-qa"
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
     "personas": {
       "planner": "claude",
       "developer": "codex",
-      "reviewer": "claude"
+      "code_reviewer": "claude",
+      "qa": "claude"
     },
     "providers": {
       "codex": {
@@ -107,7 +114,12 @@
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" }
       ],
-      "reviewer": [
+      "code_reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "qa": [
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" },
         { "provider": "codex", "model": "opus" }

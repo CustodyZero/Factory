@@ -117,7 +117,7 @@
         "dispatch_id": { "type": "string", "minLength": 1 },
         "feature_id": { "type": "string", "minLength": 1 },
         "packet_id": { "type": "string", "minLength": 1 },
-        "persona": { "type": "string", "enum": ["developer", "reviewer"] },
+        "persona": { "type": "string", "enum": ["developer", "code_reviewer", "qa"] },
         "model": { "type": "string", "minLength": 1 },
         "instructions": {
           "type": "array",

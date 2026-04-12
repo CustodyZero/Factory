@@ -39,7 +39,8 @@ function makeConfig(): FactoryConfig {
     personas: {
       planner: { description: 'planner', instructions: [], model: 'opus' },
       developer: { description: 'developer', instructions: [], model: 'opus' },
-      reviewer: { description: 'reviewer', instructions: [], model: 'sonnet' },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' },
+      qa: { description: 'qa', instructions: [], model: 'sonnet' },
     },
     orchestrator: {
       enabled: true,
@@ -49,12 +50,14 @@ function makeConfig(): FactoryConfig {
       recent_attempt_limit: 4,
       completion_identities: {
         developer: 'codex-dev',
-        reviewer: 'claude-qa',
+        code_reviewer: 'claude-cr',
+        qa: 'claude-qa',
       },
       personas: {
         planner: 'claude',
         developer: 'codex',
-        reviewer: 'claude',
+        code_reviewer: 'claude',
+        qa: 'claude',
       },
       retries: {
         max_supervisor_ticks: 10,
@@ -69,7 +72,12 @@ function makeConfig(): FactoryConfig {
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
         ],
-        reviewer: [
+        code_reviewer: [
+          { provider: 'claude', model: 'sonnet' },
+          { provider: 'claude', model: 'opus' },
+          { provider: 'codex', model: 'opus' },
+        ],
+        qa: [
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
           { provider: 'codex', model: 'opus' },
@@ -126,7 +134,7 @@ function makeDispatch(): DispatchRecord {
     dispatch_id: 'dispatch-f1-p1-1',
     feature_id: 'f1',
     packet_id: 'p1',
-    persona: 'reviewer',
+    persona: 'qa',
     model: 'sonnet',
     instructions: ['Verify all acceptance criteria', 'Capture evidence'],
     start_command: 'npx tsx tools/start.ts p1',
@@ -139,7 +147,7 @@ describe('orchestrate helpers', () => {
     const cfg = makeConfig();
     expect(resolveProviderForPersona('planner', cfg.orchestrator!)).toBe('claude');
     expect(resolveProviderForPersona('developer', cfg.orchestrator!)).toBe('codex');
-    expect(resolveProviderForPersona('reviewer', cfg.orchestrator!)).toBe('claude');
+    expect(resolveProviderForPersona('qa', cfg.orchestrator!)).toBe('claude');
   });
 
   it('OR-U2: model resolution maps factory tiers to provider-native model names', () => {
@@ -207,7 +215,7 @@ describe('orchestrate helpers', () => {
   });
 
   it('OR-U8: retry ladder prepends assigned model and dedupes configured steps', () => {
-    const steps = buildRetrySteps('reviewer', 'sonnet', makeConfig().orchestrator!);
+    const steps = buildRetrySteps('qa', 'sonnet', makeConfig().orchestrator!);
     expect(steps).toEqual([
       { provider: 'claude', model: 'sonnet' },
       { provider: 'claude', model: 'opus' },
@@ -220,8 +228,8 @@ describe('orchestrate helpers', () => {
       { kind: 'packet', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', persona: 'developer', provider: 'codex', model: 'sonnet', attempt: 1, outcome: 'failed', failure_kind: 'task_failed', observed_at: '' },
       { kind: 'packet', target_id: 'p1', feature_id: 'f1', dispatch_id: 'd1', persona: 'developer', provider: 'codex', model: 'opus', attempt: 2, outcome: 'success', failure_kind: null, observed_at: '' },
       { kind: 'planner', target_id: 'i1', feature_id: null, dispatch_id: null, persona: 'planner', provider: 'claude', model: 'opus', attempt: 1, outcome: 'success', failure_kind: null, observed_at: '' },
-      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'reviewer', provider: 'claude', model: 'sonnet', attempt: 1, outcome: 'failed', failure_kind: 'task_failed', observed_at: '' },
-      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'reviewer', provider: 'claude', model: 'opus', attempt: 2, outcome: 'success', failure_kind: null, observed_at: '' },
+      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'qa', provider: 'claude', model: 'sonnet', attempt: 1, outcome: 'failed', failure_kind: 'task_failed', observed_at: '' },
+      { kind: 'packet', target_id: 'p2', feature_id: 'f2', dispatch_id: 'd2', persona: 'qa', provider: 'claude', model: 'opus', attempt: 2, outcome: 'success', failure_kind: null, observed_at: '' },
     ], 4);
     expect(attempts).toHaveLength(4);
     expect(attempts[0].provider).toBe('codex');

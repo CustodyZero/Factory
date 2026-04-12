@@ -55,7 +55,7 @@ export type ExecuteActionKind =
   | 'not_approved'
   | 'feature_not_found';
 
-export type Persona = 'developer' | 'reviewer';
+export type Persona = 'developer' | 'code_reviewer' | 'qa';
 
 export interface PacketAssignment {
   readonly packet_id: string;
@@ -205,7 +205,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const blockedPackets: Array<{ id: string; blocked_by: string[] }> = [];
 
   function assignPacket(packet: RawPacket): PacketAssignment {
-    const persona: Persona = packet.kind === 'qa' ? 'reviewer' : 'developer';
+    const persona: Persona = packet.kind === 'qa' ? 'qa' : 'developer';
     const personaConfig = input.personas?.[persona];
     const personaInstructions = personaConfig?.instructions ?? [];
     const packetInstructions = [...(packet.instructions ?? [])];

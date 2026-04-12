@@ -105,7 +105,12 @@ Edit the template at your project root:
       "instructions": [],
       "model": "opus"
     },
-    "reviewer": {
+    "code_reviewer": {
+      "description": "Reviews code changes for correctness, design, and contract adherence",
+      "instructions": [],
+      "model": "sonnet"
+    },
+    "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
       "model": "sonnet"
@@ -122,12 +127,14 @@ Edit the template at your project root:
     "recent_attempt_limit": 50,
     "completion_identities": {
       "developer": "codex-dev",
-      "reviewer": "claude-qa"
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
     "personas": {
       "planner": "claude",
       "developer": "codex",
-      "reviewer": "claude"
+      "code_reviewer": "claude",
+      "qa": "claude"
     },
     "providers": {
       "codex": {
@@ -164,7 +171,12 @@ Edit the template at your project root:
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" }
       ],
-      "reviewer": [
+      "code_reviewer": [
+        { "provider": "claude", "model": "sonnet" },
+        { "provider": "claude", "model": "opus" },
+        { "provider": "codex", "model": "opus" }
+      ],
+      "qa": [
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" },
         { "provider": "codex", "model": "opus" }
@@ -187,7 +199,7 @@ Edit the template at your project root:
 | `validation.command` | string | Shell command to run factory validation |
 | `infrastructure_patterns` | string[] | File paths/prefixes that are not "implementation work" |
 | `completed_by_default` | identity | Default identity written into completion records |
-| `personas` | object | Planner, developer, and reviewer persona defaults |
+| `personas` | object | Planner, developer, code_reviewer, and qa persona defaults |
 | `orchestrator` | object | Native Codex/Claude harness configuration and provider mappings |
 
 ### Infrastructure patterns
@@ -261,9 +273,9 @@ For automated orchestration with the native harness or an external runner:
 5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
 6. Manual option: initialize supervisor state with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
 7. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
-8. Each spawned developer or reviewer agent runs the returned `start_command`
+8. Each spawned developer or qa agent runs the returned `start_command`
 9. The agent performs only that packet’s scope, then runs `complete.ts`
-10. QA agents use a distinct reviewer identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
+10. QA agents use a distinct qa identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
 11. The native orchestrator retries failed planner and packet runs using the configured provider/model ladder before surfacing a real failure
 12. Human handles any explicit architectural acceptance with `accept.ts`
 13. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
