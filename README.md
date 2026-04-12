@@ -259,18 +259,34 @@ You'll see both packets listed as `not_started`.
 
 ### 4. Implement the dev packet
 
-Claim the packet to mark work as in progress. Write the
-code, then run completion:
+Claim the packet to mark work as in progress, write the code,
+then request code review:
 
 ```sh
 npx tsx .factory/tools/start.ts add-health-endpoint-dev
+# ... implement the change ...
+npx tsx .factory/tools/request-review.ts add-health-endpoint-dev
+```
+
+### 5. Code review
+
+A code reviewer (different agent or human) reviews the branch and approves:
+
+```sh
+npx tsx .factory/tools/review.ts add-health-endpoint-dev --approve
+```
+
+If changes are needed, `--request-changes` sends it back to the developer.
+After approval, run completion:
+
+```sh
 npx tsx .factory/tools/complete.ts add-health-endpoint-dev
 ```
 
 This runs build + lint + tests and writes `factory/completions/add-health-endpoint-dev.json`.
 Since the change class is `local`, it auto-accepts.
 
-### 5. Review the QA packet
+### 6. Run the QA packet
 
 The QA packet is now unblocked (its dependency is complete). A different
 agent or human reviews the dev work against the acceptance criteria, then:
@@ -285,7 +301,7 @@ identity than the dev completion (FI-7).
 If the QA packet declares `environment_dependencies`, matching evidence records
 must exist before completion.
 
-### 6. Commit
+### 7. Commit
 
 The pre-commit hook verifies that all started packets have completions.
 Your commit includes the implementation files alongside the factory
@@ -456,13 +472,23 @@ Required fields:
 QA-specific fields:
 - `verifies` — ID of the dev packet this QA packet reviews (required for `qa`, forbidden for `dev`)
 
+Lifecycle status (dev packets):
+```
+draft → ready → implementing → review_requested → changes_requested → review_approved → completed
+```
+Review states (`review_requested`, `changes_requested`, `review_approved`) apply only to dev packets.
+QA packets follow: `draft → ready → implementing → completed`.
+Legacy packets with `null` status are grandfathered — their state is derived from `started_at` and completion records.
+
 Optional fields:
 - `started_at` — when work began (normally set by `tools/start.ts`)
+- `status` — lifecycle status (see above). `null` for legacy packets. Also accepts `abandoned` or `deferred`.
+- `branch` — git branch name for code review (set by `request-review.ts`)
+- `review_iteration` — number of review round-trips completed (incremented on each re-request after `changes_requested`, default 0)
 - `dependencies` — packet IDs that must be completed first
 - `environment_dependencies` — external dependencies requiring evidence
 - `model` — model tier override (`opus`, `sonnet`, `haiku`)
 - `instructions` — additional agent instructions (merged with persona instructions)
-- `status` — `abandoned` or `deferred` (exempt from FI-6/FI-7)
 - `feature_id` — parent feature ID
 - `tags` — freeform labels
 
@@ -639,6 +665,31 @@ npx tsx .factory/tools/start.ts <packet-id>
 
 Claims a packet and marks it started before implementation begins.
 
+### Request Review
+
+```sh
+npx tsx .factory/tools/request-review.ts <packet-id>
+npx tsx .factory/tools/request-review.ts <packet-id> --branch <branch-name>
+```
+
+Transitions a dev packet from `implementing` (or `changes_requested`) to `review_requested`.
+Captures the current git branch (or uses `--branch` override) and sets the `branch` field
+on the packet. Increments `review_iteration` on re-requests after `changes_requested`.
+
+### Review
+
+```sh
+npx tsx .factory/tools/review.ts <packet-id> --approve
+npx tsx .factory/tools/review.ts <packet-id> --request-changes
+```
+
+Records a code review decision on a dev packet in `review_requested` status.
+`--approve` transitions to `review_approved` (developer can now call `complete.ts`).
+`--request-changes` transitions to `changes_requested` (developer addresses feedback,
+then calls `request-review.ts` again).
+
+Review feedback lives in git (branch diffs, git notes) — not in factory artifacts.
+
 ### Complete
 
 ```sh
@@ -646,6 +697,8 @@ npx tsx .factory/tools/complete.ts <packet-id> [--summary "..."]
 ```
 
 Runs verification (build, lint, test), then creates a completion record.
+Dev packets must be in `review_approved` status before completion (legacy `null`-status
+packets are grandfathered).
 
 ### Execute
 

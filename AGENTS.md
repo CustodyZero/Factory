@@ -55,7 +55,9 @@ implementing → review_requested → [changes_requested → implementing → re
 ```
 
 The `branch` field on the packet identifies the git branch under review.
-Review feedback lives in git (branch diffs, git notes) — not in factory artifacts.
+The `review_iteration` field tracks the number of review round-trips (incremented on each
+re-request after `changes_requested`). Review feedback lives in git (branch diffs, git notes)
+— not in factory artifacts.
 
 ### After Code Review (or for QA Packets)
 
