@@ -598,6 +598,19 @@ function parseToolJson<T>(toolScript: string, args: ReadonlyArray<string>, cwd: 
   return JSON.parse(raw) as T;
 }
 
+/**
+ * Auto-approves a planned feature by setting status to "approved".
+ * Used by the orchestrator's run loop to avoid stopping for manual approval.
+ */
+export function autoApproveFeature(artifactRoot: string, featureId: string): void {
+  const featurePath = join(artifactRoot, 'features', `${featureId}.json`);
+  const raw = readFileSync(featurePath, 'utf-8');
+  const feature = JSON.parse(raw) as Record<string, unknown>;
+  feature['status'] = 'approved';
+  feature['approved_at'] = new Date().toISOString();
+  writeFileSync(featurePath, JSON.stringify(feature, null, 2) + '\n', 'utf-8');
+}
+
 function updateState(
   statePath: string,
   config: FactoryConfig,
@@ -994,7 +1007,8 @@ function runLoop(
       };
     }
 
-    if (planAction.kind === 'plan_feature' || planAction.kind === 'awaiting_approval') {
+    if (planAction.kind === 'plan_feature') {
+      // Planner didn't produce a feature — cannot auto-approve nothing
       persistRunArtifacts(statePath, config, planAction, null, [], null);
       return {
         plan_action: planAction,
@@ -1004,6 +1018,26 @@ function runLoop(
         status: 'awaiting_approval',
         message: planAction.message,
       };
+    }
+
+    if (planAction.kind === 'awaiting_approval') {
+      if (planAction.feature_id !== null) {
+        // Auto-approve: the planner used inference to produce the plan;
+        // the orchestrator is a deterministic process that moves artifacts through gates.
+        autoApproveFeature(resolveArtifactRoot(projectRoot, config), planAction.feature_id);
+        planAction = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
+        // Fall through — planAction should now be ready_for_execution
+      } else {
+        persistRunArtifacts(statePath, config, planAction, null, [], null);
+        return {
+          plan_action: planAction,
+          last_supervisor_action: null,
+          runs,
+          ticks,
+          status: 'awaiting_approval',
+          message: planAction.message,
+        };
+      }
     }
 
     if (planAction.kind === 'blocked') {

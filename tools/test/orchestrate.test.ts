@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
+  autoApproveFeature,
   boundedAttempts,
   boundedRuns,
   buildRetrySteps,
@@ -234,5 +238,33 @@ describe('orchestrate helpers', () => {
     expect(attempts).toHaveLength(4);
     expect(attempts[0].provider).toBe('codex');
     expect(attempts[3].attempt).toBe(2);
+  });
+
+  it('OR-U10: autoApproveFeature sets status to approved and approved_at', () => {
+    const dir = join(tmpdir(), `factory-test-${Date.now()}`);
+    const featuresDir = join(dir, 'features');
+    mkdirSync(featuresDir, { recursive: true });
+
+    const feature = {
+      id: 'test-feat',
+      intent: 'test',
+      status: 'planned',
+      packets: [],
+      created_by: { kind: 'agent', id: 'planner' },
+      approved_at: null,
+    };
+    writeFileSync(join(featuresDir, 'test-feat.json'), JSON.stringify(feature, null, 2) + '\n');
+
+    autoApproveFeature(dir, 'test-feat');
+
+    const result = JSON.parse(readFileSync(join(featuresDir, 'test-feat.json'), 'utf-8'));
+    expect(result.status).toBe('approved');
+    expect(result.approved_at).toBeTruthy();
+    expect(new Date(result.approved_at).getTime()).not.toBeNaN();
+    // Other fields preserved
+    expect(result.id).toBe('test-feat');
+    expect(result.intent).toBe('test');
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });
