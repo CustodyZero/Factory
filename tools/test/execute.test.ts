@@ -496,4 +496,29 @@ describe('resolveExecuteAction', () => {
       'Evidence required before completion for environment_dependencies: browser-env',
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Packet status field tests (Phase 2 — explicit lifecycle status)
+  // -------------------------------------------------------------------------
+
+  it('EX-U30: packet with implementing status and started_at is reported as in-progress', () => {
+    const packet = { ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'), status: 'implementing' as const };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [packet],
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.in_progress_packets).toHaveLength(1);
+    expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
+  });
+
+  it('EX-U31: packet with completed status and completion record is reported as completed', () => {
+    const packet = { ...makeDevPacket('dev-1'), status: 'completed' as const };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1'] }),
+      packets: [packet],
+      completionIds: new Set(['dev-1']),
+    }));
+    expect(action.kind).toBe('all_complete');
+  });
 });

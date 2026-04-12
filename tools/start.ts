@@ -91,8 +91,11 @@ if (featureId !== null && existsSync(supervisorStatePath)) {
   }
 }
 
-packet['started_at'] = new Date().toISOString();
+const now = new Date().toISOString();
+packet['started_at'] = now;
+packet['status'] = 'implementing';
 writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
 console.log(`Packet started: ${packetId}`);
-console.log(`  started_at: ${packet['started_at']}`);
+console.log(`  started_at: ${now}`);
+console.log(`  status: implementing`);

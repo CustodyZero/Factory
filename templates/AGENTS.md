@@ -75,6 +75,21 @@ QA packets reference their dev counterpart via the `verifies` field and depend o
 the dev packet (listed in `dependencies`). This means QA is sequenced automatically:
 the factory will not assign a QA packet until its dev packet is complete.
 
+### Packet Lifecycle Status
+
+Packets carry an explicit `status` field that tracks lifecycle progression:
+
+```
+Dev packets:  draft → ready → implementing → review_requested → changes_requested → review_approved → completed
+QA packets:   draft → ready → implementing → completed
+```
+
+`start.ts` sets status to `implementing`; `complete.ts` sets status to `completed`.
+Review states (`review_requested`, `changes_requested`, `review_approved`) apply only
+to dev packets and are managed by the code review lifecycle.
+Legacy packets with `null` status are grandfathered — their state is derived from
+`started_at` and completion records.
+
 ### Persona Assignment
 
 The planner sits above execution:

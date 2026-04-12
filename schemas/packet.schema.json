@@ -102,8 +102,19 @@
     },
     "status": {
       "type": ["string", "null"],
-      "enum": [null, "abandoned", "deferred"],
-      "description": "Explicit lifecycle override. Abandoned/deferred packets are exempt from FI-6 and FI-7."
+      "enum": [
+        null,
+        "draft",
+        "ready",
+        "implementing",
+        "review_requested",
+        "changes_requested",
+        "review_approved",
+        "completed",
+        "abandoned",
+        "deferred"
+      ],
+      "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets."
     },
     "feature_id": {
       "type": ["string", "null"],

@@ -145,9 +145,18 @@ function validatePacketSchema(filepath: string, data: unknown): ValidationResult
   }
 
   if (data['status'] != null && data['status'] !== null) {
-    const validStatuses = ['abandoned', 'deferred'];
+    const validStatuses = [
+      'draft', 'ready', 'implementing',
+      'review_requested', 'changes_requested', 'review_approved',
+      'completed', 'abandoned', 'deferred',
+    ];
     if (typeof data['status'] !== 'string' || !validStatuses.includes(data['status'])) {
-      e("'status' must be null, 'abandoned', or 'deferred'");
+      e(`'status' must be null or one of: ${validStatuses.join(', ')}`);
+    }
+    // Review states are only valid for dev packets
+    const reviewStates = ['review_requested', 'changes_requested', 'review_approved'];
+    if (reviewStates.includes(data['status'] as string) && data['kind'] !== 'dev') {
+      e(`Review status '${data['status']}' is only valid for dev packets`);
     }
   }
 

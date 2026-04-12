@@ -234,7 +234,13 @@ const completion = {
 };
 
 writeFileSync(completionPath, JSON.stringify(completion, null, 2) + '\n', 'utf-8');
+
+// Update packet status to 'completed'
+packet['status'] = 'completed';
+writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+
 console.log(`\nCompletion written: completions/${packetId}.json`);
+console.log(`  Packet status updated to: completed`);
 
 if (!ciPass) {
   console.log('\n\u26a0 Verification did not fully pass. The completion record reflects this honestly.');
