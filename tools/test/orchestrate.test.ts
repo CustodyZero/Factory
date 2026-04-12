@@ -133,7 +133,7 @@ function makePlanAction(): PlanAction {
   };
 }
 
-function makeDispatch(): DispatchRecord {
+function makeDispatch(overrides?: Partial<DispatchRecord>): DispatchRecord {
   return {
     dispatch_id: 'dispatch-f1-p1-1',
     feature_id: 'f1',
@@ -143,6 +143,8 @@ function makeDispatch(): DispatchRecord {
     instructions: ['Verify all acceptance criteria', 'Capture evidence'],
     start_command: 'npx tsx tools/start.ts p1',
     dispatched_at: '2026-04-09T00:00:00Z',
+    task: 'verify',
+    ...overrides,
   };
 }
 
@@ -168,11 +170,12 @@ describe('orchestrate helpers', () => {
     expect(prompt).not.toContain('Start command:');
   });
 
-  it('OR-U4: packet prompt includes start and complete commands', () => {
+  it('OR-U4: verify task prompt includes start and complete commands', () => {
     const prompt = buildPacketPrompt(makeDispatch(), makeConfig(), makeConfig().orchestrator!);
-    expect(prompt).toContain('Start command: npx tsx tools/start.ts p1');
+    expect(prompt).toContain('npx tsx tools/start.ts p1');
     expect(prompt).toContain('npx tsx tools/complete.ts p1 --identity claude-qa');
     expect(prompt).toContain('Verify all acceptance criteria');
+    expect(prompt).toContain('qa agent');
   });
 
   it('OR-U5: codex invocation uses exec and output file capture', () => {
@@ -238,6 +241,66 @@ describe('orchestrate helpers', () => {
     expect(attempts).toHaveLength(4);
     expect(attempts[0].provider).toBe('codex');
     expect(attempts[3].attempt).toBe(2);
+  });
+
+  it('OR-U11: implement task prompt calls request-review, not complete', () => {
+    const dispatch = makeDispatch({ persona: 'developer', task: 'implement', start_command: 'npx tsx tools/start.ts p1' });
+    const prompt = buildPacketPrompt(dispatch, makeConfig(), makeConfig().orchestrator!);
+    expect(prompt).toContain('npx tsx tools/start.ts p1');
+    expect(prompt).toContain('request-review.ts p1');
+    expect(prompt).not.toContain('complete.ts');
+    expect(prompt).toContain('developer agent');
+  });
+
+  it('OR-U12: rework task prompt omits start command and calls request-review', () => {
+    const dispatch = makeDispatch({ persona: 'developer', task: 'rework', start_command: 'npx tsx tools/start.ts p1' });
+    const prompt = buildPacketPrompt(dispatch, makeConfig(), makeConfig().orchestrator!);
+    expect(prompt).toContain('Address the code review feedback');
+    expect(prompt).toContain('request-review.ts p1');
+    expect(prompt).not.toContain('Run `npx tsx tools/start.ts p1`');
+    expect(prompt).not.toContain('complete.ts');
+  });
+
+  it('OR-U13: finalize task prompt only calls complete', () => {
+    const dispatch = makeDispatch({ persona: 'developer', task: 'finalize', start_command: 'npx tsx tools/start.ts p1' });
+    const prompt = buildPacketPrompt(dispatch, makeConfig(), makeConfig().orchestrator!);
+    expect(prompt).toContain('complete.ts p1');
+    expect(prompt).not.toContain('request-review.ts');
+    expect(prompt).not.toContain('Run `npx tsx tools/start.ts p1` before');
+  });
+
+  it('OR-U14: review task prompt calls review.ts approve or request-changes', () => {
+    const dispatch = makeDispatch({ persona: 'code_reviewer', task: 'review', start_command: 'npx tsx tools/start.ts p1' });
+    const prompt = buildPacketPrompt(dispatch, makeConfig(), makeConfig().orchestrator!);
+    expect(prompt).toContain('review.ts p1 --approve');
+    expect(prompt).toContain('review.ts p1 --request-changes');
+    expect(prompt).not.toContain('complete.ts');
+    expect(prompt).not.toContain('request-review.ts');
+    expect(prompt).toContain('code_reviewer agent');
+  });
+
+  it('OR-U15: task inferred from persona when not set (backward compat)', () => {
+    // QA without task → verify
+    const qaPrompt = buildPacketPrompt(makeDispatch({ task: undefined }), makeConfig(), makeConfig().orchestrator!);
+    expect(qaPrompt).toContain('Verify the acceptance criteria');
+    expect(qaPrompt).toContain('complete.ts');
+
+    // code_reviewer without task → review
+    const crPrompt = buildPacketPrompt(
+      makeDispatch({ persona: 'code_reviewer', task: undefined }),
+      makeConfig(),
+      makeConfig().orchestrator!,
+    );
+    expect(crPrompt).toContain('review.ts');
+
+    // developer without task → implement
+    const devPrompt = buildPacketPrompt(
+      makeDispatch({ persona: 'developer', task: undefined }),
+      makeConfig(),
+      makeConfig().orchestrator!,
+    );
+    expect(devPrompt).toContain('request-review.ts');
+    expect(devPrompt).toContain('Implement the assigned packet scope');
   });
 
   it('OR-U10: autoApproveFeature sets status to approved and approved_at', () => {

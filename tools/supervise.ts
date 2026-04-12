@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import { buildToolCommand, loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 import type { PersonasConfig } from './config.js';
 import { resolveExecuteAction } from './execute.js';
-import type { Feature, RawPacket, ExecuteAction, PacketAssignment } from './execute.js';
+import type { Feature, RawPacket, ExecuteAction, PacketAssignment, DispatchTask } from './execute.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -69,6 +69,7 @@ export interface DispatchRecord {
   readonly feature_id: string;
   readonly packet_id: string;
   readonly persona: 'developer' | 'code_reviewer' | 'qa';
+  readonly task?: DispatchTask;
   readonly model: string;
   readonly instructions: ReadonlyArray<string>;
   readonly start_command: string;
@@ -369,6 +370,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
               feature_id: feature.id,
               packet_id: packet.packet_id,
               persona: packet.persona,
+              task: packet.task,
               model: packet.model,
               instructions: packet.instructions,
               start_command: packet.start_command,

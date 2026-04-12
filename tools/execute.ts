@@ -56,10 +56,12 @@ export type ExecuteActionKind =
   | 'feature_not_found';
 
 export type Persona = 'developer' | 'code_reviewer' | 'qa';
+export type DispatchTask = 'implement' | 'rework' | 'finalize' | 'review' | 'verify';
 
 export interface PacketAssignment {
   readonly packet_id: string;
   readonly persona: Persona;
+  readonly task: DispatchTask;
   readonly model: ModelTier;
   readonly instructions: ReadonlyArray<string>;
   readonly start_command: string;
@@ -206,8 +208,9 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const readyPackets: PacketAssignment[] = [];
   const blockedPackets: Array<{ id: string; blocked_by: string[] }> = [];
 
-  function assignPacket(packet: RawPacket, personaOverride?: Persona): PacketAssignment {
+  function assignPacket(packet: RawPacket, personaOverride?: Persona, taskOverride?: DispatchTask): PacketAssignment {
     const persona: Persona = personaOverride ?? (packet.kind === 'qa' ? 'qa' : 'developer');
+    const task: DispatchTask = taskOverride ?? (persona === 'qa' ? 'verify' : 'implement');
     const personaConfig = input.personas?.[persona];
     const personaInstructions = personaConfig?.instructions ?? [];
     const packetInstructions = [...(packet.instructions ?? [])];
@@ -222,6 +225,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     return {
       packet_id: packet.id,
       persona,
+      task,
       model,
       instructions: [...personaInstructions, ...packetInstructions],
       start_command: input.startCommand?.(packet.id) ?? `npx tsx tools/start.ts ${packet.id}`,
@@ -240,21 +244,22 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       continue;
     }
 
-    // Status-aware routing for dev packets in the review lifecycle
+    // Status-aware routing for dev packets in the review lifecycle.
+    // These states all need a NEW agent dispatch (not "in progress" with an active agent).
     const pktStatus = packet.status ?? null;
     if (packet.kind === 'dev' && pktStatus === 'review_requested') {
       // Ready for code reviewer dispatch
-      readyPackets.push(assignPacket(packet, 'code_reviewer'));
+      readyPackets.push(assignPacket(packet, 'code_reviewer', 'review'));
       continue;
     }
     if (packet.kind === 'dev' && pktStatus === 'changes_requested') {
-      // Developer needs to address review feedback — in progress
-      inProgressPackets.push(assignPacket(packet, 'developer'));
+      // Developer needs to be re-dispatched to address review feedback
+      readyPackets.push(assignPacket(packet, 'developer', 'rework'));
       continue;
     }
     if (packet.kind === 'dev' && pktStatus === 'review_approved') {
-      // Approved — developer needs to call complete.ts. Show as in-progress.
-      inProgressPackets.push(assignPacket(packet, 'developer'));
+      // Developer needs to be dispatched to call complete.ts
+      readyPackets.push(assignPacket(packet, 'developer', 'finalize'));
       continue;
     }
 

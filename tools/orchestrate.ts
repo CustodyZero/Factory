@@ -417,23 +417,70 @@ export function buildPacketPrompt(
       : orchestrator.completion_identities.developer;
   const completeArgs = [dispatch.packet_id, '--identity', completionIdentity];
   const completeCommand = buildToolCommand('complete.ts', completeArgs, undefined, config);
+  const requestReviewCommand = buildToolCommand('request-review.ts', [dispatch.packet_id], undefined, config);
+  const reviewApproveCommand = buildToolCommand('review.ts', [dispatch.packet_id, '--approve'], undefined, config);
+  const reviewRequestChangesCommand = buildToolCommand('review.ts', [dispatch.packet_id, '--request-changes'], undefined, config);
 
   const instructions = dispatch.instructions.map((instruction) => `- ${instruction}`).join('\n');
-  return [
+  const header = [
     `You are the factory ${dispatch.persona} agent for packet '${dispatch.packet_id}' in feature '${dispatch.feature_id}'.`,
     '',
     'Operate only within this packet assignment.',
-    `Start command: ${dispatch.start_command}`,
-    `Complete command: ${completeCommand}`,
+  ];
+
+  // Infer task from persona if not explicitly set (backward compat with old state)
+  const task = dispatch.task
+    ?? (dispatch.persona === 'qa' ? 'verify' : dispatch.persona === 'code_reviewer' ? 'review' : 'implement');
+
+  let steps: string[];
+  switch (task) {
+    case 'implement':
+      steps = [
+        `1. Run \`${dispatch.start_command}\` before changing implementation files.`,
+        '2. Implement the assigned packet scope.',
+        `3. Run \`${requestReviewCommand}\` when implementation is complete.`,
+        '4. Stop after the review request succeeds.',
+      ];
+      break;
+    case 'rework':
+      steps = [
+        '1. Address the code review feedback on the existing branch.',
+        `2. Run \`${requestReviewCommand}\` when rework is complete.`,
+        '3. Stop after the review request succeeds.',
+      ];
+      break;
+    case 'finalize':
+      steps = [
+        `1. Run \`${completeCommand}\` to finalize the approved packet.`,
+        '2. Stop after completion succeeds or report the blocking failure truthfully.',
+      ];
+      break;
+    case 'review':
+      steps = [
+        '1. Review the code changes on the branch.',
+        `2. If the changes meet quality standards, run \`${reviewApproveCommand}\`.`,
+        `3. If issues are found, run \`${reviewRequestChangesCommand}\`.`,
+        '4. Stop after the review decision is recorded.',
+      ];
+      break;
+    case 'verify':
+      steps = [
+        `1. Run \`${dispatch.start_command}\` before changing implementation files.`,
+        '2. Verify the acceptance criteria.',
+        `3. Run \`${completeCommand}\` when finished.`,
+        '4. Stop after completion succeeds or report the blocking failure truthfully.',
+      ];
+      break;
+  }
+
+  return [
+    ...header,
     '',
     'Assignment instructions:',
     instructions.length > 0 ? instructions : '- No additional instructions',
     '',
     'Required steps:',
-    `1. Run \`${dispatch.start_command}\` before changing implementation files.`,
-    '2. Complete only the assigned packet scope.',
-    `3. Run \`${completeCommand}\` when finished.`,
-    '4. Stop after completion succeeds or report the blocking failure truthfully.',
+    ...steps,
     '',
     'Do not approve packets. Do not modify unrelated factory artifacts.',
   ].join('\n');

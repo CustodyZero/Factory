@@ -94,6 +94,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual([{
       packet_id: 'p1',
       persona: 'developer',
+      task: 'implement',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts p1',
@@ -121,6 +122,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual([{
       packet_id: 'qa-1',
       persona: 'qa',
+      task: 'verify',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -185,6 +187,7 @@ describe('resolveExecuteAction', () => {
     expect(action.in_progress_packets).toEqual([{
       packet_id: 'p1',
       persona: 'developer',
+      task: 'implement',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts p1',
@@ -275,6 +278,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual([{
       packet_id: 'qa-1',
       persona: 'qa',
+      task: 'verify',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -307,6 +311,7 @@ describe('resolveExecuteAction', () => {
     expect(a1.ready_packets).toEqual([{
       packet_id: 'dev-1',
       persona: 'developer',
+      task: 'implement',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts dev-1',
@@ -318,6 +323,7 @@ describe('resolveExecuteAction', () => {
     expect(a2.ready_packets).toEqual([{
       packet_id: 'qa-1',
       persona: 'qa',
+      task: 'verify',
       model: 'opus',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
@@ -349,6 +355,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toEqual([{
       packet_id: 'dev-1',
       persona: 'developer',
+      task: 'implement',
       model: 'opus',
       instructions: ['Use MCP server X'],
       start_command: 'npx tsx tools/start.ts dev-1',
@@ -540,9 +547,10 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets).toHaveLength(1);
     expect(action.ready_packets[0]!.packet_id).toBe('dev-1');
     expect(action.ready_packets[0]!.persona).toBe('code_reviewer');
+    expect(action.ready_packets[0]!.task).toBe('review');
   });
 
-  it('EX-U33: dev packet with changes_requested status shows as in-progress developer', () => {
+  it('EX-U33: dev packet with changes_requested status dispatches developer for rework', () => {
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
       status: 'changes_requested' as const,
@@ -554,12 +562,13 @@ describe('resolveExecuteAction', () => {
       packets: [packet],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.in_progress_packets).toHaveLength(1);
-    expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
-    expect(action.in_progress_packets[0]!.persona).toBe('developer');
+    expect(action.ready_packets).toHaveLength(1);
+    expect(action.ready_packets[0]!.packet_id).toBe('dev-1');
+    expect(action.ready_packets[0]!.persona).toBe('developer');
+    expect(action.ready_packets[0]!.task).toBe('rework');
   });
 
-  it('EX-U34: dev packet with review_approved status shows as in-progress developer', () => {
+  it('EX-U34: dev packet with review_approved status dispatches developer for finalize', () => {
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
       status: 'review_approved' as const,
@@ -570,9 +579,10 @@ describe('resolveExecuteAction', () => {
       packets: [packet],
     }));
     expect(action.kind).toBe('spawn_packets');
-    expect(action.in_progress_packets).toHaveLength(1);
-    expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
-    expect(action.in_progress_packets[0]!.persona).toBe('developer');
+    expect(action.ready_packets).toHaveLength(1);
+    expect(action.ready_packets[0]!.packet_id).toBe('dev-1');
+    expect(action.ready_packets[0]!.persona).toBe('developer');
+    expect(action.ready_packets[0]!.task).toBe('finalize');
   });
 
   it('EX-U35: code_reviewer gets branch info in instructions', () => {
@@ -595,6 +605,7 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(action.ready_packets[0]!.persona).toBe('code_reviewer');
+    expect(action.ready_packets[0]!.task).toBe('review');
     expect(action.ready_packets[0]!.model).toBe('sonnet');
     expect(action.ready_packets[0]!.instructions).toContain('Check invariants');
     expect(action.ready_packets[0]!.instructions).toContain('Review branch: feature/dev-1');
@@ -615,24 +626,28 @@ describe('resolveExecuteAction', () => {
     const a2 = resolveExecuteAction(makeInput({ feature, packets: [devReview, qaPacket] }));
     expect(a2.ready_packets).toHaveLength(1);
     expect(a2.ready_packets[0]!.persona).toBe('code_reviewer');
+    expect(a2.ready_packets[0]!.task).toBe('review');
 
-    // Step 3: changes requested — developer back in action
+    // Step 3: changes requested — developer dispatched for rework
     const devChanges = { ...devReview, status: 'changes_requested' as const, review_iteration: 1 };
     const a3 = resolveExecuteAction(makeInput({ feature, packets: [devChanges, qaPacket] }));
-    expect(a3.in_progress_packets).toHaveLength(1);
-    expect(a3.in_progress_packets[0]!.persona).toBe('developer');
+    expect(a3.ready_packets).toHaveLength(1);
+    expect(a3.ready_packets[0]!.persona).toBe('developer');
+    expect(a3.ready_packets[0]!.task).toBe('rework');
 
     // Step 4: re-request review
     const devReReview = { ...devChanges, status: 'review_requested' as const };
     const a4 = resolveExecuteAction(makeInput({ feature, packets: [devReReview, qaPacket] }));
     expect(a4.ready_packets).toHaveLength(1);
     expect(a4.ready_packets[0]!.persona).toBe('code_reviewer');
+    expect(a4.ready_packets[0]!.task).toBe('review');
 
-    // Step 5: approved — developer completes
+    // Step 5: approved — developer dispatched for finalize
     const devApproved = { ...devReReview, status: 'review_approved' as const };
     const a5 = resolveExecuteAction(makeInput({ feature, packets: [devApproved, qaPacket] }));
-    expect(a5.in_progress_packets).toHaveLength(1);
-    expect(a5.in_progress_packets[0]!.persona).toBe('developer');
+    expect(a5.ready_packets).toHaveLength(1);
+    expect(a5.ready_packets[0]!.persona).toBe('developer');
+    expect(a5.ready_packets[0]!.task).toBe('finalize');
 
     // Step 6: completed — QA unblocked
     const a6 = resolveExecuteAction(makeInput({
@@ -642,6 +657,7 @@ describe('resolveExecuteAction', () => {
     }));
     expect(a6.ready_packets).toHaveLength(1);
     expect(a6.ready_packets[0]!.persona).toBe('qa');
+    expect(a6.ready_packets[0]!.task).toBe('verify');
   });
 
   it('EX-U37: QA packets are not affected by review status routing', () => {
