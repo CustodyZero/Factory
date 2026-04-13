@@ -363,7 +363,11 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
           const retainedDispatches = pruneActiveDispatches(tracking.active_dispatches, input.completionIds, input.acceptanceIds);
           const dispatches: DispatchRecord[] = executeAction.ready_packets.map((packet) => {
             const existing = retainedDispatches.find((dispatch) => dispatch.packet_id === packet.packet_id);
-            if (existing !== undefined) {
+            const isStale = existing !== undefined && (
+              existing.persona !== packet.persona ||
+              (existing.task !== undefined && packet.task !== undefined && existing.task !== packet.task)
+            );
+            if (existing !== undefined && !isStale) {
               return existing;
             }
             return {

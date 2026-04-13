@@ -458,6 +458,124 @@ describe('resolveSupervisorAction', () => {
     expect(action.state_patch?.features?.['f2']?.packets_spawned).toContain('p2');
   });
 
+  it('SV-U19: replaces stale developer dispatch with code_reviewer when packet reaches review_requested', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing', {
+          packets_spawned: ['p1'],
+          active_dispatches: [{
+            dispatch_id: 'dispatch-f1-p1-old',
+            feature_id: 'f1',
+            packet_id: 'p1',
+            persona: 'developer',
+            task: 'implement',
+            model: 'opus',
+            instructions: [],
+            start_command: 'npx tsx tools/start.ts p1',
+            dispatched_at: '2026-03-28T10:00:00Z',
+          }],
+        }),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [makeFeature({ id: 'f1', packets: ['p1'] })],
+      packets: [{
+        id: 'p1',
+        kind: 'dev' as const,
+        title: 'Dev p1',
+        change_class: 'local' as const,
+        dependencies: [],
+        started_at: '2026-03-28T10:00:00Z',
+        status: 'review_requested',
+      }],
+    }));
+
+    expect(action.kind).toBe('execute_feature');
+    expect(action.dispatches).toHaveLength(1);
+    const dispatch = action.dispatches[0];
+    expect(dispatch.persona).toBe('code_reviewer');
+    expect(dispatch.task).toBe('review');
+    expect(dispatch.packet_id).toBe('p1');
+    // Must be a new dispatch, not the stale one
+    expect(dispatch.dispatch_id).not.toBe('dispatch-f1-p1-old');
+  });
+
+  it('SV-U20: replaces stale code_reviewer dispatch with developer/rework when changes_requested', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing', {
+          packets_spawned: ['p1'],
+          active_dispatches: [{
+            dispatch_id: 'dispatch-f1-p1-old',
+            feature_id: 'f1',
+            packet_id: 'p1',
+            persona: 'code_reviewer',
+            task: 'review',
+            model: 'sonnet',
+            instructions: [],
+            start_command: 'npx tsx tools/start.ts p1',
+            dispatched_at: '2026-03-28T10:00:00Z',
+          }],
+        }),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [makeFeature({ id: 'f1', packets: ['p1'] })],
+      packets: [{
+        id: 'p1',
+        kind: 'dev' as const,
+        title: 'Dev p1',
+        change_class: 'local' as const,
+        dependencies: [],
+        started_at: '2026-03-28T10:00:00Z',
+        status: 'changes_requested',
+      }],
+    }));
+
+    expect(action.kind).toBe('execute_feature');
+    expect(action.dispatches).toHaveLength(1);
+    const dispatch = action.dispatches[0];
+    expect(dispatch.persona).toBe('developer');
+    expect(dispatch.task).toBe('rework');
+    expect(dispatch.dispatch_id).not.toBe('dispatch-f1-p1-old');
+  });
+
+  it('SV-U21: retains dispatch when persona and task unchanged across ticks', () => {
+    const state: SupervisorState = {
+      ...emptyState(),
+      features: {
+        f1: trackingFor('f1', 'executing', {
+          active_dispatches: [{
+            dispatch_id: 'dispatch-f1-p1-existing',
+            feature_id: 'f1',
+            packet_id: 'p1',
+            persona: 'developer',
+            task: 'implement',
+            model: 'opus',
+            instructions: [],
+            start_command: 'npx tsx tools/start.ts p1',
+            dispatched_at: '2026-03-28T11:00:00Z',
+          }],
+        }),
+      },
+    };
+
+    const action = resolveSupervisorAction(makeInput({
+      supervisorState: state,
+      features: [makeFeature({ id: 'f1', packets: ['p1'] })],
+      packets: [makeDevPacket('p1')],
+    }));
+    expect(action.kind).toBe('execute_feature');
+    expect(action.dispatches[0].dispatch_id).toBe('dispatch-f1-p1-existing');
+    expect(action.dispatches[0].persona).toBe('developer');
+  });
+
   it('SV-U18: does not let one waiting feature block another ready feature', () => {
     const state: SupervisorState = {
       ...emptyState(),
