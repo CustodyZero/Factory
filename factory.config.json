@@ -103,6 +103,7 @@
     },
     "retries": {
       "max_supervisor_ticks": 50,
+      "max_transient_retries": 2,
       "planner": [
         { "provider": "claude", "model": "sonnet" },
         { "provider": "claude", "model": "opus" },

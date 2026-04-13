@@ -252,7 +252,7 @@ function shellRun(command: string, args: ReadonlyArray<string>, cwd: string, std
   };
 }
 
-function classifyFailure(combinedOutput: string, exitCode: number): OrchestratorFailureKind {
+export function classifyFailure(combinedOutput: string, exitCode: number): OrchestratorFailureKind {
   if (exitCode === 0) {
     return null;
   }
@@ -351,6 +351,24 @@ function buildHealthInvocation(
         '-o',
         outputPath,
         'Reply with exactly: PROVIDER_OK',
+      ],
+      stdin: null,
+      output_path: outputPath,
+    };
+  }
+
+  if (providerName === 'copilot') {
+    return {
+      provider: providerName,
+      command: provider.command,
+      args: [
+        'copilot', '--',
+        '-p', 'Reply with exactly: PROVIDER_OK',
+        '--output-format', 'text',
+        '--allow-all-tools',
+        '--no-ask-user',
+        '--no-color',
+        '-s',
       ],
       stdin: null,
       output_path: outputPath,
@@ -517,6 +535,25 @@ export function buildProviderInvocation(
     };
   }
 
+  if (providerName === 'copilot') {
+    return {
+      provider: providerName,
+      command: provider.command,
+      args: [
+        'copilot', '--',
+        '-p', prompt,
+        '--output-format', 'json',
+        '--model', providerModel,
+        '--allow-all-tools',
+        '--no-ask-user',
+        '--no-color',
+        '-s',
+      ],
+      stdin: null,
+      output_path: outputPath,
+    };
+  }
+
   return {
     provider: providerName,
     command: provider.command,
@@ -555,7 +592,7 @@ function invokeProvider(
   let captured = result.stdout;
   if (providerName === 'codex' && existsSync(outputPath)) {
     captured = readFileSync(outputPath, 'utf-8');
-  } else if (providerName === 'claude') {
+  } else if (providerName === 'claude' || providerName === 'copilot') {
     writeFileSync(outputPath, result.stdout, 'utf-8');
   }
 
@@ -706,53 +743,70 @@ function runWithRetries(options: {
 }): { readonly runs: ReadonlyArray<OrchestratorRunRecord>; readonly success: boolean } {
   const runs: OrchestratorRunRecord[] = [];
   const steps = buildRetrySteps(options.persona, options.assignedModel, options.orchestrator);
+  const maxTransient = options.orchestrator.retries.max_transient_retries;
+  let attempt = 0;
 
-  for (const [index, step] of steps.entries()) {
-    const attempt = index + 1;
-    if (options.dryRun) {
-      runs.push(makeSkippedRun(
+  for (const step of steps) {
+    let transientRetries = 0;
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, no-constant-condition
+    while (true) {
+      attempt++;
+
+      if (options.dryRun) {
+        runs.push(makeSkippedRun(
+          options.kind,
+          step.provider,
+          options.targetId,
+          options.featureId,
+          options.dispatchId,
+          attempt,
+          `Dry run: would invoke ${step.provider} (${step.model}) for ${options.kind} '${options.targetId}'`,
+        ));
+        return { runs, success: true };
+      }
+
+      const provider = options.orchestrator.providers[step.provider];
+      if (!provider.enabled) {
+        runs.push(makeFailedRun(
+          options.kind,
+          step.provider,
+          options.targetId,
+          options.featureId,
+          options.dispatchId,
+          attempt,
+          `Provider '${step.provider}' is disabled for persona '${options.persona}'`,
+          'provider_unavailable',
+        ));
+        break;
+      }
+
+      const run = invokeProvider(
         options.kind,
         step.provider,
+        provider,
+        options.projectRoot,
+        options.outputDir,
         options.targetId,
+        options.prompt,
+        step.model,
         options.featureId,
         options.dispatchId,
         attempt,
-        `Dry run: would invoke ${step.provider} (${step.model}) for ${options.kind} '${options.targetId}'`,
-      ));
-      return { runs, success: true };
-    }
+      );
+      runs.push(run);
 
-    const provider = options.orchestrator.providers[step.provider];
-    if (!provider.enabled) {
-      runs.push(makeFailedRun(
-        options.kind,
-        step.provider,
-        options.targetId,
-        options.featureId,
-        options.dispatchId,
-        attempt,
-        `Provider '${step.provider}' is disabled for persona '${options.persona}'`,
-        'provider_unavailable',
-      ));
-      continue;
-    }
+      if (run.exit_code === 0) {
+        return { runs, success: true };
+      }
 
-    const run = invokeProvider(
-      options.kind,
-      step.provider,
-      provider,
-      options.projectRoot,
-      options.outputDir,
-      options.targetId,
-      options.prompt,
-      step.model,
-      options.featureId,
-      options.dispatchId,
-      attempt,
-    );
-    runs.push(run);
-    if (run.exit_code === 0) {
-      return { runs, success: true };
+      if (run.failure_kind === 'provider_error' && transientRetries < maxTransient) {
+        transientRetries++;
+        fmt.log('retry', `transient ${run.provider} error — retrying same step (${String(transientRetries)}/${String(maxTransient)})`);
+        continue;
+      }
+
+      break;
     }
   }
 
@@ -834,7 +888,7 @@ function runHealth(
 ): void {
   const checks: ProviderHealth[] = [];
   const runs: OrchestratorRunRecord[] = [];
-  for (const providerName of ['codex', 'claude'] as const) {
+  for (const providerName of ['codex', 'claude', 'copilot'] as const) {
     const provider = orchestrator.providers[providerName];
     const result = healthcheckProvider(providerName, provider, projectRoot, probe, outputDir, new Date().toISOString());
     checks.push(result.health);
@@ -881,69 +935,87 @@ function runPlanOnce(
   if (action.kind === 'plan_feature' && action.planner_assignment !== null) {
     const prompt = buildPlannerPrompt(action, config);
     const steps = buildRetrySteps('planner', action.planner_assignment.model, orchestrator);
-    for (const [index, step] of steps.entries()) {
-      const attempt = index + 1;
-      if (dryRun) {
-        runs.push(makeSkippedRun(
+    const maxTransient = orchestrator.retries.max_transient_retries;
+    let attempt = 0;
+    let done = false;
+
+    for (const step of steps) {
+      if (done) break;
+      let transientRetries = 0;
+
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, no-constant-condition
+      while (true) {
+        attempt++;
+
+        if (dryRun) {
+          runs.push(makeSkippedRun(
+            'planner',
+            step.provider,
+            action.intent_id,
+            action.feature_id,
+            null,
+            attempt,
+            `Dry run: would invoke ${step.provider} (${step.model}) for planner '${action.intent_id}'`,
+          ));
+          done = true;
+          break;
+        }
+
+        const provider = orchestrator.providers[step.provider];
+        if (!provider.enabled) {
+          runs.push(makeFailedRun(
+            'planner',
+            step.provider,
+            action.intent_id,
+            action.feature_id,
+            null,
+            attempt,
+            `Provider '${step.provider}' is disabled for persona 'planner'`,
+            'provider_unavailable',
+          ));
+          break;
+        }
+
+        const run = invokeProvider(
           'planner',
           step.provider,
+          provider,
+          projectRoot,
+          outputDir,
           action.intent_id,
+          prompt,
+          step.model,
           action.feature_id,
           null,
           attempt,
-          `Dry run: would invoke ${step.provider} (${step.model}) for planner '${action.intent_id}'`,
-        ));
+        );
+        if (run.exit_code !== 0) {
+          runs.push(run);
+          if (run.failure_kind === 'provider_error' && transientRetries < maxTransient) {
+            transientRetries++;
+            fmt.log('retry', `transient ${run.provider} error — retrying same step (${String(transientRetries)}/${String(maxTransient)})`);
+            continue;
+          }
+          break;
+        }
+
+        const refreshed = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
+        if (refreshed.kind === 'plan_feature') {
+          runs.push({
+            ...run,
+            result: 'failed',
+            exit_code: 1,
+            message: `${run.provider} planner run for '${action.intent_id}' did not produce an actionable factory state`,
+            failure_kind: 'task_failed',
+          });
+          break;
+        }
+
+        runs.push(run);
+        action = refreshed;
+        done = true;
         break;
       }
-
-      const provider = orchestrator.providers[step.provider];
-      if (!provider.enabled) {
-        runs.push(makeFailedRun(
-          'planner',
-          step.provider,
-          action.intent_id,
-          action.feature_id,
-          null,
-          attempt,
-          `Provider '${step.provider}' is disabled for persona 'planner'`,
-          'provider_unavailable',
-        ));
-        continue;
-      }
-
-      const run = invokeProvider(
-        'planner',
-        step.provider,
-        provider,
-        projectRoot,
-        outputDir,
-        action.intent_id,
-        prompt,
-        step.model,
-        action.feature_id,
-        null,
-        attempt,
-      );
-      if (run.exit_code !== 0) {
-        runs.push(run);
-        continue;
-      }
-
-      const refreshed = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
-      if (refreshed.kind === 'plan_feature') {
-        runs.push({
-          ...run,
-          result: 'failed',
-          exit_code: 1,
-          message: `${run.provider} planner run for '${action.intent_id}' did not produce an actionable factory state`,
-          failure_kind: 'task_failed',
-        });
-        continue;
-      }
-
-      runs.push(run);
-      action = refreshed;
-      break;
     }
   }
 

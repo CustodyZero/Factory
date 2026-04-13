@@ -97,7 +97,8 @@
           "required": ["codex", "claude"],
           "properties": {
             "codex": { "$ref": "#/$defs/provider" },
-            "claude": { "$ref": "#/$defs/provider" }
+            "claude": { "$ref": "#/$defs/provider" },
+            "copilot": { "$ref": "#/$defs/provider" }
           },
           "additionalProperties": false
         },
@@ -106,6 +107,7 @@
           "required": ["max_supervisor_ticks", "planner", "developer", "code_reviewer", "qa"],
           "properties": {
             "max_supervisor_ticks": { "type": "integer", "minimum": 1 },
+            "max_transient_retries": { "type": "integer", "minimum": 0, "default": 2 },
             "planner": { "$ref": "#/$defs/retry_steps" },
             "developer": { "$ref": "#/$defs/retry_steps" },
             "code_reviewer": { "$ref": "#/$defs/retry_steps" },
@@ -152,7 +154,7 @@
     },
     "provider_name": {
       "type": "string",
-      "enum": ["codex", "claude"]
+      "enum": ["codex", "claude", "copilot"]
     },
     "retry_step": {
       "type": "object",

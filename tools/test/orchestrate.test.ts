@@ -14,6 +14,7 @@ import {
   buildPacketPrompt,
   buildPlannerPrompt,
   buildProviderInvocation,
+  classifyFailure,
   emptyState,
   resolveProviderForPersona,
   resolveProviderModel,
@@ -65,6 +66,7 @@ function makeConfig(): FactoryConfig {
       },
       retries: {
         max_supervisor_ticks: 10,
+        max_transient_retries: 2,
         planner: [
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
@@ -106,6 +108,15 @@ function makeConfig(): FactoryConfig {
             opus: 'opus',
             sonnet: 'sonnet',
             haiku: 'haiku',
+          },
+        },
+        copilot: {
+          enabled: false,
+          command: 'gh',
+          models: {
+            opus: 'gpt-5',
+            sonnet: 'gpt-5-mini',
+            haiku: 'gpt-5-mini',
           },
         },
       },
@@ -208,6 +219,39 @@ describe('orchestrate helpers', () => {
     expect(invocation.stdin).toBe('Do work');
   });
 
+  it('OR-U16: copilot invocation uses gh copilot -- prefix and allow-all-tools', () => {
+    const cfg = makeConfig();
+    const copilotProvider = { ...cfg.orchestrator!.providers.copilot, enabled: true };
+    const invocation = buildProviderInvocation(
+      'copilot',
+      copilotProvider,
+      '/repo',
+      '/tmp/out.txt',
+      'Do work',
+      'sonnet',
+    );
+    expect(invocation.command).toBe('gh');
+    expect(invocation.args[0]).toBe('copilot');
+    expect(invocation.args[1]).toBe('--');
+    expect(invocation.args).toContain('-p');
+    expect(invocation.args).toContain('Do work');
+    expect(invocation.args).toContain('--output-format');
+    expect(invocation.args).toContain('json');
+    expect(invocation.args).toContain('--model');
+    expect(invocation.args).toContain('gpt-5-mini');
+    expect(invocation.args).toContain('--allow-all-tools');
+    expect(invocation.args).toContain('--no-ask-user');
+    expect(invocation.args).toContain('--no-color');
+    expect(invocation.args).toContain('-s');
+    expect(invocation.stdin).toBeNull();
+  });
+
+  it('OR-U17: copilot model resolution maps tiers to provider models', () => {
+    const cfg = makeConfig();
+    expect(resolveProviderModel(cfg.orchestrator!.providers.copilot, 'opus')).toBe('gpt-5');
+    expect(resolveProviderModel(cfg.orchestrator!.providers.copilot, 'sonnet')).toBe('gpt-5-mini');
+  });
+
   it('OR-U7: orchestrator state keeps bounded recent runs', () => {
     const state = emptyState({ kind: 'agent', id: 'orchestrator' }, '2026-04-09T00:00:00Z');
     const runs = boundedRuns([
@@ -301,6 +345,36 @@ describe('orchestrate helpers', () => {
     );
     expect(devPrompt).toContain('request-review.ts');
     expect(devPrompt).toContain('Implement the assigned packet scope');
+  });
+
+  it('OR-U18: classifyFailure returns null for exit code 0', () => {
+    expect(classifyFailure('some output', 0)).toBeNull();
+  });
+
+  it('OR-U19: classifyFailure returns provider_error for transient API errors', () => {
+    expect(classifyFailure('HTTP 500 Internal server error', 1)).toBe('provider_error');
+    expect(classifyFailure('Error: 529 overloaded', 1)).toBe('provider_error');
+    expect(classifyFailure('Connection timeout after 30s', 1)).toBe('provider_error');
+    expect(classifyFailure('Rate limit exceeded (429)', 1)).toBe('provider_error');
+    expect(classifyFailure('Network error: connection refused', 1)).toBe('provider_error');
+  });
+
+  it('OR-U20b: classifyFailure returns provider_unavailable for missing providers', () => {
+    expect(classifyFailure('command not found: codex', 127)).toBe('provider_unavailable');
+    expect(classifyFailure('Provider disabled', 1)).toBe('provider_unavailable');
+    expect(classifyFailure('ENOENT: no such file', 1)).toBe('provider_unavailable');
+    expect(classifyFailure('Permission denied', 1)).toBe('provider_unavailable');
+  });
+
+  it('OR-U21: classifyFailure returns task_failed for implementation failures', () => {
+    expect(classifyFailure('Test suite failed: 3 of 12 tests', 1)).toBe('task_failed');
+    expect(classifyFailure('Build error: cannot find module', 1)).toBe('task_failed');
+    expect(classifyFailure('', 1)).toBe('task_failed');
+  });
+
+  it('OR-U22: max_transient_retries defaults to 2 in config', () => {
+    const cfg = makeConfig();
+    expect(cfg.orchestrator!.retries.max_transient_retries).toBe(2);
   });
 
   it('OR-U10: autoApproveFeature sets status to approved and approved_at', () => {

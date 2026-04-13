@@ -17,7 +17,7 @@ import { join } from 'node:path';
 // ---------------------------------------------------------------------------
 
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
-export type OrchestratorProvider = 'codex' | 'claude';
+export type OrchestratorProvider = 'codex' | 'claude' | 'copilot';
 export type OrchestratorPersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
 
 export interface PersonaConfig {
@@ -53,6 +53,7 @@ export interface OrchestratorRetryStep {
 
 export interface OrchestratorRetryConfig {
   readonly max_supervisor_ticks: number;
+  readonly max_transient_retries: number;
   readonly planner: ReadonlyArray<OrchestratorRetryStep>;
   readonly developer: ReadonlyArray<OrchestratorRetryStep>;
   readonly code_reviewer: ReadonlyArray<OrchestratorRetryStep>;
@@ -79,6 +80,7 @@ export interface OrchestratorConfig {
   readonly providers: {
     readonly codex: OrchestratorProviderConfig;
     readonly claude: OrchestratorProviderConfig;
+    readonly copilot: OrchestratorProviderConfig;
   };
   readonly retries: OrchestratorRetryConfig;
 }
@@ -197,9 +199,19 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
             haiku: 'haiku',
           },
         },
+        copilot: {
+          enabled: false,
+          command: 'gh',
+          models: {
+            opus: 'gpt-5',
+            sonnet: 'gpt-5-mini',
+            haiku: 'gpt-5-mini',
+          },
+        },
       },
       retries: {
         max_supervisor_ticks: 50,
+        max_transient_retries: 2,
         planner: [
           { provider: 'claude', model: 'sonnet' },
           { provider: 'claude', model: 'opus' },
@@ -249,6 +261,14 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
           models: {
             ...defaultOrchestrator.providers.claude.models,
             ...rawOrchestratorProviders?.claude?.models,
+          },
+        },
+        copilot: {
+          ...defaultOrchestrator.providers.copilot,
+          ...(rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined,
+          models: {
+            ...defaultOrchestrator.providers.copilot.models,
+            ...((rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined)?.models,
           },
         },
       },
