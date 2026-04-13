@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -357,8 +358,8 @@ function main(): void {
   if (process.argv.includes('--write')) {
     const outPath = join(ARTIFACT_ROOT, 'derived-state.json');
     writeFileSync(outPath, json + '\n', 'utf-8');
-    console.error(`Derived state written to ${outPath}`);
-    console.error(`  ${state.summary.total} packets: ${state.summary.accepted} accepted, ${state.summary.completed} completed, ${state.summary.in_progress} in-progress, ${state.summary.not_started} not-started`);
+    console.error(`${fmt.sym.ok} ${fmt.success('Derived state written to')} ${fmt.muted(outPath)}`);
+    console.error(`  ${state.summary.total} packets: ${fmt.success(String(state.summary.accepted))} accepted, ${fmt.success(String(state.summary.completed))} completed, ${fmt.info(String(state.summary.in_progress))} in-progress, ${fmt.muted(String(state.summary.not_started))} not-started`);
     if (state.summary.audit_pending > 0) {
       console.error(`  ${state.summary.audit_pending} audit-pending`);
     }

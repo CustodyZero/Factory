@@ -38,6 +38,7 @@ import type {
 } from './config.js';
 import type { PlanAction } from './plan.js';
 import type { DispatchRecord, SupervisorAction } from './supervise.js';
+import * as fmt from './output.js';
 
 type OrchestratorCommand = 'health' | 'plan' | 'supervise' | 'run';
 type OrchestratorRunKind = 'healthcheck' | 'planner' | 'packet';
@@ -1006,6 +1007,11 @@ function runLoop(
   let ticks = 0;
   const supervisorStatePath = join(resolveArtifactRoot(projectRoot, config), 'supervisor', 'state.json');
 
+  // Progress header — stderr so it doesn't interfere with --json on stdout
+  const mode = intentId !== undefined ? 'run --intent' : featureId !== undefined ? 'run --feature' : 'run';
+  process.stderr.write(fmt.header('ORCHESTRATOR', mode) + '\n\n');
+  fmt.resetTimer();
+
   updateState(statePath, config, (state) => ({
     ...state,
     updated_at: new Date().toISOString(),
@@ -1023,6 +1029,7 @@ function runLoop(
   }));
 
   if (intentId !== undefined) {
+    fmt.log('planning', `Invoking planner for intent '${intentId}'...`);
     const planResult = runPlanOnce(projectRoot, config, orchestrator, outputDir, intentId, dryRun);
     planAction = planResult.action;
     runs.push(...planResult.runs);
@@ -1043,7 +1050,9 @@ function runLoop(
 
     const plannerFailed = planResult.runs.find((run) => run.kind === 'planner' && run.result === 'failed');
     if (plannerFailed !== undefined) {
+      fmt.log('error', fmt.error(`Planner failed: ${plannerFailed.message}`));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('failed', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1054,9 +1063,15 @@ function runLoop(
       };
     }
 
+    if (planAction.feature_id !== null) {
+      fmt.log('planning', `Feature created: ${fmt.bold(planAction.feature_id)}`);
+    }
+
     if (planAction.kind === 'plan_feature') {
       // Planner didn't produce a feature — cannot auto-approve nothing
+      fmt.log('planning', fmt.warn('Planner returned plan_feature — awaiting approval'));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('awaiting_approval', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1071,11 +1086,14 @@ function runLoop(
       if (planAction.feature_id !== null) {
         // Auto-approve: the planner used inference to produce the plan;
         // the orchestrator is a deterministic process that moves artifacts through gates.
+        fmt.log('approval', `Auto-approving feature '${fmt.bold(planAction.feature_id)}'`);
         autoApproveFeature(resolveArtifactRoot(projectRoot, config), planAction.feature_id);
         planAction = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
         // Fall through — planAction should now be ready_for_execution
       } else {
+        fmt.log('planning', fmt.warn('Awaiting approval — no feature to auto-approve'));
         persistRunArtifacts(statePath, config, planAction, null, [], null);
+        runLoopFooter('awaiting_approval', ticks, runs);
         return {
           plan_action: planAction,
           last_supervisor_action: null,
@@ -1088,7 +1106,9 @@ function runLoop(
     }
 
     if (planAction.kind === 'blocked') {
+      fmt.log('planning', fmt.error('Feature is blocked'));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('blocked', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1100,7 +1120,9 @@ function runLoop(
     }
 
     if (planAction.kind === 'all_complete') {
+      fmt.log('planning', fmt.success('All packets already complete'));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('idle', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1111,12 +1133,18 @@ function runLoop(
       };
     }
 
+    if (planAction.kind === 'ready_for_execution') {
+      fmt.log('planning', fmt.success('Feature ready for execution'));
+    }
+
     if (planAction.feature_id !== null && featureId === undefined) {
       featureId = planAction.feature_id;
     }
 
     if (dryRun) {
+      fmt.log('dry-run', 'Stopping — dry run mode');
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('idle', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1131,6 +1159,7 @@ function runLoop(
   if (!existsSync(supervisorStatePath)) {
     if (dryRun) {
       persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('failed', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: null,
@@ -1140,11 +1169,14 @@ function runLoop(
         message: 'Supervisor state is not initialized. Run without --dry-run to let orchestrator initialize it automatically.',
       };
     }
+    fmt.log('supervisor', 'Initializing supervisor state...');
     execFileSync('npx', ['tsx', resolveToolScriptPath('supervise.ts', projectRoot, config), '--init'], {
       cwd: projectRoot,
       encoding: 'utf-8',
     });
   }
+
+  process.stderr.write('\n');
 
   for (ticks = 1; ticks <= orchestrator.retries.max_supervisor_ticks; ticks += 1) {
     const superviseResult = runSuperviseOnce(projectRoot, config, orchestrator, outputDir, featureId, dryRun);
@@ -1165,9 +1197,21 @@ function runLoop(
       },
     );
 
+    fmt.log(`tick ${String(ticks)}`, `Supervisor: ${lastSupervisorAction.kind}`);
+
+    // Log dispatch details
+    if (lastSupervisorAction.dispatches.length > 0) {
+      for (const dispatch of lastSupervisorAction.dispatches) {
+        const taskLabel = dispatch.task !== undefined ? `/${dispatch.task}` : '';
+        fmt.log('dispatch', `${fmt.sym.arrow} ${fmt.bold(dispatch.packet_id)} [${dispatch.persona}${taskLabel}] ${fmt.muted(`(${dispatch.model})`)}`);
+      }
+    }
+
     const failedRun = superviseResult.runs.find((run) => run.result === 'failed');
     if (failedRun !== undefined) {
+      fmt.log('error', fmt.error(failedRun.message));
       persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
+      runLoopFooter('failed', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: lastSupervisorAction,
@@ -1179,7 +1223,9 @@ function runLoop(
     }
 
     if (dryRun && superviseResult.runs.length > 0) {
+      fmt.log('dry-run', 'Stopping — dry run mode');
       persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
+      runLoopFooter('idle', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: lastSupervisorAction,
@@ -1200,6 +1246,7 @@ function runLoop(
 
     if (lastSupervisorAction.kind === 'idle') {
       persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
+      runLoopFooter('idle', ticks, runs);
       return {
         plan_action: planAction,
         last_supervisor_action: lastSupervisorAction,
@@ -1211,6 +1258,7 @@ function runLoop(
     }
 
     persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
+    runLoopFooter('blocked', ticks, runs);
     return {
       plan_action: planAction,
       last_supervisor_action: lastSupervisorAction,
@@ -1222,6 +1270,7 @@ function runLoop(
   }
 
   persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
+  runLoopFooter('failed', ticks, runs);
   return {
     plan_action: planAction,
     last_supervisor_action: lastSupervisorAction,
@@ -1230,6 +1279,24 @@ function runLoop(
     status: 'failed',
     message: `Exceeded max supervisor ticks (${String(orchestrator.retries.max_supervisor_ticks)}) without reaching idle or a blocking gate.`,
   };
+}
+
+/** Write a summary footer to stderr at the end of a runLoop. */
+function runLoopFooter(status: string, ticks: number, runs: OrchestratorRunRecord[]): void {
+  const agentRuns = runs.filter((r) => r.kind === 'packet');
+  const failures = runs.filter((r) => r.result === 'failed');
+  process.stderr.write(`\n${fmt.divider()}\n`);
+  if (status === 'failed') {
+    process.stderr.write(`  ${fmt.sym.fail} ${fmt.error(`Failed after ${String(ticks)} tick(s)`)}\n`);
+  } else if (status === 'blocked') {
+    process.stderr.write(`  ${fmt.sym.blocked} ${fmt.warn(`Blocked after ${String(ticks)} tick(s)`)}\n`);
+  } else if (status === 'awaiting_approval') {
+    process.stderr.write(`  ${fmt.sym.pending} ${fmt.warn('Awaiting approval')}\n`);
+  } else {
+    process.stderr.write(`  ${fmt.sym.ok} ${fmt.success(`Completed in ${String(ticks)} tick(s)`)}\n`);
+  }
+  process.stderr.write(`  ${fmt.muted(`${String(agentRuns.length)} agent(s) dispatched, ${String(failures.length)} failure(s)`)}\n`);
+  process.stderr.write(`${fmt.divider()}\n`);
 }
 
 function main(): void {

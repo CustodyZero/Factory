@@ -31,6 +31,7 @@ import { buildToolCommand, loadConfig, findProjectRoot, resolveArtifactRoot } fr
 import type { PersonasConfig } from './config.js';
 import { resolveExecuteAction } from './execute.js';
 import type { Feature, RawPacket, ExecuteAction, PacketAssignment, DispatchTask } from './execute.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -560,27 +561,24 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
 function renderAction(action: SupervisorAction): string {
   const lines: string[] = [];
 
-  lines.push('');
-  lines.push('\u2550'.repeat(59));
-  lines.push('  FACTORY SUPERVISOR');
-  lines.push('\u2550'.repeat(59));
+  lines.push(fmt.header('SUPERVISOR'));
   lines.push('');
 
   if (action.feature_id !== null) {
-    lines.push(`  Feature: ${action.feature_id}`);
+    lines.push(`  Feature: ${fmt.bold(action.feature_id)}`);
   } else if (action.feature_ids.length > 0) {
-    lines.push(`  Features: ${action.feature_ids.join(', ')}`);
+    lines.push(`  Features: ${action.feature_ids.map((id) => fmt.bold(id)).join(', ')}`);
   }
-  lines.push(`  Action:  ${action.kind}`);
+  lines.push(`  Action:  ${fmt.info(action.kind)}`);
   lines.push('');
 
   if (action.ready_packets.length > 0) {
-    lines.push('  \u2192 Spawn agents:');
+    lines.push(`  ${fmt.sym.arrow} ${fmt.info('Spawn agents:')}`);
     for (const a of action.ready_packets) {
-      lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
+      lines.push(`    - ${fmt.bold(a.packet_id)} [${a.persona}] ${fmt.muted(`(${a.model})`)}`);
       if (a.instructions.length > 0) {
         for (const instr of a.instructions) {
-          lines.push(`      \u2022 ${instr}`);
+          lines.push(`      ${fmt.sym.bullet} ${instr}`);
         }
       }
     }
@@ -588,23 +586,23 @@ function renderAction(action: SupervisorAction): string {
   }
 
   if (action.dispatches.length > 0) {
-    lines.push('  Dispatches:');
+    lines.push(`  ${fmt.bold('Dispatches:')}`);
     for (const dispatch of action.dispatches) {
-      lines.push(`    - ${dispatch.packet_id} -> ${dispatch.dispatch_id}`);
+      lines.push(`    - ${fmt.bold(dispatch.packet_id)} ${fmt.sym.arrow} ${fmt.muted(dispatch.dispatch_id)}`);
     }
     lines.push('');
   }
 
   if (action.escalation !== null) {
-    lines.push('  \u26a0 Escalation:');
+    lines.push(`  ${fmt.sym.warn} ${fmt.warn('Escalation:')}`);
     lines.push(`    Kind: ${action.escalation.kind}`);
     lines.push(`    ${action.escalation.message.split('\n').join('\n    ')}`);
     lines.push('');
   }
 
-  lines.push('\u2500'.repeat(59));
+  lines.push(fmt.divider());
   lines.push(`  ${action.message.split('\n').join('\n  ')}`);
-  lines.push('\u2500'.repeat(59));
+  lines.push(fmt.divider());
   lines.push('');
 
   return lines.join('\n');

@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 interface SupervisorFeatureTracking {
   readonly packets_spawned?: ReadonlyArray<string>;
@@ -96,6 +97,6 @@ packet['started_at'] = now;
 packet['status'] = 'implementing';
 writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-console.log(`Packet started: ${packetId}`);
-console.log(`  started_at: ${now}`);
-console.log(`  status: implementing`);
+console.log(`${fmt.sym.ok} ${fmt.success('Packet started:')} ${fmt.bold(packetId)}`);
+console.log(`  started_at: ${fmt.muted(now)}`);
+console.log(`  status: ${fmt.info('implementing')}`);

@@ -20,6 +20,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { findProjectRoot, loadConfig, resolveArtifactRoot } from './config.js';
 import { resolveSpecPath } from './plan.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1289,23 +1290,25 @@ function main(): void {
   const errors = allResults.filter((r) => r.severity === 'error');
   const warnings = allResults.filter((r) => r.severity === 'warning');
 
+  const summary = `${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${intents.length} intents`;
+
   if (allResults.length === 0) {
-    console.log('Factory validation: PASS');
-    console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${intents.length} intents`);
+    console.log(`${fmt.sym.ok} ${fmt.success('Factory validation: PASS')}`);
+    console.log(`  ${summary}`);
     process.exit(0);
   }
 
   if (errors.length > 0) {
-    console.log(`Factory validation: FAIL (${errors.length} error(s), ${warnings.length} warning(s))`);
+    console.log(`${fmt.sym.fail} ${fmt.error(`Factory validation: FAIL (${errors.length} error(s), ${warnings.length} warning(s))`)}`);
   } else {
-    console.log(`Factory validation: PASS with warnings (${warnings.length} warning(s))`);
+    console.log(`${fmt.sym.warn} ${fmt.warn(`Factory validation: PASS with warnings (${warnings.length} warning(s))`)}`);
   }
 
-  console.log(`  ${packets.length} packets, ${completions.length} completions, ${acceptances.length} acceptances, ${rejections.length} rejections, ${evidence.length} evidence records, ${features.length} features, ${intents.length} intents`);
+  console.log(`  ${summary}`);
   console.log('');
 
   for (const r of allResults) {
-    const prefix = r.severity === 'error' ? 'ERROR' : 'WARN ';
+    const prefix = r.severity === 'error' ? fmt.error('ERROR') : fmt.warn('WARN ');
     console.log(`  ${prefix} [${r.error_type}] ${r.file}: ${r.message}`);
   }
 

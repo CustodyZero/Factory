@@ -20,6 +20,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 const MIGRATION_MARKER = '[MIGRATION] Define acceptance criteria';
 const isDryRun = process.argv.includes('--dry');
@@ -114,10 +115,7 @@ function ensureOrchestratorArtifacts(): void {
 // Main
 // ---------------------------------------------------------------------------
 
-console.log('');
-console.log('═'.repeat(59));
-console.log(`  FACTORY MIGRATION${isDryRun ? ' (DRY RUN)' : ''}`);
-console.log('═'.repeat(59));
+console.log(fmt.header('MIGRATION', isDryRun ? '(DRY RUN)' : undefined));
 console.log('');
 
 migratePackets();
@@ -126,19 +124,19 @@ ensurePlannerArtifacts();
 ensureOrchestratorArtifacts();
 
 if (changes.length === 0) {
-  console.log('  No migration needed — all artifacts are up to date.');
+  console.log(`  ${fmt.sym.ok} ${fmt.success('No migration needed — all artifacts are up to date.')}`);
 } else {
   console.log(`  ${String(changes.length)} change(s)${isDryRun ? ' would be made' : ' applied'}:`);
   console.log('');
   for (const c of changes) {
-    console.log(`    ${c.file}: ${c.field} = ${JSON.stringify(c.value)}`);
+    console.log(`    ${fmt.muted(c.file)}: ${c.field} = ${JSON.stringify(c.value)}`);
   }
 }
 
 console.log('');
 
 if (!isDryRun && changes.length > 0) {
-  console.log('  Migration complete. Run npx tsx tools/validate.ts to verify.');
+  console.log(`  ${fmt.sym.ok} ${fmt.success('Migration complete.')} Run npx tsx tools/validate.ts to verify.`);
   console.log('  Replace [MIGRATION] placeholders with real acceptance criteria.');
   console.log('  Planner-native flow is opt-in: existing features can continue without intent_id.');
   console.log('  New work can start from intents/<intent-id>.json and npx tsx tools/plan.ts <intent-id>.');

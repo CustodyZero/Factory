@@ -15,6 +15,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { isAbsolute, join, normalize, sep } from 'node:path';
 import { buildToolCommand, findProjectRoot, loadConfig, resolveArtifactRoot } from './config.js';
 import type { ModelTier } from './config.js';
+import * as fmt from './output.js';
 
 /**
  * On-disk shape of an intent artifact. Either `spec` (inline body) or
@@ -291,24 +292,21 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
 
 function renderAction(action: PlanAction): string {
   const lines: string[] = [];
+  lines.push(fmt.header('PLAN'));
   lines.push('');
-  lines.push('\u2550'.repeat(59));
-  lines.push('  FACTORY PLAN');
-  lines.push('\u2550'.repeat(59));
-  lines.push('');
-  lines.push(`  Intent: ${action.intent_id}`);
+  lines.push(`  Intent:  ${fmt.bold(action.intent_id)}`);
   if (action.feature_id !== null) {
-    lines.push(`  Feature: ${action.feature_id}`);
+    lines.push(`  Feature: ${fmt.bold(action.feature_id)}`);
   }
-  lines.push(`  Action: ${action.kind}`);
+  lines.push(`  Action:  ${fmt.info(action.kind)}`);
   lines.push('');
 
   if (action.planner_assignment !== null) {
-    lines.push('  Planner assignment:');
+    lines.push(`  ${fmt.bold('Planner assignment:')}`);
     lines.push(`    - persona: ${action.planner_assignment.persona}`);
     lines.push(`    - model: ${action.planner_assignment.model}`);
-    lines.push(`    - feature path: ${action.planner_assignment.feature_path}`);
-    lines.push(`    - packets dir: ${action.planner_assignment.packets_dir}`);
+    lines.push(`    - feature path: ${fmt.muted(action.planner_assignment.feature_path)}`);
+    lines.push(`    - packets dir: ${fmt.muted(action.planner_assignment.packets_dir)}`);
     for (const instruction of action.planner_assignment.instructions) {
       lines.push(`    - ${instruction}`);
     }
@@ -316,7 +314,7 @@ function renderAction(action: PlanAction): string {
   }
 
   if (action.command !== null) {
-    lines.push(`  Command: ${action.command}`);
+    lines.push(`  ${fmt.info('Command:')} ${action.command}`);
     lines.push('');
   }
 

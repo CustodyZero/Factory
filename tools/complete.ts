@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
@@ -188,11 +189,11 @@ function runStep(name: string, command: string): VerificationStep {
       timeout: 300_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    console.log(`  \u2713 ${name} passed`);
+    console.log(`  ${fmt.sym.ok} ${fmt.success(`${name} passed`)}`);
     return { name, command, pass: true, output };
   } catch (err: unknown) {
     const stderr = err instanceof Error && 'stderr' in err ? String((err as { stderr: unknown }).stderr) : '';
-    console.log(`  \u2717 ${name} failed`);
+    console.log(`  ${fmt.sym.fail} ${fmt.error(`${name} failed`)}`);
     return { name, command, pass: false, output: stderr };
   }
 }
@@ -268,7 +269,7 @@ console.log(`\nCompletion written: completions/${packetId}.json`);
 console.log(`  Packet status updated to: completed`);
 
 if (!ciPass) {
-  console.log('\n\u26a0 Verification did not fully pass. The completion record reflects this honestly.');
+  console.log(`\n${fmt.sym.warn} ${fmt.warn('Verification did not fully pass. The completion record reflects this honestly.')}`);
   console.log('  Fix the failures and re-create the completion if needed.');
 }
 
@@ -289,5 +290,5 @@ try {
   process.exit(1);
 }
 
-console.log('\n\u2713 Completion created and validated successfully.');
+console.log(`\n${fmt.sym.ok} ${fmt.success('Completion created and validated successfully.')}`);
 console.log('  Remember: the completion is the deliverable, not the packet.');

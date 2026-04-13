@@ -22,6 +22,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildToolCommand, loadConfig, resolveArtifactRoot } from './config.js';
 import type { FactoryConfig, PersonasConfig, ModelTier } from './config.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -402,39 +403,36 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
 function renderAction(action: ExecuteAction): string {
   const lines: string[] = [];
 
+  lines.push(fmt.header('EXECUTE'));
   lines.push('');
-  lines.push('\u2550'.repeat(59));
-  lines.push('  FACTORY EXECUTE');
-  lines.push('\u2550'.repeat(59));
-  lines.push('');
-  lines.push(`  Feature: ${action.feature_id}`);
-  lines.push(`  Progress: ${String(action.completed_packets.length)}/${String(action.total_packets)} packets complete`);
+  lines.push(`  Feature: ${fmt.bold(action.feature_id)}`);
+  lines.push(`  Progress: ${fmt.bold(`${String(action.completed_packets.length)}/${String(action.total_packets)}`)} packets complete`);
   lines.push('');
 
   if (action.completed_packets.length > 0) {
-    lines.push('  \u2713 Completed:');
+    lines.push(`  ${fmt.sym.ok} ${fmt.success('Completed:')}`);
     for (const id of action.completed_packets) {
-      lines.push(`    - ${id}`);
+      lines.push(`    - ${fmt.muted(id)}`);
     }
     lines.push('');
   }
 
   if (action.in_progress_packets.length > 0) {
-    lines.push('  \u23f3 In progress:');
+    lines.push(`  ${fmt.sym.pending} ${fmt.warn('In progress:')}`);
     for (const a of action.in_progress_packets) {
-      lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
+      lines.push(`    - ${fmt.bold(a.packet_id)} [${a.persona}] ${fmt.muted(`(${a.model})`)}`);
     }
     lines.push('');
   }
 
   if (action.ready_packets.length > 0) {
-    lines.push('  \u2192 Ready to spawn:');
+    lines.push(`  ${fmt.sym.arrow} ${fmt.info('Ready to spawn:')}`);
     for (const a of action.ready_packets) {
-      lines.push(`    - ${a.packet_id} [${a.persona}] (${a.model})`);
-      lines.push(`      start: ${a.start_command}`);
+      lines.push(`    - ${fmt.bold(a.packet_id)} [${a.persona}] ${fmt.muted(`(${a.model})`)}`);
+      lines.push(`      start: ${fmt.info(a.start_command)}`);
       if (a.instructions.length > 0) {
         for (const instr of a.instructions) {
-          lines.push(`      \u2022 ${instr}`);
+          lines.push(`      ${fmt.sym.bullet} ${instr}`);
         }
       }
     }
@@ -442,17 +440,17 @@ function renderAction(action: ExecuteAction): string {
   }
 
   if (action.blocked_packets.length > 0) {
-    lines.push('  \ud83d\udeab Blocked:');
+    lines.push(`  ${fmt.sym.blocked} ${fmt.error('Blocked:')}`);
     for (const b of action.blocked_packets) {
-      lines.push(`    - ${b.id} \u2192 needs: ${b.blocked_by.join(', ')}`);
+      lines.push(`    - ${fmt.bold(b.id)} ${fmt.sym.arrow} needs: ${b.blocked_by.join(', ')}`);
     }
     lines.push('');
   }
 
-  lines.push('\u2500'.repeat(59));
-  lines.push('  ACTION:');
+  lines.push(fmt.divider());
+  lines.push(`  ${fmt.bold('ACTION:')}`);
   lines.push(`    ${action.message.split('\n').join('\n    ')}`);
-  lines.push('\u2500'.repeat(59));
+  lines.push(fmt.divider());
   lines.push('');
 
   return lines.join('\n');

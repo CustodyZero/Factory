@@ -20,6 +20,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, isInfrastructureFile, resolveArtifactRoot } from './config.js';
 import type { FactoryConfig } from './config.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -201,11 +202,11 @@ function main(): void {
   });
 
   if (result.blocked) {
-    console.error(`\n${'─'.repeat(60)}`);
-    console.error('COMPLETION GATE BLOCKED');
-    console.error(`${'─'.repeat(60)}\n`);
+    console.error(`\n${fmt.divider()}`);
+    console.error(`${fmt.sym.blocked} ${fmt.error('COMPLETION GATE BLOCKED')}`);
+    console.error(`${fmt.divider()}\n`);
     console.error(result.reason);
-    console.error(`\n${'─'.repeat(60)}\n`);
+    console.error(`\n${fmt.divider()}\n`);
     process.exit(1);
   }
 }

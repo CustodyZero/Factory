@@ -16,6 +16,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildToolCommand, loadConfig, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types (exported for testing)
@@ -384,83 +385,79 @@ function deriveNextAction(
 
 function renderStatus(status: FactoryStatus, projectName: string): string {
   const lines: string[] = [];
+  const detail = status.feature_filter !== null
+    ? `[${projectName}] \u2014 Feature: ${status.feature_filter}`
+    : `[${projectName}]`;
 
-  lines.push('');
-  lines.push('\u2550'.repeat(59));
-  if (status.feature_filter !== null) {
-    lines.push(`  FACTORY STATUS [${projectName}] \u2014 Feature: ${status.feature_filter}`);
-  } else {
-    lines.push(`  FACTORY STATUS [${projectName}]`);
-  }
-  lines.push('\u2550'.repeat(59));
+  lines.push(fmt.header('STATUS', detail));
   lines.push('');
 
-  lines.push('  Summary:');
+  lines.push(`  ${fmt.bold('Summary:')}`);
   lines.push(`    Total packets:      ${String(status.summary.total)}`);
-  lines.push(`    Accepted:           ${String(status.summary.accepted)}`);
-  lines.push(`    Completed:          ${String(status.summary.completed)}`);
-  lines.push(`    In-progress:        ${String(status.summary.in_progress)}`);
-  lines.push(`    Not started:        ${String(status.summary.not_started)}`);
+  lines.push(`    Accepted:           ${fmt.success(String(status.summary.accepted))}`);
+  lines.push(`    Completed:          ${fmt.success(String(status.summary.completed))}`);
+  lines.push(`    In-progress:        ${fmt.info(String(status.summary.in_progress))}`);
+  lines.push(`    Not started:        ${fmt.muted(String(status.summary.not_started))}`);
   lines.push(`    Audit pending:      ${String(status.summary.audit_pending)}`);
   lines.push('');
 
   if (status.incomplete.length > 0) {
-    lines.push('  \u26a0 Incomplete packets (started, no completion):');
+    lines.push(`  ${fmt.sym.warn} ${fmt.warn('Incomplete packets (started, no completion):')}`);
     for (const p of status.incomplete) {
-      lines.push(`    - ${p.id} (${p.change_class})`);
+      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
       lines.push(`      "${p.title}"`);
     }
     lines.push('');
   }
 
   if (status.awaiting_acceptance.length > 0) {
-    lines.push('  \u23f3 Awaiting human acceptance:');
+    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Awaiting human acceptance:')}`);
     for (const p of status.awaiting_acceptance) {
-      lines.push(`    - ${p.id} (${p.change_class})`);
+      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
     }
     lines.push('');
   }
 
   if (status.features_awaiting_approval.length > 0) {
-    lines.push('  \u23f3 Planned features awaiting human approval:');
+    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Planned features awaiting human approval:')}`);
     for (const feature of status.features_awaiting_approval) {
-      lines.push(`    - ${feature.id}${feature.intent_id !== null ? ` (intent: ${feature.intent_id})` : ''}`);
+      lines.push(`    - ${fmt.bold(feature.id)}${feature.intent_id !== null ? ` ${fmt.muted(`(intent: ${feature.intent_id})`)}` : ''}`);
     }
     lines.push('');
   }
 
   if (status.intents_pending_planning.length > 0) {
-    lines.push('  \u270d Intent specs awaiting planner decomposition:');
+    lines.push(`  ${fmt.sym.plan} ${fmt.info('Intent specs awaiting planner decomposition:')}`);
     for (const intent of status.intents_pending_planning) {
-      lines.push(`    - ${intent.id}`);
+      lines.push(`    - ${fmt.bold(intent.id)}`);
       lines.push(`      "${intent.title}"`);
     }
     lines.push('');
   }
 
   if (status.audit_pending.length > 0) {
-    lines.push('  \ud83d\udccb Audit pending (accepted, review recommended):');
+    lines.push(`  ${fmt.sym.audit} ${fmt.bold('Audit pending (accepted, review recommended):')}`);
     for (const p of status.audit_pending) {
-      lines.push(`    - ${p.id} (${p.change_class})`);
+      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
     }
     lines.push('');
   }
 
   if (status.blocked.length > 0) {
-    lines.push('  \ud83d\udeab Blocked by unmet dependencies:');
+    lines.push(`  ${fmt.sym.blocked} ${fmt.error('Blocked by unmet dependencies:')}`);
     for (const p of status.blocked) {
-      lines.push(`    - ${p.id} \u2192 needs: ${p.unmet_dependencies.join(', ')}`);
+      lines.push(`    - ${fmt.bold(p.id)} ${fmt.sym.arrow} needs: ${p.unmet_dependencies.join(', ')}`);
     }
     lines.push('');
   }
 
-  lines.push('\u2500'.repeat(59));
-  lines.push('  NEXT ACTION:');
+  lines.push(fmt.divider());
+  lines.push(`  ${fmt.bold('NEXT ACTION:')}`);
   lines.push(`    ${status.next_action.message}`);
   if (status.next_action.command !== null) {
-    lines.push(`    Command: ${status.next_action.command}`);
+    lines.push(`    ${fmt.info('Command:')} ${status.next_action.command}`);
   }
-  lines.push('\u2500'.repeat(59));
+  lines.push(fmt.divider());
   lines.push('');
 
   return lines.join('\n');

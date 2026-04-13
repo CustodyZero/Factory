@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
@@ -146,4 +147,4 @@ try {
   process.exit(1);
 }
 
-console.log('\n\u2713 Acceptance created and validated successfully.');
+console.log(`\n${fmt.sym.ok} ${fmt.success('Acceptance created and validated successfully.')}`);

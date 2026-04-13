@@ -29,6 +29,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
@@ -106,8 +107,8 @@ writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
 const iteration = typeof packet['review_iteration'] === 'number' ? packet['review_iteration'] : 0;
 
-console.log(`Review decision: ${packetId}`);
-console.log(`  status: ${decision}`);
+console.log(`${fmt.sym.ok} ${fmt.success('Review decision:')} ${fmt.bold(packetId)}`);
+console.log(`  status: ${fmt.info(decision)}`);
 console.log(`  review_iteration: ${iteration}`);
 if (approveFlag) {
   console.log(`  Next step: npx tsx tools/complete.ts ${packetId}`);

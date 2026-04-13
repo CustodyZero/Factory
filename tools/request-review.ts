@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import * as fmt from './output.js';
 
 const config = loadConfig();
 const PROJECT_ROOT = findProjectRoot();
@@ -134,9 +135,9 @@ if (wasChangesRequested) {
 
 writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-console.log(`Review requested: ${packetId}`);
-console.log(`  status: review_requested`);
-console.log(`  branch: ${branch}`);
+console.log(`${fmt.sym.ok} ${fmt.success('Review requested:')} ${fmt.bold(packetId)}`);
+console.log(`  status: ${fmt.info('review_requested')}`);
+console.log(`  branch: ${fmt.info(branch)}`);
 console.log(`  review_iteration: ${packet['review_iteration']}`);
 if (wasChangesRequested) {
   console.log(`  (re-request after changes — iteration incremented)`);
