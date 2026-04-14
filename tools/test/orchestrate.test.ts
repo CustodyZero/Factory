@@ -11,13 +11,15 @@ import {
   buildPlannerPrompt,
   buildProviderInvocation,
   classifyFailure,
+  describePlanMilestones,
+  describeSupervisorMilestones,
   emptyState,
   resolveProviderForPersona,
   resolveProviderModel,
 } from '../orchestrate.js';
 import type { FactoryConfig } from '../config.js';
 import type { PlanAction } from '../plan.js';
-import type { DispatchRecord } from '../supervise.js';
+import type { DispatchRecord, SupervisorAction } from '../supervise.js';
 
 function makeConfig(): FactoryConfig {
   return {
@@ -151,6 +153,20 @@ function makeDispatch(overrides?: Partial<DispatchRecord>): DispatchRecord {
     start_command: 'npx tsx tools/start.ts p1',
     dispatched_at: '2026-04-09T00:00:00Z',
     task: 'verify',
+    ...overrides,
+  };
+}
+
+function makeSupervisorAction(overrides?: Partial<SupervisorAction>): SupervisorAction {
+  return {
+    kind: 'update_state',
+    feature_id: 'f1',
+    feature_ids: ['f1'],
+    ready_packets: [],
+    dispatches: [],
+    escalation: null,
+    state_patch: null,
+    message: "New feature 'f1' discovered. Adding to supervisor state.",
     ...overrides,
   };
 }
@@ -371,5 +387,34 @@ describe('orchestrate helpers', () => {
   it('OR-U22: max_transient_retries defaults to 2 in config', () => {
     const cfg = makeConfig();
     expect(cfg.orchestrator!.retries.max_transient_retries).toBe(2);
+  });
+
+  it('OR-U23: planning milestones explain execution authorization', () => {
+    const lines = describePlanMilestones({
+      ...makePlanAction(),
+      kind: 'ready_for_execution',
+      feature_id: 'customer-dashboard',
+      planner_assignment: null,
+      message: 'ready',
+    });
+    expect(lines).toContain("Feature 'customer-dashboard' is linked to intent 'customer-dashboard'.");
+    expect(lines).toContain("Execution authority established for feature 'customer-dashboard'.");
+  });
+
+  it('OR-U24: supervisor milestones explain update_state progress', () => {
+    const lines = describeSupervisorMilestones(makeSupervisorAction());
+    expect(lines).toContain("Supervisor synchronized feature 'f1'.");
+    expect(lines).toContain("New feature 'f1' discovered. Adding to supervisor state.");
+  });
+
+  it('OR-U25: supervisor milestones summarize dispatch authorization', () => {
+    const lines = describeSupervisorMilestones(makeSupervisorAction({
+      kind: 'execute_feature',
+      feature_ids: ['f1', 'f2'],
+      dispatches: [makeDispatch(), makeDispatch({ dispatch_id: 'd2', packet_id: 'p2', feature_id: 'f2' })],
+      message: 'dispatch',
+    }));
+    expect(lines).toContain('Execution authorized for 2 feature(s): f1, f2.');
+    expect(lines).toContain('Dispatching 2 packet(s).');
   });
 });

@@ -154,6 +154,77 @@ interface RunLoopResult {
   readonly message: string;
 }
 
+export function describePlanMilestones(action: PlanAction): string[] {
+  const lines: string[] = [];
+
+  if (action.kind === 'plan_feature') {
+    lines.push(`Intent '${action.intent_id}' is ready for planner decomposition.`);
+    if (action.planner_assignment !== null) {
+      lines.push(`Planner target prepared: ${action.planner_assignment.feature_path}`);
+    }
+    return lines;
+  }
+
+  if (action.feature_id !== null) {
+    lines.push(`Feature '${action.feature_id}' is linked to intent '${action.intent_id}'.`);
+  }
+
+  if (action.kind === 'awaiting_approval') {
+    lines.push(`Planned feature '${action.feature_id}' now awaits direct human approval.`);
+  } else if (action.kind === 'ready_for_execution') {
+    lines.push(`Execution authority established for feature '${action.feature_id}'.`);
+    lines.push(`Supervisor handoff ready for feature '${action.feature_id}'.`);
+  } else if (action.kind === 'all_complete') {
+    lines.push(`Intent '${action.intent_id}' is already complete.`);
+  } else if (action.kind === 'blocked') {
+    lines.push(action.message);
+  }
+
+  return lines;
+}
+
+export function describeSupervisorMilestones(action: SupervisorAction): string[] {
+  const lines: string[] = [];
+
+  if (action.kind === 'update_state') {
+    if (action.feature_id !== null) {
+      lines.push(`Supervisor synchronized feature '${action.feature_id}'.`);
+    }
+    lines.push(action.message);
+    return lines;
+  }
+
+  if (action.kind === 'execute_feature') {
+    if (action.feature_ids.length > 0) {
+      lines.push(`Execution authorized for ${String(action.feature_ids.length)} feature(s): ${action.feature_ids.join(', ')}.`);
+    }
+    if (action.dispatches.length > 0) {
+      lines.push(`Dispatching ${String(action.dispatches.length)} packet(s).`);
+    }
+    return lines;
+  }
+
+  if (action.kind === 'idle') {
+    lines.push(action.message);
+    return lines;
+  }
+
+  if (action.escalation !== null) {
+    if (action.kind === 'escalate_acceptance') {
+      lines.push(`Human acceptance required for feature '${action.escalation.feature_id}'.`);
+    } else if (action.kind === 'escalate_blocked') {
+      lines.push(`Feature '${action.escalation.feature_id}' is blocked and needs intervention.`);
+    } else if (action.kind === 'escalate_failure') {
+      lines.push(`Execution failure requires intervention for feature '${action.escalation.feature_id}'.`);
+    }
+    lines.push(action.escalation.message);
+    return lines;
+  }
+
+  lines.push(action.message);
+  return lines;
+}
+
 export function emptyState(identity: { kind: string; id: string }, nowIso: string): OrchestratorState {
   return {
     version: 1,
@@ -1142,6 +1213,9 @@ function runLoop(
     if (planAction.feature_id !== null) {
       fmt.log('planning', `Feature created: ${fmt.bold(planAction.feature_id)}`);
     }
+    for (const line of describePlanMilestones(planAction)) {
+      fmt.log('planning', line);
+    }
 
     if (planAction.kind === 'plan_feature') {
       // Planner still indicates planning work is required, so execution cannot proceed.
@@ -1270,7 +1344,13 @@ function runLoop(
       },
     );
 
-    fmt.log(`tick ${String(ticks)}`, `Supervisor: ${lastSupervisorAction.kind}`);
+    const milestoneLines = describeSupervisorMilestones(lastSupervisorAction);
+    if (lastSupervisorAction.kind !== 'update_state') {
+      fmt.log(`tick ${String(ticks)}`, `Supervisor: ${lastSupervisorAction.kind}`);
+    }
+    for (const line of milestoneLines) {
+      fmt.log('supervisor', line);
+    }
 
     // Log dispatch details
     if (lastSupervisorAction.dispatches.length > 0) {
