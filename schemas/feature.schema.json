@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "feature.schema.json",
   "title": "Factory Feature",
-  "description": "A high-level intent that decomposes into multiple packets. Features are the unit of planning and approval; packets are the unit of execution.",
+  "description": "A high-level intent that decomposes into multiple packets. Features are the unit of planning; packets are the unit of execution. Planner-generated planned features linked to an approved intent inherit execution authority from that intent.",
   "type": "object",
   "required": [
     "id",

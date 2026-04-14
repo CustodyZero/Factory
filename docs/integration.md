@@ -30,7 +30,7 @@ After setup, the normal first-run sequence for an agent-driven project is:
 1. Create an intent/spec artifact under `factory/intents/`
 2. Run `npx tsx .factory/tools/plan.ts <intent-id>`
 3. Let the planner write one planned feature plus dev/qa packet pairs
-4. Human reviews the planned feature and marks it `approved`
+4. Human approves the intent/spec when it is ready to govern downstream work
 5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
 6. Manual option: run `npx tsx .factory/tools/supervise.ts --init`, then `npx tsx .factory/tools/supervise.ts --json`
 7. Spawn only the agents returned in `dispatches`
@@ -269,18 +269,19 @@ For automated orchestration with the native harness or an external runner:
    - matching dev/qa packet pairs in `factory/packets/`
    - packet dependencies, change classes, and acceptance criteria
    - `feature.intent_id` and `intent.feature_id` linkage
-4. Human reviews the planned feature and marks it `approved`
+4. Human approves the intent/spec when it is ready to govern downstream work
 5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
 6. Manual option: initialize supervisor state with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
-7. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
-8. Each spawned developer or qa agent runs the returned `start_command`
-9. Dev agents implement, then run `request-review.ts` — the supervisor dispatches a code_reviewer
-10. Code reviewer runs `review.ts --approve` (or `--request-changes` for another iteration)
-11. After review approval, dev agent runs `complete.ts`; QA agents run `complete.ts` directly
-10. QA agents use a distinct qa identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
-11. The native orchestrator retries failed planner and packet runs using the configured provider/model ladder before surfacing a real failure
-12. Human handles any explicit architectural acceptance with `accept.ts`
-13. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
+7. Planned features linked to an approved intent inherit execution authority automatically; standalone/manual planned features may still require direct feature approval
+8. If the action is `execute_feature`, the supervisor uses the returned `dispatches` as the only legal spawn contract
+9. Each spawned developer or qa agent runs the returned `start_command`
+10. Dev agents implement, then run `request-review.ts` — the supervisor dispatches a code_reviewer
+11. Code reviewer runs `review.ts --approve` (or `--request-changes` for another iteration)
+12. After review approval, dev agent runs `complete.ts`; QA agents run `complete.ts` directly
+13. QA agents use a distinct qa identity on `complete.ts` and must satisfy any `environment_dependencies` evidence requirements
+14. The native orchestrator retries failed planner and packet runs using the configured provider/model ladder before surfacing a real failure
+15. Human handles any explicit architectural acceptance with `accept.ts`
+16. The supervisor re-ticks after each completion or acceptance until the action becomes `idle`
 
 Supervisor mode is stricter than the manual `execute.ts` loop:
 - Feature packets cannot be started unless they were dispatched by `supervise.ts`

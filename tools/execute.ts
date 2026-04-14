@@ -35,6 +35,7 @@ export interface Feature {
   readonly packets: ReadonlyArray<string>;
   readonly created_by: { readonly kind: string; readonly id: string };
   readonly approved_at?: string | null;
+  readonly intent_id?: string | null;
 }
 
 export interface PacketState {
@@ -115,6 +116,11 @@ interface RawAcceptance {
   readonly packet_id: string;
 }
 
+interface RawIntent {
+  readonly id: string;
+  readonly status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered';
+}
+
 function readJson<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as T;
@@ -140,9 +146,20 @@ export interface ExecuteInput {
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completionIds: ReadonlySet<string>;
   readonly acceptanceIds: ReadonlySet<string>;
+  readonly linkedIntentStatus?: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered' | undefined;
   readonly personas?: PersonasConfig;
   readonly startCommand?: ((packetId: string) => string) | undefined;
   readonly acceptCommand?: ((packetId: string) => string) | undefined;
+}
+
+function isExecutionAuthorized(
+  feature: Feature,
+  linkedIntentStatus?: ExecuteInput['linkedIntentStatus'],
+): boolean {
+  if (feature.status === 'approved' || feature.status === 'executing') {
+    return true;
+  }
+  return feature.status === 'planned' && feature.intent_id != null && linkedIntentStatus === 'approved';
 }
 
 const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
@@ -179,7 +196,10 @@ function packetBlockingReasons(packet: RawPacket): string[] {
 export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const { feature } = input;
 
-  if (feature.status !== 'approved' && feature.status !== 'executing') {
+  if (!isExecutionAuthorized(feature, input.linkedIntentStatus)) {
+    const inherited = feature.status === 'planned' && feature.intent_id != null
+      ? ` Planned features linked to approved intents inherit execution authority.`
+      : '';
     return {
       kind: 'not_approved',
       feature_id: feature.id,
@@ -188,7 +208,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       completed_packets: [],
       blocked_packets: [],
       total_packets: feature.packets.length,
-      message: `Feature '${feature.id}' is in status '${feature.status}'. Must be 'approved' or 'executing' to run.`,
+      message: `Feature '${feature.id}' is in status '${feature.status}'. Must be 'approved' or 'executing' to run.${inherited}`,
     };
   }
 
@@ -498,6 +518,7 @@ function main(): void {
   }
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
+  const intents = readJsonDir<RawIntent>(join(artifactRoot, 'intents'));
   const completions = readJsonDir<RawCompletion>(join(artifactRoot, 'completions'));
   const acceptances = readJsonDir<RawAcceptance>(join(artifactRoot, 'acceptances'));
 
@@ -509,6 +530,9 @@ function main(): void {
     packets,
     completionIds,
     acceptanceIds,
+    linkedIntentStatus: typeof feature.intent_id === 'string'
+      ? intents.find((intent) => intent.id === feature.intent_id)?.status
+      : undefined,
     personas: config.personas,
     startCommand: (packetId) => buildToolCommand('start.ts', [packetId], undefined, config),
     acceptCommand: (packetId) => buildToolCommand('accept.ts', [packetId], undefined, config),

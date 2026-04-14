@@ -37,7 +37,7 @@ describe('resolvePlanAction', () => {
     expect(action.planner_assignment?.instructions).toContain('Use domain language from the spec');
   });
 
-  it('PL-U2: planned feature awaits human approval', () => {
+  it('PL-U2: planned feature awaits human approval when intent is not approved', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature()],
@@ -46,7 +46,17 @@ describe('resolvePlanAction', () => {
     expect(action.kind).toBe('awaiting_approval');
   });
 
-  it('PL-U3: approved feature hands off to supervisor', () => {
+  it('PL-U3: approved intent lets planned linked feature hand off to supervisor', () => {
+    const action = resolvePlanAction({
+      intent: makeIntent({ status: 'approved', feature_id: 'customer-dashboard' }),
+      features: [makeFeature({ status: 'planned' })],
+      plannerPersona: { instructions: [], model: 'opus' },
+    });
+    expect(action.kind).toBe('ready_for_execution');
+    expect(action.command).toContain('supervise.ts --json --feature customer-dashboard');
+  });
+
+  it('PL-U4: approved feature also hands off to supervisor', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'approved' })],
@@ -56,7 +66,7 @@ describe('resolvePlanAction', () => {
     expect(action.command).toContain('supervise.ts --json --feature customer-dashboard');
   });
 
-  it('PL-U4: multiple linked features block planning handoff', () => {
+  it('PL-U5: multiple linked features block planning handoff', () => {
     const action = resolvePlanAction({
       intent: makeIntent(),
       features: [makeFeature({ id: 'f1' }), makeFeature({ id: 'f2' })],

@@ -18,7 +18,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   buildToolCommand,
@@ -149,7 +149,8 @@ interface RunLoopResult {
   readonly last_supervisor_action: SupervisorAction | null;
   readonly runs: ReadonlyArray<OrchestratorRunRecord>;
   readonly ticks: number;
-  readonly status: 'idle' | 'awaiting_approval' | 'blocked' | 'failed';
+  readonly status: 'idle' | 'awaiting_human' | 'failed';
+  readonly human_gate: 'approval' | 'acceptance' | 'blocked' | 'failure' | null;
   readonly message: string;
 }
 
@@ -683,84 +684,6 @@ function parseToolJson<T>(toolScript: string, args: ReadonlyArray<string>, cwd: 
   return JSON.parse(raw) as T;
 }
 
-/**
- * Auto-approves a planned feature by setting status to "approved".
- * Used by the orchestrator's run loop to avoid stopping for manual approval.
- */
-export function autoApproveFeature(artifactRoot: string, featureId: string): void {
-  const featurePath = join(artifactRoot, 'features', `${featureId}.json`);
-  const raw = readFileSync(featurePath, 'utf-8');
-  const feature = JSON.parse(raw) as Record<string, unknown>;
-  feature['status'] = 'approved';
-  feature['approved_at'] = new Date().toISOString();
-  writeFileSync(featurePath, JSON.stringify(feature, null, 2) + '\n', 'utf-8');
-}
-
-/**
- * Auto-accepts completed non-architectural packets that lack acceptance records.
- *
- * Architectural packets always require human acceptance (escalation).
- * Packets with null/unknown change_class are treated conservatively as requiring
- * human acceptance.
- *
- * Returns the list of packet IDs that were auto-accepted.
- */
-export function autoAcceptEligiblePackets(
-  artifactRoot: string,
-  identity: { readonly kind: string; readonly id: string },
-): ReadonlyArray<string> {
-  const packetsDir = join(artifactRoot, 'packets');
-  const completionsDir = join(artifactRoot, 'completions');
-  const acceptancesDir = join(artifactRoot, 'acceptances');
-
-  if (!existsSync(packetsDir) || !existsSync(completionsDir)) return [];
-
-  const packetFiles = readdirSync(packetsDir).filter((f) => f.endsWith('.json'));
-  const completionFiles = new Set(
-    existsSync(completionsDir)
-      ? readdirSync(completionsDir).filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''))
-      : [],
-  );
-  const acceptanceFiles = new Set(
-    existsSync(acceptancesDir)
-      ? readdirSync(acceptancesDir).filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''))
-      : [],
-  );
-
-  const autoAccepted: string[] = [];
-  const autoAcceptableClasses = new Set(['trivial', 'local', 'cross_cutting']);
-
-  for (const file of packetFiles) {
-    const packetId = file.replace('.json', '');
-
-    // Must have a completion, must not already have an acceptance
-    if (!completionFiles.has(packetId)) continue;
-    if (acceptanceFiles.has(packetId)) continue;
-
-    const raw = readFileSync(join(packetsDir, file), 'utf-8');
-    const packet = JSON.parse(raw) as Record<string, unknown>;
-    const changeClass = typeof packet['change_class'] === 'string' ? packet['change_class'] : null;
-
-    // Conservative: only auto-accept known non-architectural classes
-    if (changeClass === null || !autoAcceptableClasses.has(changeClass)) continue;
-
-    // Write acceptance record
-    if (!existsSync(acceptancesDir)) {
-      mkdirSync(acceptancesDir, { recursive: true });
-    }
-    const acceptance = {
-      packet_id: packetId,
-      accepted_at: new Date().toISOString(),
-      accepted_by: identity,
-      notes: `Auto-accepted by orchestrator: change_class '${changeClass}' with valid completion.`,
-    };
-    writeFileSync(join(acceptancesDir, file), JSON.stringify(acceptance, null, 2) + '\n', 'utf-8');
-    autoAccepted.push(packetId);
-  }
-
-  return autoAccepted;
-}
-
 function updateState(
   statePath: string,
   config: FactoryConfig,
@@ -1128,6 +1051,21 @@ function runSuperviseOnce(
   return { action, runs };
 }
 
+function humanGateFromSupervisorAction(
+  action: SupervisorAction,
+): RunLoopResult['human_gate'] {
+  switch (action.kind) {
+    case 'escalate_acceptance':
+      return 'acceptance';
+    case 'escalate_blocked':
+      return 'blocked';
+    case 'escalate_failure':
+      return 'failure';
+    default:
+      return null;
+  }
+}
+
 function runLoop(
   projectRoot: string,
   config: FactoryConfig,
@@ -1196,6 +1134,7 @@ function runLoop(
         runs,
         ticks,
         status: 'failed',
+        human_gate: null,
         message: plannerFailed.message,
       };
     }
@@ -1205,53 +1144,47 @@ function runLoop(
     }
 
     if (planAction.kind === 'plan_feature') {
-      // Planner didn't produce a feature — cannot auto-approve nothing
-      fmt.log('planning', fmt.warn('Planner returned plan_feature — awaiting approval'));
+      // Planner still indicates planning work is required, so execution cannot proceed.
+      fmt.log('planning', fmt.warn('Planner did not produce an approved execution handoff'));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
-      runLoopFooter('awaiting_approval', ticks, runs);
+      runLoopFooter('awaiting_human', ticks, runs, 'approval');
       return {
         plan_action: planAction,
         last_supervisor_action: null,
         runs,
         ticks,
-        status: 'awaiting_approval',
+        status: 'awaiting_human',
+        human_gate: 'approval',
         message: planAction.message,
       };
     }
 
     if (planAction.kind === 'awaiting_approval') {
-      if (planAction.feature_id !== null) {
-        // Auto-approve: the planner used inference to produce the plan;
-        // the orchestrator is a deterministic process that moves artifacts through gates.
-        fmt.log('approval', `Auto-approving feature '${fmt.bold(planAction.feature_id)}'`);
-        autoApproveFeature(resolveArtifactRoot(projectRoot, config), planAction.feature_id);
-        planAction = parseToolJson<PlanAction>('plan.ts', [intentId, '--json'], projectRoot, config);
-        // Fall through — planAction should now be ready_for_execution
-      } else {
-        fmt.log('planning', fmt.warn('Awaiting approval — no feature to auto-approve'));
-        persistRunArtifacts(statePath, config, planAction, null, [], null);
-        runLoopFooter('awaiting_approval', ticks, runs);
-        return {
-          plan_action: planAction,
-          last_supervisor_action: null,
-          runs,
-          ticks,
-          status: 'awaiting_approval',
-          message: planAction.message,
-        };
-      }
-    }
-
-    if (planAction.kind === 'blocked') {
-      fmt.log('planning', fmt.error('Feature is blocked'));
+      fmt.log('approval', fmt.warn(planAction.message));
       persistRunArtifacts(statePath, config, planAction, null, [], null);
-      runLoopFooter('blocked', ticks, runs);
+      runLoopFooter('awaiting_human', ticks, runs, 'approval');
       return {
         plan_action: planAction,
         last_supervisor_action: null,
         runs,
         ticks,
-        status: 'blocked',
+        status: 'awaiting_human',
+        human_gate: 'approval',
+        message: planAction.message,
+      };
+    }
+
+    if (planAction.kind === 'blocked') {
+      fmt.log('planning', fmt.warn(planAction.message));
+      persistRunArtifacts(statePath, config, planAction, null, [], null);
+      runLoopFooter('awaiting_human', ticks, runs, 'blocked');
+      return {
+        plan_action: planAction,
+        last_supervisor_action: null,
+        runs,
+        ticks,
+        status: 'awaiting_human',
+        human_gate: 'blocked',
         message: planAction.message,
       };
     }
@@ -1266,6 +1199,7 @@ function runLoop(
         runs,
         ticks,
         status: 'idle',
+        human_gate: null,
         message: planAction.message,
       };
     }
@@ -1288,6 +1222,7 @@ function runLoop(
         runs,
         ticks,
         status: 'idle',
+        human_gate: null,
         message: planAction.message,
       };
     }
@@ -1303,6 +1238,7 @@ function runLoop(
         runs,
         ticks,
         status: 'failed',
+        human_gate: null,
         message: 'Supervisor state is not initialized. Run without --dry-run to let orchestrator initialize it automatically.',
       };
     }
@@ -1355,6 +1291,7 @@ function runLoop(
         runs,
         ticks,
         status: 'failed',
+        human_gate: null,
         message: failedRun.message,
       };
     }
@@ -1369,6 +1306,7 @@ function runLoop(
         runs,
         ticks,
         status: 'idle',
+        human_gate: null,
         message: superviseResult.action.message,
       };
     }
@@ -1378,13 +1316,6 @@ function runLoop(
     }
 
     if (lastSupervisorAction.kind === 'execute_feature') {
-      // Auto-accept non-architectural completed packets before next tick
-      const artifactRoot = resolveArtifactRoot(projectRoot, config);
-      const autoAcceptIdentity = { kind: 'cli' as const, id: 'orchestrator-auto-accept' };
-      const accepted = autoAcceptEligiblePackets(artifactRoot, autoAcceptIdentity);
-      if (accepted.length > 0) {
-        fmt.log('accept', `Auto-accepted ${String(accepted.length)} non-architectural packet(s): ${accepted.join(', ')}`);
-      }
       continue;
     }
 
@@ -1397,18 +1328,21 @@ function runLoop(
         runs,
         ticks,
         status: 'idle',
+        human_gate: null,
         message: lastSupervisorAction.message,
       };
     }
 
     persistRunArtifacts(statePath, config, planAction, lastSupervisorAction, [], null);
-    runLoopFooter('blocked', ticks, runs);
+    const humanGate = humanGateFromSupervisorAction(lastSupervisorAction);
+    runLoopFooter('awaiting_human', ticks, runs, humanGate);
     return {
       plan_action: planAction,
       last_supervisor_action: lastSupervisorAction,
       runs,
       ticks,
-      status: 'blocked',
+      status: 'awaiting_human',
+      human_gate: humanGate,
       message: lastSupervisorAction.message,
     };
   }
@@ -1421,21 +1355,32 @@ function runLoop(
     runs,
     ticks: orchestrator.retries.max_supervisor_ticks,
     status: 'failed',
+    human_gate: null,
     message: `Exceeded max supervisor ticks (${String(orchestrator.retries.max_supervisor_ticks)}) without reaching idle or a blocking gate.`,
   };
 }
 
 /** Write a summary footer to stderr at the end of a runLoop. */
-function runLoopFooter(status: string, ticks: number, runs: OrchestratorRunRecord[]): void {
+function runLoopFooter(
+  status: RunLoopResult['status'],
+  ticks: number,
+  runs: OrchestratorRunRecord[],
+  humanGate: RunLoopResult['human_gate'] = null,
+): void {
   const agentRuns = runs.filter((r) => r.kind === 'packet');
   const failures = runs.filter((r) => r.result === 'failed');
   process.stderr.write(`\n${fmt.divider()}\n`);
   if (status === 'failed') {
     process.stderr.write(`  ${fmt.sym.fail} ${fmt.error(`Failed after ${String(ticks)} tick(s)`)}\n`);
-  } else if (status === 'blocked') {
-    process.stderr.write(`  ${fmt.sym.blocked} ${fmt.warn(`Blocked after ${String(ticks)} tick(s)`)}\n`);
-  } else if (status === 'awaiting_approval') {
-    process.stderr.write(`  ${fmt.sym.pending} ${fmt.warn('Awaiting approval')}\n`);
+  } else if (status === 'awaiting_human') {
+    const label = humanGate === 'approval'
+      ? 'Awaiting human approval'
+      : humanGate === 'acceptance'
+        ? 'Awaiting human acceptance'
+        : humanGate === 'failure'
+          ? 'Awaiting human intervention after failure'
+          : 'Awaiting human intervention';
+    process.stderr.write(`  ${fmt.sym.pending} ${fmt.warn(label)}\n`);
   } else {
     process.stderr.write(`  ${fmt.sym.ok} ${fmt.success(`Completed in ${String(ticks)} tick(s)`)}\n`);
   }

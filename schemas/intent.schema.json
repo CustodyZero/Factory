@@ -38,8 +38,8 @@
     },
     "status": {
       "type": "string",
-      "enum": ["proposed", "planned", "superseded", "delivered"],
-      "description": "Intent lifecycle status. Planning produces a feature; execution remains on the feature and packets."
+      "enum": ["proposed", "approved", "planned", "superseded", "delivered"],
+      "description": "Intent lifecycle status. 'approved' grants planner and supervisor authority to execute derived artifacts within scope. Planning produces a feature; execution remains on the feature and packets."
     },
     "feature_id": {
       "type": ["string", "null"],
@@ -68,6 +68,11 @@
       "type": ["string", "null"],
       "format": "date-time",
       "description": "When planning completed and the linked feature/packets were created."
+    },
+    "approved_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When the human approved the intent/spec for planner decomposition and downstream execution."
     }
   },
   "additionalProperties": false

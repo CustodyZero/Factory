@@ -18,6 +18,7 @@ function makeFeature(overrides: Partial<Feature> = {}): Feature {
     packets: overrides.packets ?? [],
     created_by: overrides.created_by ?? { kind: 'human', id: 'operator' },
     approved_at: overrides.approved_at ?? '2026-03-21T00:00:00Z',
+    intent_id: overrides.intent_id ?? null,
   };
 }
 
@@ -58,6 +59,7 @@ function makeInput(overrides: Partial<ExecuteInput> = {}): ExecuteInput {
     packets: overrides.packets ?? [],
     completionIds: overrides.completionIds ?? new Set(),
     acceptanceIds: overrides.acceptanceIds ?? new Set(),
+    linkedIntentStatus: overrides.linkedIntentStatus,
   };
 }
 
@@ -76,6 +78,16 @@ describe('resolveExecuteAction', () => {
     }));
     expect(action.kind).toBe('not_approved');
     expect(action.message).toContain('draft');
+  });
+
+  it('EX-U1b: planned feature linked to approved intent is execution-authorized', () => {
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ status: 'planned', intent_id: 'approved-intent', packets: ['p1'] }),
+      packets: [makeDevPacket('p1')],
+      linkedIntentStatus: 'approved',
+    }));
+    expect(action.kind).toBe('spawn_packets');
+    expect(action.ready_packets[0]?.packet_id).toBe('p1');
   });
 
   it('EX-U2: empty feature is immediately all_complete', () => {

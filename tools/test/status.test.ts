@@ -220,4 +220,16 @@ describe('deriveFactoryStatus', () => {
     });
     expect(status.next_action.kind).toBe('review_plan');
   });
+
+  it('FS-U17: approved intent suppresses redundant feature approval gate', () => {
+    const status = deriveFactoryStatus({
+      packets: [],
+      completions: [],
+      acceptances: [],
+      intents: [{ id: 'customer-dashboard', title: 'Customer dashboard', status: 'approved', feature_id: 'customer-dashboard' }],
+      features: [{ id: 'customer-dashboard', intent: 'Dashboard', status: 'planned', packets: [], intent_id: 'customer-dashboard' }],
+    });
+    expect(status.features_awaiting_approval).toEqual([]);
+    expect(status.next_action.kind).toBe('all_clear');
+  });
 });

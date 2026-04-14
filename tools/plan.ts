@@ -29,7 +29,7 @@ export interface RawIntentArtifact {
   readonly spec?: string;
   readonly spec_path?: string;
   readonly constraints?: ReadonlyArray<string>;
-  readonly status: 'proposed' | 'planned' | 'superseded' | 'delivered';
+  readonly status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered';
   readonly feature_id?: string | null;
 }
 
@@ -42,7 +42,7 @@ export interface IntentArtifact {
   readonly title: string;
   readonly spec: string;
   readonly constraints?: ReadonlyArray<string>;
-  readonly status: 'proposed' | 'planned' | 'superseded' | 'delivered';
+  readonly status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered';
   readonly feature_id?: string | null;
 }
 
@@ -229,6 +229,7 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
   }
 
   const linkedFeature = linkedFeatures[0] ?? null;
+  const intentApproved = input.intent.status === 'approved';
   const plannerInstructions = [
     ...(input.plannerPersona?.instructions ?? []),
     'Create exactly one feature artifact with status "planned".',
@@ -254,11 +255,23 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
         constraints: input.intent.constraints ?? [],
       },
       command: null,
-      message: `Intent '${input.intent.id}' is ready for planning. Create a planned feature and dev/qa packet pairs.`,
+      message: intentApproved
+        ? `Intent '${input.intent.id}' is approved and ready for planning. Create a planned feature and dev/qa packet pairs.`
+        : `Intent '${input.intent.id}' is ready for planning. Create a planned feature and dev/qa packet pairs.`,
     };
   }
 
   if (linkedFeature.status === 'planned' || linkedFeature.status === 'draft') {
+    if (intentApproved) {
+      return {
+        kind: 'ready_for_execution',
+        intent_id: input.intent.id,
+        feature_id: linkedFeature.id,
+        planner_assignment: null,
+        command: input.superviseCommand?.(linkedFeature.id) ?? `npx tsx tools/supervise.ts --json --feature ${linkedFeature.id}`,
+        message: `Intent '${input.intent.id}' is approved. Planned feature '${linkedFeature.id}' inherits execution authority and is ready for supervisor handoff.`,
+      };
+    }
     return {
       kind: 'awaiting_approval',
       intent_id: input.intent.id,

@@ -134,6 +134,7 @@ export interface SuperviseInput {
   readonly supervisorState: SupervisorState;
   readonly features: ReadonlyArray<Feature>;
   readonly packets: ReadonlyArray<RawPacket>;
+  readonly intents?: ReadonlyArray<{ readonly id: string; readonly status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered' }> | undefined;
   readonly completionIds: ReadonlySet<string>;
   readonly acceptanceIds: ReadonlySet<string>;
   readonly personas: PersonasConfig;
@@ -196,8 +197,13 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
   const nowIso = now.toISOString();
 
   // Filter to approved/executing features only
-  const activeFeatures = features.filter(
-    (f) => f.status === 'approved' || f.status === 'executing' || f.status === 'completed' || f.status === 'delivered',
+  const intentStatusById = new Map((input.intents ?? []).map((intent) => [intent.id, intent.status]));
+  const activeFeatures = features.filter((f) =>
+    f.status === 'approved' ||
+    f.status === 'executing' ||
+    f.status === 'completed' ||
+    f.status === 'delivered' ||
+    (f.status === 'planned' && typeof f.intent_id === 'string' && intentStatusById.get(f.intent_id) === 'approved'),
   );
 
   // If scoped to one feature, filter further
@@ -351,6 +357,7 @@ export function resolveSupervisorAction(input: SuperviseInput): SupervisorAction
       packets: featurePackets,
       completionIds: input.completionIds,
       acceptanceIds: input.acceptanceIds,
+      linkedIntentStatus: typeof feature.intent_id === 'string' ? intentStatusById.get(feature.intent_id) : undefined,
       personas: input.personas,
       startCommand: input.commands?.start,
       acceptCommand: input.commands?.accept,
@@ -749,6 +756,7 @@ function main(): void {
   const memoryPath = ensureSupervisorMemory(artifactRoot);
 
   // Read factory artifacts
+  const intents = readJsonDir<{ id: string; status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered' }>(join(artifactRoot, 'intents'));
   const features = readJsonDir<Feature>(join(artifactRoot, 'features'));
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
   const completions = readJsonDir<{ packet_id: string }>(join(artifactRoot, 'completions'));
@@ -762,6 +770,7 @@ function main(): void {
     supervisorState,
     features,
     packets,
+    intents,
     completionIds,
     acceptanceIds,
     personas: config.personas,

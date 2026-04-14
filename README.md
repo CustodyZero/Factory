@@ -182,12 +182,12 @@ Factory now has a first-class planning layer. The preferred flow is:
 1. Human creates an intent/spec artifact in `intents/`
 2. Planner agent runs `tools/plan.ts <intent-id>`
 3. Planner writes one planned feature plus dev/qa packet pairs
-4. Human reviews and approves the feature
-5. Supervisor executes only approved packet work
+4. If the intent/spec is approved, the planned feature inherits execution authority automatically
+5. Supervisor executes authorized packet work
 
 The planner and supervisor are intentionally separate:
 - planner decomposes work into artifacts
-- supervisor executes approved artifacts deterministically
+- supervisor executes authorized artifacts deterministically
 
 The native deterministic orchestrator sits beside those actors:
 - planner decides decomposition
@@ -746,8 +746,8 @@ and `supervise.ts`, invokes supported LLM CLIs, and stores bounded runtime
 state in `supervisor/orchestrator-state.json`.
 `run` is the autonomous mode: it initializes supervisor state when needed,
 re-ticks after `update_state`, retries planner and packet execution through
-the configured provider/model ladder, and stops only at `idle`, `awaiting_approval`,
-or a real blocking/escalation gate.
+the configured provider/model ladder, and stops only at `idle` or an explicit
+human gate (`approval`, `acceptance`, `blocked`, or `failure`).
 
 ### Validate
 
@@ -824,15 +824,14 @@ This is the full factory-native flow with planning and execution separated:
    - dev/qa packet pairs in `packets/`
    - packet dependencies, change classes, and acceptance criteria
    - `feature.intent_id` and `intent.feature_id` linkage
-4. Human reviews the planned feature and packet set
-5. Human sets the feature status to `approved`
-6. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
-7. The orchestrator invokes the planner if needed, then stops at human approval
-8. After approval, rerun `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` to enter supervised execution
-9. Supervisor dispatches only approved packet work, potentially across multiple independent features in the same tick
-10. Developer and qa agents execute packets exactly as assigned
-11. Human handles architectural acceptance when escalated
-12. Delivery occurs when the approved feature completes and the intent can be considered delivered
+4. Human approves the intent/spec when it is ready to govern downstream work
+5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
+6. The orchestrator invokes the planner if needed
+7. Planned features linked to an approved intent inherit execution authority automatically; standalone/manual planned features may still require direct feature approval
+8. Supervisor dispatches only authorized packet work, potentially across multiple independent features in the same tick
+9. Developer and qa agents execute packets exactly as assigned
+10. Human handles architectural acceptance when escalated
+11. Delivery occurs when the completed feature satisfies the approved intent
 
 ---
 

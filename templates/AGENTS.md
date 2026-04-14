@@ -184,7 +184,7 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | `npx tsx .factory/tools/orchestrate.ts plan <intent-id>` | Invoke the configured planner provider for a plan-ready intent |
 | `npx tsx .factory/tools/orchestrate.ts supervise` | Invoke the deterministic harness for supervisor-issued dispatches |
 | `npx tsx .factory/tools/orchestrate.ts run` | Run the native autonomous loop until idle or a human gate |
-| `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` | Plan an intent, stop at approval, then continue into supervised execution once approved |
+| `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>` | Plan an intent and, if the intent is approved, continue directly into supervised execution |
 
 ---
 
@@ -291,13 +291,14 @@ The planner does not execute work. The supervisor does not plan work.
    - dependencies
    - change classes
    - acceptance criteria
-5. Human reviews the generated plan and marks the feature `approved`
-6. Supervisor takes over only after approval
+5. If the intent/spec is already approved, the planned feature inherits execution authority automatically
+6. If the plan was created outside an approved intent, a human may still approve the feature directly
+7. Supervisor takes over once execution authority exists
 
 Planner invariants:
 - Do not approve or execute
 - Do not collapse dev and QA into one packet
-- Do not bypass human approval
+- Do not bypass the governing approval authority for the intent/spec or feature
 - Preserve the existing completion/acceptance model
 
 ---
@@ -319,7 +320,7 @@ When supervisor mode is active, only packets returned in `ready_packets` may be 
 Manual supervisor loop:
 
 ```
-1. Human approves a planned feature (typically produced from an intent by the planner)
+1. Human approves the governing intent/spec, or directly approves a standalone planned feature
 2. Run: npx tsx .factory/tools/supervise.ts --init   (first time only)
 3. Run: npx tsx .factory/tools/supervise.ts --json
 4. Perform the returned action
@@ -338,7 +339,7 @@ npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>
 - re-tick after `update_state`
 - invoke planner/developer/code_reviewer/qa agents through the configured Codex/Claude shell contracts
 - retry failed planner and packet runs through the configured provider/model ladder
-- stop only at `idle`, `awaiting_approval`, or a real blocking/escalation gate after retries are exhausted
+- stop only at `idle` or an explicit human gate (`acceptance`, `blocked`, `failure`, or direct feature approval when no approved intent governs the plan`) after retries are exhausted
 
 The supervisor returns one action per tick:
 - `execute_feature` — spawn agents for ready packets using the returned dispatch records

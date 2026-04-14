@@ -401,7 +401,7 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
     }
   }
 
-  const validIntentStatuses = ['proposed', 'planned', 'superseded', 'delivered'];
+  const validIntentStatuses = ['proposed', 'approved', 'planned', 'superseded', 'delivered'];
   if (typeof data['status'] !== 'string' || !validIntentStatuses.includes(data['status'])) {
     e(`'status' must be one of: ${validIntentStatuses.join(', ')}`);
   }
@@ -423,6 +423,10 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
 
   if (data['planned_at'] != null && data['planned_at'] !== null && !isValidISO8601(data['planned_at'])) {
     e("'planned_at' must be a valid ISO 8601 timestamp or null");
+  }
+
+  if (data['approved_at'] != null && data['approved_at'] !== null && !isValidISO8601(data['approved_at'])) {
+    e("'approved_at' must be a valid ISO 8601 timestamp or null");
   }
 
   return results;
@@ -724,6 +728,15 @@ function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
         severity: 'error',
         error_type: 'invariant',
         message: `Intent '${intent.id}' is still 'proposed' but already links feature '${intent.feature_id}'`,
+      });
+    }
+
+    if (intent.status === 'approved' && feature.status === 'draft') {
+      results.push({
+        file: `intents/${intent.id}.json`,
+        severity: 'error',
+        error_type: 'invariant',
+        message: `Intent '${intent.id}' is 'approved' but linked feature '${feature.id}' is still 'draft'. Planner output must be at least 'planned'.`,
       });
     }
 
