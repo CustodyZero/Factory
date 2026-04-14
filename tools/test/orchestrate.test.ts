@@ -3,10 +3,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  autoAcceptEligiblePackets,
   autoApproveFeature,
   boundedAttempts,
   boundedRuns,
@@ -403,5 +404,130 @@ describe('orchestrate helpers', () => {
     expect(result.intent).toBe('test');
 
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  describe('autoAcceptEligiblePackets', () => {
+    function setupAutoAcceptDir(): string {
+      const dir = join(tmpdir(), `factory-autoaccept-${Date.now()}`);
+      mkdirSync(join(dir, 'packets'), { recursive: true });
+      mkdirSync(join(dir, 'completions'), { recursive: true });
+      mkdirSync(join(dir, 'acceptances'), { recursive: true });
+      return dir;
+    }
+
+    function writePacket(dir: string, id: string, changeClass: string | null, kind = 'dev'): void {
+      const packet: Record<string, unknown> = { id, kind, title: `Packet ${id}`, change_class: changeClass };
+      writeFileSync(join(dir, 'packets', `${id}.json`), JSON.stringify(packet, null, 2) + '\n');
+    }
+
+    function writeCompletion(dir: string, id: string): void {
+      const completion = { packet_id: id, completed_at: '2026-04-13T00:00:00Z', summary: 'done' };
+      writeFileSync(join(dir, 'completions', `${id}.json`), JSON.stringify(completion, null, 2) + '\n');
+    }
+
+    function writeAcceptance(dir: string, id: string): void {
+      const acceptance = { packet_id: id, accepted_at: '2026-04-13T00:00:00Z', accepted_by: { kind: 'cli', id: 'human' } };
+      writeFileSync(join(dir, 'acceptances', `${id}.json`), JSON.stringify(acceptance, null, 2) + '\n');
+    }
+
+    const identity = { kind: 'cli', id: 'orchestrator-auto-accept' };
+
+    it('OR-U23: auto-accepts local packets with completions', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', 'local');
+      writeCompletion(dir, 'p1');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted).toEqual(['p1']);
+
+      const acc = JSON.parse(readFileSync(join(dir, 'acceptances', 'p1.json'), 'utf-8'));
+      expect(acc.packet_id).toBe('p1');
+      expect(acc.accepted_by).toEqual(identity);
+      expect(acc.notes).toContain('local');
+      expect(acc.notes).toContain('Auto-accepted');
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U24: auto-accepts trivial and cross_cutting packets', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', 'trivial');
+      writePacket(dir, 'p2', 'cross_cutting');
+      writeCompletion(dir, 'p1');
+      writeCompletion(dir, 'p2');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted.sort()).toEqual(['p1', 'p2']);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U25: does NOT auto-accept architectural packets', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', 'architectural');
+      writeCompletion(dir, 'p1');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted).toEqual([]);
+
+      const exists = existsSync(join(dir, 'acceptances', 'p1.json'));
+      expect(exists).toBe(false);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U26: does NOT auto-accept packets with null change_class', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', null);
+      writeCompletion(dir, 'p1');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted).toEqual([]);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U27: skips packets without completions', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', 'local');
+      // No completion
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted).toEqual([]);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U28: skips packets that already have acceptance records', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p1', 'local');
+      writeCompletion(dir, 'p1');
+      writeAcceptance(dir, 'p1');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted).toEqual([]);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('OR-U29: mixed batch — accepts only eligible packets', () => {
+      const dir = setupAutoAcceptDir();
+      writePacket(dir, 'p-arch', 'architectural');
+      writePacket(dir, 'p-local', 'local');
+      writePacket(dir, 'p-trivial', 'trivial');
+      writePacket(dir, 'p-no-completion', 'local');
+      writePacket(dir, 'p-already-accepted', 'local');
+      writeCompletion(dir, 'p-arch');
+      writeCompletion(dir, 'p-local');
+      writeCompletion(dir, 'p-trivial');
+      // p-no-completion: no completion
+      writeCompletion(dir, 'p-already-accepted');
+      writeAcceptance(dir, 'p-already-accepted');
+
+      const accepted = autoAcceptEligiblePackets(dir, identity);
+      expect(accepted.sort()).toEqual(['p-local', 'p-trivial']);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
   });
 });

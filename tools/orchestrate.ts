@@ -18,7 +18,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   buildToolCommand,
@@ -696,6 +696,71 @@ export function autoApproveFeature(artifactRoot: string, featureId: string): voi
   writeFileSync(featurePath, JSON.stringify(feature, null, 2) + '\n', 'utf-8');
 }
 
+/**
+ * Auto-accepts completed non-architectural packets that lack acceptance records.
+ *
+ * Architectural packets always require human acceptance (escalation).
+ * Packets with null/unknown change_class are treated conservatively as requiring
+ * human acceptance.
+ *
+ * Returns the list of packet IDs that were auto-accepted.
+ */
+export function autoAcceptEligiblePackets(
+  artifactRoot: string,
+  identity: { readonly kind: string; readonly id: string },
+): ReadonlyArray<string> {
+  const packetsDir = join(artifactRoot, 'packets');
+  const completionsDir = join(artifactRoot, 'completions');
+  const acceptancesDir = join(artifactRoot, 'acceptances');
+
+  if (!existsSync(packetsDir) || !existsSync(completionsDir)) return [];
+
+  const packetFiles = readdirSync(packetsDir).filter((f) => f.endsWith('.json'));
+  const completionFiles = new Set(
+    existsSync(completionsDir)
+      ? readdirSync(completionsDir).filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''))
+      : [],
+  );
+  const acceptanceFiles = new Set(
+    existsSync(acceptancesDir)
+      ? readdirSync(acceptancesDir).filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''))
+      : [],
+  );
+
+  const autoAccepted: string[] = [];
+  const autoAcceptableClasses = new Set(['trivial', 'local', 'cross_cutting']);
+
+  for (const file of packetFiles) {
+    const packetId = file.replace('.json', '');
+
+    // Must have a completion, must not already have an acceptance
+    if (!completionFiles.has(packetId)) continue;
+    if (acceptanceFiles.has(packetId)) continue;
+
+    const raw = readFileSync(join(packetsDir, file), 'utf-8');
+    const packet = JSON.parse(raw) as Record<string, unknown>;
+    const changeClass = typeof packet['change_class'] === 'string' ? packet['change_class'] : null;
+
+    // Conservative: only auto-accept known non-architectural classes
+    if (changeClass === null || !autoAcceptableClasses.has(changeClass)) continue;
+
+    // Write acceptance record
+    if (!existsSync(acceptancesDir)) {
+      mkdirSync(acceptancesDir, { recursive: true });
+    }
+    const acceptance = {
+      packet_id: packetId,
+      accepted_at: new Date().toISOString(),
+      accepted_by: identity,
+      notes: `Auto-accepted by orchestrator: change_class '${changeClass}' with valid completion.`,
+    };
+    writeFileSync(join(acceptancesDir, file), JSON.stringify(acceptance, null, 2) + '\n', 'utf-8');
+    autoAccepted.push(packetId);
+  }
+
+  return autoAccepted;
+}
+
 function updateState(
   statePath: string,
   config: FactoryConfig,
@@ -1313,6 +1378,13 @@ function runLoop(
     }
 
     if (lastSupervisorAction.kind === 'execute_feature') {
+      // Auto-accept non-architectural completed packets before next tick
+      const artifactRoot = resolveArtifactRoot(projectRoot, config);
+      const autoAcceptIdentity = { kind: 'cli' as const, id: 'orchestrator-auto-accept' };
+      const accepted = autoAcceptEligiblePackets(artifactRoot, autoAcceptIdentity);
+      if (accepted.length > 0) {
+        fmt.log('accept', `Auto-accepted ${String(accepted.length)} non-architectural packet(s): ${accepted.join(', ')}`);
+      }
       continue;
     }
 
