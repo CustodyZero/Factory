@@ -81,41 +81,8 @@ export interface ExecuteAction {
 // Artifact reading
 // ---------------------------------------------------------------------------
 
-export interface RawPacket {
-  readonly id: string;
-  readonly kind: 'dev' | 'qa';
-  readonly title: string;
-  readonly change_class: string;
-  readonly verifies?: string | null;
-  readonly started_at?: string | null;
-  readonly status?: string | null;
-  readonly dependencies?: ReadonlyArray<string>;
-  readonly branch?: string | null;
-  readonly review_iteration?: number;
-  readonly model?: ModelTier;
-  readonly instructions?: ReadonlyArray<string>;
-  readonly environment_dependencies?: ReadonlyArray<string>;
-  readonly acceptance_criteria?: ReadonlyArray<string>;
-  readonly feature_id?: string | null;
-}
-
 interface RawCompletion {
   readonly packet_id: string;
-  readonly verification: {
-    readonly tests_pass: boolean;
-    readonly build_pass: boolean;
-    readonly lint_pass: boolean;
-    readonly ci_pass: boolean;
-  };
-}
-
-interface RawAcceptance {
-  readonly packet_id: string;
-}
-
-interface RawIntent {
-  readonly id: string;
-  readonly status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered';
 }
 
 function readJson<T>(path: string): T | null {
@@ -142,61 +109,14 @@ export interface ExecuteInput {
   readonly feature: Feature;
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completionIds: ReadonlySet<string>;
-  readonly acceptanceIds: ReadonlySet<string>;
-  readonly linkedIntentStatus?: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered' | undefined;
   readonly personas?: PersonasConfig;
   readonly startCommand?: ((packetId: string) => string) | undefined;
-  readonly acceptCommand?: ((packetId: string) => string) | undefined;
-}
-
-function isExecutionAuthorized(
-  feature: Feature,
-  linkedIntentStatus?: ExecuteInput['linkedIntentStatus'],
-): boolean {
-  if (feature.status === 'approved' || feature.status === 'executing') {
-    return true;
-  }
-  return feature.status === 'planned' && feature.intent_id != null && linkedIntentStatus === 'approved';
-}
-
-const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
-
-function isAccepted(
-  packet: RawPacket,
-  completionMap: ReadonlyMap<string, boolean>,
-  acceptanceIds: ReadonlySet<string>,
-): boolean {
-  if (acceptanceIds.has(packet.id)) return true;
-  const passes = completionMap.get(packet.id);
-  if (passes === undefined) return false;
-  const cc = packet.change_class;
-  return (cc === 'trivial' || cc === 'local' || cc === 'cross_cutting') && passes;
-}
-
-function runtimeCriteria(packet: RawPacket): string[] {
-  const criteria = packet.acceptance_criteria ?? [];
-  return criteria.filter((criterion) => RUNTIME_HINTS.test(criterion));
-}
-
-function packetBlockingReasons(packet: RawPacket): string[] {
-  const reasons: string[] = [];
-  if (packet.kind === 'qa') {
-    const envDeps = packet.environment_dependencies ?? [];
-    const runtimeChecks = runtimeCriteria(packet);
-    if (envDeps.length === 0 && runtimeChecks.length > 0) {
-      reasons.push(`runtime verification requires environment_dependencies: "${runtimeChecks[0]}"`);
-    }
-  }
-  return reasons;
 }
 
 export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   const { feature } = input;
 
-  if (!isExecutionAuthorized(feature, input.linkedIntentStatus)) {
-    const inherited = feature.status === 'planned' && feature.intent_id != null
-      ? ` Planned features linked to approved intents inherit execution authority.`
-      : '';
+  if (feature.status === 'completed' || feature.status === 'delivered') {
     return {
       kind: 'not_ready',
       feature_id: feature.id,
@@ -205,7 +125,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       completed_packets: [],
       blocked_packets: [],
       total_packets: feature.packets.length,
-      message: `Feature '${feature.id}' is in status '${feature.status}'. Must be 'approved' or 'executing' to run.${inherited}`,
+      message: `Feature '${feature.id}' is in status '${feature.status}'. Already finished.`,
     };
   }
 
@@ -414,9 +334,7 @@ function main(): void {
   }
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
-  const intents = readJsonDir<RawIntent>(join(artifactRoot, 'intents'));
   const completions = readJsonDir<RawCompletion>(join(artifactRoot, 'completions'));
-  const acceptances = readJsonDir<RawAcceptance>(join(artifactRoot, 'acceptances'));
 
   const completionIds = new Set(completions.map((c) => c.packet_id));
 
@@ -424,10 +342,6 @@ function main(): void {
     feature,
     packets,
     completionIds,
-    acceptanceIds,
-    linkedIntentStatus: typeof feature.intent_id === 'string'
-      ? intents.find((intent) => intent.id === feature.intent_id)?.status
-      : undefined,
     personas: config.personas,
     startCommand: (packetId) => buildToolCommand('start.ts', [packetId], undefined, config),
   });

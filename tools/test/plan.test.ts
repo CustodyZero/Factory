@@ -47,32 +47,31 @@ describe('resolvePlanAction', () => {
     expect(action.kind).toBe('already_planned');
   });
 
-  it('PL-U3: approved intent lets planned linked feature hand off to supervisor', () => {
+  it('PL-U3: approved intent with planned feature returns already_planned', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'approved', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'planned' })],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
-    expect(action.kind).toBe('ready_for_execution');
-    expect(action.command).toContain('supervise.ts --json --feature customer-dashboard');
+    expect(action.kind).toBe('already_planned');
   });
 
-  it('PL-U4: approved feature also hands off to supervisor', () => {
+  it('PL-U4: completed feature returns already_planned', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'completed' })],
       plannerPersona: { instructions: [], model: 'high' },
     });
-    expect(action.kind).toBe('all_complete');
+    expect(action.kind).toBe('already_planned');
   });
 
-  it('PL-U5: multiple linked features block planning handoff', () => {
+  it('PL-U5: delivered feature returns already_planned', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'delivered' })],
       plannerPersona: { instructions: [], model: 'high' },
     });
-    expect(action.kind).toBe('all_complete');
+    expect(action.kind).toBe('already_planned');
   });
 
   it('PL-U5: planner assignment includes spec and constraints', () => {

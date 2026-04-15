@@ -120,19 +120,6 @@ export interface RawIntent {
   readonly feature_id?: string | null;
 }
 
-function featureRequiresSeparateApproval(
-  feature: { readonly status: string; readonly intent_id?: string | null },
-  intentById: ReadonlyMap<string, RawIntent>,
-): boolean {
-  if (feature.status !== 'planned') {
-    return false;
-  }
-  if (typeof feature.intent_id !== 'string') {
-    return true;
-  }
-  return intentById.get(feature.intent_id)?.status !== 'approved';
-}
-
 export interface StatusInput {
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completions: ReadonlyArray<RawCompletion>;
@@ -209,13 +196,12 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
       feature_id: typeof intent.feature_id === 'string' ? intent.feature_id : null,
     }));
 
-  const intentById = new Map((input.intents ?? []).map((intent) => [intent.id, intent]));
-
-  const featuresAwaitingApproval = (input.features ?? [])
-    .filter((feature) => featureRequiresSeparateApproval(feature, intentById))
-    .map((feature) => ({
-      id: feature.id,
-      intent_id: typeof feature.intent_id === 'string' ? feature.intent_id : null,
+  const featuresInProgress = (input.features ?? [])
+    .filter((f) => f.status === 'planned' || f.status === 'executing')
+    .map((f) => ({
+      id: f.id,
+      intent_id: typeof f.intent_id === 'string' ? f.intent_id : null,
+      status: f.status,
     }));
 
   const nextAction = deriveNextAction(incomplete, blocked, featuresInProgress, intentsPendingPlanning, input.commands);
@@ -238,43 +224,22 @@ function deriveNextAction(
   intentsPendingPlanning: ReadonlyArray<IntentSummary>,
   commands?: { readonly run?: (featureId: string) => string; readonly plan?: (intentId: string) => string },
 ): NextAction {
-  if (incomplete.length > 0 || featuresInProgress.length > 0) {
-    const featureId = featuresInProgress[0]?.id ?? null;
+  if (featuresInProgress.length > 0) {
+    const feature = featuresInProgress[0]!;
     return {
-      kind: 'complete_packet',
-      packet_id: first.id,
-      message: `Packet '${first.id}' is in-progress but has no completion record. Create the completion before proceeding.`,
-      command: commands?.complete?.(first.id) ?? `npx tsx tools/complete.ts ${first.id}`,
+      kind: 'run_feature',
+      target_id: feature.id,
+      message: `Feature '${feature.id}' is in progress. Run the pipeline to continue.`,
+      command: commands?.run?.(feature.id) ?? `npx tsx tools/run.ts ${feature.id}`,
     };
   }
 
-  if (blocked.length > 0) {
-    const first = blocked[0]!;
-    const dep = first.unmet_dependencies[0]!;
+  if (incomplete.length > 0) {
+    const first = incomplete[0]!;
     return {
-      kind: 'resolve_dependency',
-      packet_id: first.id,
-      message: `Packet '${first.id}' is blocked by unmet dependency '${dep}'. Resolve the dependency first.`,
-      command: null,
-    };
-  }
-
-  if (awaitingAcceptance.length > 0) {
-    const first = awaitingAcceptance[0]!;
-    return {
-      kind: 'accept_packet',
-      packet_id: first.id,
-      message: `Packet '${first.id}' (${first.change_class}) is completed and requires human acceptance.`,
-      command: null,
-    };
-  }
-
-  if (featuresAwaitingApproval.length > 0) {
-    const first = featuresAwaitingApproval[0]!;
-    return {
-      kind: 'review_plan',
-      packet_id: null,
-      message: `Feature '${first.id}' is planned and requires direct human approval before execution.`,
+      kind: 'run_feature',
+      target_id: first.id,
+      message: `Packet '${first.id}' is in-progress but has no completion record.`,
       command: null,
     };
   }
@@ -283,11 +248,18 @@ function deriveNextAction(
     const first = intentsPendingPlanning[0]!;
     return {
       kind: 'plan_intent',
-      packet_id: null,
-      message: first.status === 'approved'
-        ? `Intent '${first.id}' is approved and ready for planner decomposition. Derived planned features will inherit execution authority.`
-        : `Intent '${first.id}' is proposed and ready for planner decomposition.`,
-      command: commands?.plan?.(first.id) ?? `npx tsx tools/plan.ts ${first.id}`,
+      target_id: first.id,
+      message: `Intent '${first.id}' is ready for pipeline execution.`,
+      command: commands?.plan?.(first.id) ?? `npx tsx tools/run.ts ${first.id}`,
+    };
+  }
+
+  if (blocked.length > 0) {
+    return {
+      kind: 'no_active_work',
+      target_id: null,
+      message: `${String(blocked.length)} packet(s) blocked by unmet dependencies.`,
+      command: null,
     };
   }
 
@@ -326,35 +298,11 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
     lines.push('');
   }
 
-  if (status.awaiting_acceptance.length > 0) {
-    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Awaiting human acceptance:')}`);
-    for (const p of status.awaiting_acceptance) {
-      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
-    }
-    lines.push('');
-  }
-
-  if (status.features_awaiting_approval.length > 0) {
-    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Planned features awaiting direct human approval:')}`);
-    for (const feature of status.features_awaiting_approval) {
-      lines.push(`    - ${fmt.bold(feature.id)}${feature.intent_id !== null ? ` ${fmt.muted(`(intent: ${feature.intent_id})`)}` : ''}`);
-    }
-    lines.push('');
-  }
-
   if (status.intents_pending_planning.length > 0) {
     lines.push(`  ${fmt.sym.plan} ${fmt.info('Intents ready for pipeline:')}`);
     for (const intent of status.intents_pending_planning) {
       lines.push(`    - ${fmt.bold(intent.id)}`);
       lines.push(`      "${intent.title}" ${fmt.muted(`(${intent.status})`)}`);
-    }
-    lines.push('');
-  }
-
-  if (status.audit_pending.length > 0) {
-    lines.push(`  ${fmt.sym.audit} ${fmt.bold('Audit pending (accepted, review recommended):')}`);
-    for (const p of status.audit_pending) {
-      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
     }
     lines.push('');
   }

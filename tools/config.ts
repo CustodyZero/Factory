@@ -16,9 +16,9 @@ import { join } from 'node:path';
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelTier = 'opus' | 'sonnet' | 'haiku';
-export type OrchestratorProvider = 'codex' | 'claude' | 'copilot';
-export type OrchestratorPersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
+export type ModelTier = 'high' | 'medium' | 'low';
+export type PipelineProvider = 'codex' | 'claude' | 'copilot';
+export type PipelinePersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
 
 export interface PersonaConfig {
   readonly description: string;
@@ -43,43 +43,22 @@ export interface PipelineProviderConfig {
   readonly model_map?: ModelMap;
 }
 
-export interface OrchestratorRetryStep {
-  readonly provider: OrchestratorProvider;
-  readonly model: ModelTier;
-}
-
-export interface OrchestratorRetryConfig {
-  readonly max_supervisor_ticks: number;
-  readonly max_transient_retries: number;
-  readonly planner: ReadonlyArray<OrchestratorRetryStep>;
-  readonly developer: ReadonlyArray<OrchestratorRetryStep>;
-  readonly code_reviewer: ReadonlyArray<OrchestratorRetryStep>;
-  readonly qa: ReadonlyArray<OrchestratorRetryStep>;
-}
-
-export interface OrchestratorConfig {
-  readonly enabled: boolean;
-  readonly identity: { readonly kind: string; readonly id: string };
-  readonly output_dir: string;
-  readonly recent_run_limit: number;
-  readonly recent_attempt_limit: number;
+export interface PipelineConfig {
+  readonly providers: {
+    readonly [key: string]: PipelineProviderConfig;
+  };
+  readonly persona_providers: {
+    readonly planner: PipelineProvider;
+    readonly developer: PipelineProvider;
+    readonly code_reviewer: PipelineProvider;
+    readonly qa: PipelineProvider;
+  };
   readonly completion_identities: {
     readonly developer: string;
     readonly code_reviewer: string;
     readonly qa: string;
   };
-  readonly personas: {
-    readonly planner: OrchestratorProvider;
-    readonly developer: OrchestratorProvider;
-    readonly code_reviewer: OrchestratorProvider;
-    readonly qa: OrchestratorProvider;
-  };
-  readonly providers: {
-    readonly codex: OrchestratorProviderConfig;
-    readonly claude: OrchestratorProviderConfig;
-    readonly copilot: OrchestratorProviderConfig;
-  };
-  readonly retries: OrchestratorRetryConfig;
+  readonly max_review_iterations: number;
 }
 
 export interface FactoryConfig {
@@ -175,110 +154,34 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
         code_reviewer: 'claude',
         qa: 'claude',
       },
-      providers: {
-        codex: {
-          enabled: true,
-          command: 'codex',
-          sandbox: 'workspace-write',
-          models: {
-            opus: 'gpt-5.4',
-            sonnet: 'gpt-5.4-mini',
-            haiku: 'gpt-5.4-mini',
-          },
-        },
-        claude: {
-          enabled: true,
-          command: 'claude',
-          permission_mode: 'bypassPermissions',
-          models: {
-            opus: 'opus',
-            sonnet: 'sonnet',
-            haiku: 'haiku',
-          },
-        },
-        copilot: {
-          enabled: false,
-          command: 'gh',
-          models: {
-            opus: 'gpt-5',
-            sonnet: 'gpt-5-mini',
-            haiku: 'gpt-5-mini',
-          },
-        },
+      completion_identities: {
+        developer: 'codex-dev',
+        code_reviewer: 'claude-cr',
+        qa: 'claude-qa',
       },
-      retries: {
-        max_supervisor_ticks: 50,
-        max_transient_retries: 2,
-        planner: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
-        developer: [
-          { provider: 'codex', model: 'sonnet' },
-          { provider: 'codex', model: 'opus' },
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-        ],
-        code_reviewer: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
-        qa: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
+      max_review_iterations: 3,
+    };
+    const rawPipeline = (parsed as Record<string, unknown>)['pipeline'] as Partial<PipelineConfig> | undefined;
+    const rawProviders = rawPipeline?.providers as Record<string, Partial<PipelineProviderConfig>> | undefined;
+    const mergedProviders: Record<string, PipelineProviderConfig> = {};
+    for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
+      mergedProviders[key] = { ...defaultProviders[key], ...rawProviders?.[key] } as PipelineProviderConfig;
+    }
+    const pipeline: PipelineConfig = {
+      ...defaultPipeline,
+      ...rawPipeline,
+      providers: mergedProviders,
+      persona_providers: {
+        ...defaultPipeline.persona_providers,
+        ...rawPipeline?.persona_providers,
+      },
+      completion_identities: {
+        ...defaultPipeline.completion_identities,
+        ...rawPipeline?.completion_identities,
       },
     };
-    const rawOrchestrator = (parsed as Record<string, unknown>)['orchestrator'] as Partial<OrchestratorConfig> | undefined;
-    const rawOrchestratorProviders = rawOrchestrator?.providers as Partial<OrchestratorConfig['providers']> | undefined;
-    const rawOrchestratorPersonas = rawOrchestrator?.personas as Partial<OrchestratorConfig['personas']> | undefined;
-    const rawOrchestratorRetries = rawOrchestrator?.retries as Partial<OrchestratorRetryConfig> | undefined;
-    const orchestrator: OrchestratorConfig = {
-      ...defaultOrchestrator,
-      ...rawOrchestrator,
-      personas: {
-        ...defaultOrchestrator.personas,
-        ...rawOrchestratorPersonas,
-      },
-      providers: {
-        codex: {
-          ...defaultOrchestrator.providers.codex,
-          ...rawOrchestratorProviders?.codex,
-          models: {
-            ...defaultOrchestrator.providers.codex.models,
-            ...rawOrchestratorProviders?.codex?.models,
-          },
-        },
-        claude: {
-          ...defaultOrchestrator.providers.claude,
-          ...rawOrchestratorProviders?.claude,
-          models: {
-            ...defaultOrchestrator.providers.claude.models,
-            ...rawOrchestratorProviders?.claude?.models,
-          },
-        },
-        copilot: {
-          ...defaultOrchestrator.providers.copilot,
-          ...(rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined,
-          models: {
-            ...defaultOrchestrator.providers.copilot.models,
-            ...((rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined)?.models,
-          },
-        },
-      },
-      retries: {
-        ...defaultOrchestrator.retries,
-        ...rawOrchestratorRetries,
-        planner: rawOrchestratorRetries?.planner ?? defaultOrchestrator.retries.planner,
-        developer: rawOrchestratorRetries?.developer ?? defaultOrchestrator.retries.developer,
-        code_reviewer: rawOrchestratorRetries?.code_reviewer ?? defaultOrchestrator.retries.code_reviewer,
-        qa: rawOrchestratorRetries?.qa ?? defaultOrchestrator.retries.qa,
-      },
-    };
-    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, orchestrator } as FactoryConfig;
+
+    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, pipeline } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);

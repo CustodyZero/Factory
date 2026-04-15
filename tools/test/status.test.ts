@@ -151,15 +151,14 @@ describe('deriveFactoryStatus', () => {
     expect(status.blocked[0]!.unmet_dependencies).toContain('external-dep');
   });
 
-  it('FS-U17: approved intent suppresses redundant feature approval gate', () => {
+  it('FS-U17: planned feature with approved intent shows as in-progress', () => {
     const status = deriveFactoryStatus({
       packets: [],
       completions: [],
-      acceptances: [],
       intents: [{ id: 'customer-dashboard', title: 'Customer dashboard', status: 'approved', feature_id: 'customer-dashboard' }],
       features: [{ id: 'customer-dashboard', intent: 'Dashboard', status: 'planned', packets: [], intent_id: 'customer-dashboard' }],
     });
-    expect(status.features_awaiting_approval).toEqual([]);
-    expect(status.next_action.kind).toBe('all_clear');
+    expect(status.features_in_progress).toHaveLength(1);
+    expect(status.next_action.kind).toBe('run_feature');
   });
 });

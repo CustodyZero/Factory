@@ -200,7 +200,6 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
         spec: input.intent.spec,
         constraints: input.intent.constraints ?? [],
       },
-      command: null,
       message: intentApproved
         ? `Intent '${input.intent.id}' is approved and ready for planning. Create a planned feature and dev/qa packet pairs.`
         : `Intent '${input.intent.id}' is ready for planning. Create a planned feature and dev/qa packet pairs.`,
@@ -208,22 +207,12 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
   }
 
   if (linkedFeature.status === 'planned' || linkedFeature.status === 'draft') {
-    if (intentApproved) {
-      return {
-        kind: 'ready_for_execution',
-        intent_id: input.intent.id,
-        feature_id: linkedFeature.id,
-        planner_assignment: null,
-        command: input.superviseCommand?.(linkedFeature.id) ?? `npx tsx tools/supervise.ts --json --feature ${linkedFeature.id}`,
-        message: `Intent '${input.intent.id}' is approved. Planned feature '${linkedFeature.id}' inherits execution authority and is ready for supervisor handoff.`,
-      };
-    }
     return {
-      kind: 'all_complete',
+      kind: 'already_planned',
       intent_id: input.intent.id,
       feature_id: linkedFeature.id,
       planner_assignment: null,
-      message: `Intent '${input.intent.id}' is linked to feature '${linkedFeature.id}' (${linkedFeature.status}). No action needed.`,
+      message: `Intent '${input.intent.id}' already has planned feature '${linkedFeature.id}' (${linkedFeature.status}).`,
     };
   }
 

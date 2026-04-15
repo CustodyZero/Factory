@@ -48,8 +48,6 @@ function makeInput(overrides: Partial<ExecuteInput> = {}): ExecuteInput {
     feature: overrides.feature ?? makeFeature(),
     packets: overrides.packets ?? [],
     completionIds: overrides.completionIds ?? new Set(),
-    acceptanceIds: overrides.acceptanceIds ?? new Set(),
-    linkedIntentStatus: overrides.linkedIntentStatus,
   };
 }
 
@@ -70,11 +68,10 @@ describe('resolveExecuteAction', () => {
     expect(action.message).toContain('completed');
   });
 
-  it('EX-U1b: planned feature linked to approved intent is execution-authorized', () => {
+  it('EX-U1b: planned feature is execution-authorized', () => {
     const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ status: 'planned', intent_id: 'approved-intent', packets: ['p1'] }),
+      feature: makeFeature({ status: 'planned', packets: ['p1'] }),
       packets: [makeDevPacket('p1')],
-      linkedIntentStatus: 'approved',
     }));
     expect(action.kind).toBe('spawn_packets');
     expect(action.ready_packets[0]?.packet_id).toBe('p1');
