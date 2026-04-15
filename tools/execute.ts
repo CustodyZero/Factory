@@ -228,7 +228,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     if (persona === 'code_reviewer' && typeof packet.branch === 'string') {
       packetInstructions.push(`Review branch: ${packet.branch}`);
     }
-    const model: ModelTier = packet.model ?? personaConfig?.model ?? 'opus';
+    const model: ModelTier = packet.model ?? personaConfig?.model ?? 'high';
     return {
       packet_id: packet.id,
       persona,

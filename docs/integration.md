@@ -92,22 +92,22 @@ Edit the template at your project root:
     "planner": {
       "description": "Decomposes intent into feature and packet artifacts",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "developer": {
       "description": "Implements the change",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "code_reviewer": {
       "description": "Reviews code changes for correctness, design, and contract adherence",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     },
     "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     }
   },
   "pipeline": {

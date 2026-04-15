@@ -112,7 +112,7 @@
       "properties": {
         "description": { "type": "string", "minLength": 1 },
         "instructions": { "type": "array", "items": { "type": "string" } },
-        "model": { "type": "string", "enum": ["opus", "sonnet", "haiku"] }
+        "model": { "type": "string", "enum": ["high", "medium", "low"] }
       },
       "additionalProperties": false
     },

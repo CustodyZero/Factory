@@ -31,7 +31,7 @@ describe('resolvePlanAction', () => {
     const action = resolvePlanAction({
       intent: makeIntent(),
       features: [],
-      plannerPersona: { instructions: ['Use domain language from the spec'], model: 'opus' },
+      plannerPersona: { instructions: ['Use domain language from the spec'], model: 'high' },
     });
     expect(action.kind).toBe('plan_feature');
     expect(action.planner_assignment?.persona).toBe('planner');
@@ -42,7 +42,7 @@ describe('resolvePlanAction', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature()],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
     expect(action.kind).toBe('already_planned');
   });
@@ -61,7 +61,7 @@ describe('resolvePlanAction', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'completed' })],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
     expect(action.kind).toBe('all_complete');
   });
@@ -70,7 +70,7 @@ describe('resolvePlanAction', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'delivered' })],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
     expect(action.kind).toBe('all_complete');
   });
@@ -82,7 +82,7 @@ describe('resolvePlanAction', () => {
         constraints: ['Keep API stable', 'No new dependencies'],
       }),
       features: [],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
     expect(action.kind).toBe('plan_feature');
     expect(action.planner_assignment?.spec).toBe('Build the dashboard');
@@ -93,7 +93,7 @@ describe('resolvePlanAction', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
       features: [makeFeature({ status: 'executing' })],
-      plannerPersona: { instructions: [], model: 'opus' },
+      plannerPersona: { instructions: [], model: 'high' },
     });
     expect(action.kind).toBe('already_planned');
   });

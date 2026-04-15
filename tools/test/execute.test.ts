@@ -97,7 +97,7 @@ describe('resolveExecuteAction', () => {
       packet_id: 'p1',
       persona: 'developer',
       task: 'implement',
-      model: 'opus',
+      model: 'high',
       instructions: [],
       start_command: 'npx tsx tools/start.ts p1',
     }]);
@@ -125,7 +125,7 @@ describe('resolveExecuteAction', () => {
       packet_id: 'qa-1',
       persona: 'qa',
       task: 'verify',
-      model: 'opus',
+      model: 'high',
       instructions: [],
       start_command: 'npx tsx tools/start.ts qa-1',
     }]);
@@ -190,7 +190,7 @@ describe('resolveExecuteAction', () => {
       packet_id: 'p1',
       persona: 'developer',
       task: 'implement',
-      model: 'opus',
+      model: 'high',
       instructions: [],
       start_command: 'npx tsx tools/start.ts p1',
     }]);
@@ -243,10 +243,10 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U16: persona instructions from config are included in assignment', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'opus' as const },
-      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: ['Check compliance'], model: 'sonnet' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'high' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'medium' as const },
+      qa: { description: 'qa', instructions: ['Check compliance'], model: 'medium' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -259,7 +259,7 @@ describe('resolveExecuteAction', () => {
       packet_id: 'dev-1',
       persona: 'developer',
       task: 'implement',
-      model: 'opus',
+      model: 'high',
       instructions: ['Use MCP server X'],
       start_command: 'npx tsx tools/start.ts dev-1',
     }]);
@@ -267,10 +267,10 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U17: packet-level instructions merge with persona instructions', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: ['Always lint'], model: 'opus' as const },
-      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: ['Always lint'], model: 'high' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'medium' as const },
+      qa: { description: 'qa', instructions: [], model: 'medium' as const },
     };
     const packet = { ...makeDevPacket('dev-1'), instructions: ['Requires GPU access'] };
     const action = resolveExecuteAction({
@@ -285,10 +285,10 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U18: QA packet gets qa persona instructions', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: ['Dev instruction'], model: 'opus' as const },
-      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: ['Review instruction'], model: 'sonnet' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: ['Dev instruction'], model: 'high' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'medium' as const },
+      qa: { description: 'qa', instructions: ['Review instruction'], model: 'medium' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -299,7 +299,7 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(action.ready_packets[0]!.persona).toBe('qa');
-    expect(action.ready_packets[0]!.model).toBe('sonnet');
+    expect(action.ready_packets[0]!.model).toBe('medium');
     expect(action.ready_packets[0]!.instructions).toEqual(['Review instruction']);
   });
 
@@ -309,15 +309,15 @@ describe('resolveExecuteAction', () => {
       packets: [makeDevPacket('dev-1')],
     }));
     expect(action.ready_packets[0]!.instructions).toEqual([]);
-    expect(action.ready_packets[0]!.model).toBe('opus');
+    expect(action.ready_packets[0]!.model).toBe('high');
   });
 
   it('EX-U20: model resolves from persona config', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
-      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: [], model: 'haiku' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: [], model: 'medium' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'medium' as const },
+      qa: { description: 'qa', instructions: [], model: 'low' as const },
     };
     const action = resolveExecuteAction({
       ...makeInput({
@@ -326,17 +326,17 @@ describe('resolveExecuteAction', () => {
       }),
       personas,
     });
-    expect(action.ready_packets[0]!.model).toBe('sonnet');
+    expect(action.ready_packets[0]!.model).toBe('medium');
   });
 
   it('EX-U21: packet-level model overrides persona model', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
-      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: [], model: 'medium' as const },
+      code_reviewer: { description: 'code_reviewer', instructions: [], model: 'medium' as const },
+      qa: { description: 'qa', instructions: [], model: 'medium' as const },
     };
-    const packet = { ...makeDevPacket('dev-1'), model: 'opus' as const };
+    const packet = { ...makeDevPacket('dev-1'), model: 'high' as const };
     const action = resolveExecuteAction({
       ...makeInput({
         feature: makeFeature({ packets: ['dev-1'] }),
@@ -344,7 +344,7 @@ describe('resolveExecuteAction', () => {
       }),
       personas,
     });
-    expect(action.ready_packets[0]!.model).toBe('opus');
+    expect(action.ready_packets[0]!.model).toBe('high');
   });
 
   it('EX-U22: model fallback chain — packet > persona > opus default', () => {
@@ -353,12 +353,12 @@ describe('resolveExecuteAction', () => {
       feature: makeFeature({ packets: ['dev-1'] }),
       packets: [makeDevPacket('dev-1')],
     }));
-    expect(a1.ready_packets[0]!.model).toBe('opus');
+    expect(a1.ready_packets[0]!.model).toBe('high');
 
     // Persona model set, no packet model -> persona model
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: [], model: 'haiku' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: [], model: 'low' as const },
       code_reviewer: { description: 'code_reviewer', instructions: [] },
       qa: { description: 'qa', instructions: [] },
     };
@@ -369,10 +369,10 @@ describe('resolveExecuteAction', () => {
       }),
       personas,
     });
-    expect(a2.ready_packets[0]!.model).toBe('haiku');
+    expect(a2.ready_packets[0]!.model).toBe('low');
 
     // Packet model set -> packet model wins
-    const packet = { ...makeDevPacket('dev-1'), model: 'sonnet' as const };
+    const packet = { ...makeDevPacket('dev-1'), model: 'medium' as const };
     const a3 = resolveExecuteAction({
       ...makeInput({
         feature: makeFeature({ packets: ['dev-1'] }),
@@ -380,7 +380,7 @@ describe('resolveExecuteAction', () => {
       }),
       personas,
     });
-    expect(a3.ready_packets[0]!.model).toBe('sonnet');
+    expect(a3.ready_packets[0]!.model).toBe('medium');
   });
 
   // -------------------------------------------------------------------------
@@ -466,10 +466,10 @@ describe('resolveExecuteAction', () => {
 
   it('EX-U28: code_reviewer gets branch info in instructions', () => {
     const personas = {
-      planner: { description: 'planner', instructions: [], model: 'opus' as const },
-      developer: { description: 'dev', instructions: [], model: 'opus' as const },
-      code_reviewer: { description: 'cr', instructions: ['Check invariants'], model: 'sonnet' as const },
-      qa: { description: 'qa', instructions: [], model: 'sonnet' as const },
+      planner: { description: 'planner', instructions: [], model: 'high' as const },
+      developer: { description: 'dev', instructions: [], model: 'high' as const },
+      code_reviewer: { description: 'cr', instructions: ['Check invariants'], model: 'medium' as const },
+      qa: { description: 'qa', instructions: [], model: 'medium' as const },
     };
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
@@ -485,7 +485,7 @@ describe('resolveExecuteAction', () => {
     });
     expect(action.ready_packets[0]!.persona).toBe('code_reviewer');
     expect(action.ready_packets[0]!.task).toBe('review');
-    expect(action.ready_packets[0]!.model).toBe('sonnet');
+    expect(action.ready_packets[0]!.model).toBe('medium');
     expect(action.ready_packets[0]!.instructions).toContain('Check invariants');
     expect(action.ready_packets[0]!.instructions).toContain('Review branch: feature/dev-1');
   });

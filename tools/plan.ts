@@ -193,7 +193,7 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
       planner_assignment: {
         intent_id: input.intent.id,
         persona: 'planner',
-        model: input.plannerPersona?.model ?? 'opus',
+        model: input.plannerPersona?.model ?? 'high',
         instructions: plannerInstructions,
         feature_path: `features/${input.intent.id}.json`,
         packets_dir: 'packets/',
