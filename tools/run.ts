@@ -25,7 +25,7 @@ import {
   loadConfig,
   resolveArtifactRoot,
 } from './config.js';
-import type { FactoryConfig, ModelTier, PipelineProvider } from './config.js';
+import type { FactoryConfig, ModelTier, PipelineProvider, PipelineProviderConfig } from './config.js';
 import { hydrateIntent, resolvePlanAction } from './plan.js';
 import type { RawIntentArtifact, IntentArtifact, PlannerAssignment } from './plan.js';
 import { resolveExecuteAction } from './execute.js';
@@ -76,10 +76,56 @@ interface InvokeResult {
   readonly stderr: string;
 }
 
+/**
+ * Resolve the concrete model ID for a given provider and tier.
+ * If the provider has a model_map, use it. Otherwise return undefined
+ * (the provider CLI will use its own default).
+ */
+function resolveModelId(providerConfig: PipelineProviderConfig, tier: ModelTier): string | undefined {
+  return providerConfig.model_map?.[tier];
+}
+
+/**
+ * Build CLI arguments for a provider invocation.
+ * Each provider has its own conventions for autonomous mode and model selection.
+ */
+function buildProviderArgs(provider: string, prompt: string, providerConfig: PipelineProviderConfig, modelId: string | undefined): { command: string; args: string[] } {
+  const command = providerConfig.command;
+  const args: string[] = [];
+
+  switch (provider) {
+    case 'claude':
+      args.push('--print', '--dangerously-skip-permissions');
+      if (modelId) args.push('--model', modelId);
+      args.push(prompt);
+      break;
+
+    case 'codex':
+      args.push('--quiet', '--full-auto');
+      if (modelId) args.push('--model', modelId);
+      args.push(prompt);
+      break;
+
+    case 'copilot':
+      args.push('-p', prompt, '--yolo', '--no-ask-user');
+      if (modelId) args.push('--model', modelId);
+      break;
+
+    default:
+      // Generic provider: pass prompt as positional, model via --model
+      if (modelId) args.push('--model', modelId);
+      args.push(prompt);
+      break;
+  }
+
+  return { command, args };
+}
+
 function invokeAgent(
   provider: PipelineProvider,
   prompt: string,
   config: FactoryConfig,
+  modelTier?: ModelTier,
 ): InvokeResult {
   const pipelineConfig = config.pipeline;
   if (pipelineConfig === undefined) {
@@ -87,20 +133,15 @@ function invokeAgent(
   }
 
   const providerConfig = pipelineConfig.providers[provider];
+  if (providerConfig === undefined) {
+    return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' not configured` };
+  }
   if (!providerConfig.enabled) {
     return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' is disabled` };
   }
 
-  const command = providerConfig.command;
-  const args: string[] = [];
-
-  if (provider === 'claude') {
-    args.push('--print', '--dangerously-skip-permissions');
-    args.push(prompt);
-  } else if (provider === 'codex') {
-    args.push('--quiet', '--full-auto');
-    args.push(prompt);
-  }
+  const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
+  const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
 
   const result = spawnSync(command, args, {
     cwd: findProjectRoot(),
@@ -171,9 +212,10 @@ function planPhase(
   }
 
   const provider = config.pipeline?.persona_providers.planner ?? 'claude';
-  fmt.log('plan', `Invoking ${provider} planner...`);
+  const plannerTier = config.personas.planner.model ?? 'high';
+  fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
-  const result = invokeAgent(provider, prompt, config);
+  const result = invokeAgent(provider, prompt, config, plannerTier);
   if (result.exit_code !== 0) {
     fmt.log('plan', fmt.error(`Planner failed (exit ${result.exit_code})`));
     if (result.stderr) fmt.log('plan', fmt.muted(result.stderr.slice(0, 500)));
@@ -273,8 +315,10 @@ function devPhase(
 
   const maxReviewIterations = config.pipeline?.max_review_iterations ?? 3;
   const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  const devTier: ModelTier = config.personas.developer.model ?? 'high';
   const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
   const reviewProvider = config.pipeline?.persona_providers.code_reviewer ?? 'claude';
+  const reviewTier: ModelTier = config.personas.code_reviewer.model ?? 'medium';
 
   for (const packet of sorted) {
     // Re-read packet from disk each iteration (previous agent may have changed it)
@@ -323,8 +367,8 @@ function devPhase(
             });
           } catch { /* already started is fine */ }
 
-          fmt.log('develop', `  Implementing via ${devProvider}...`);
-          const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config);
+          fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
+          const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
           if (devResult.exit_code !== 0) {
             fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
             ok = false;
@@ -357,8 +401,8 @@ function devPhase(
             break;
           }
 
-          fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider}...`);
-          const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config);
+          fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
+          const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
           if (reviewResult.exit_code !== 0) {
             fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
             ok = false;
@@ -389,8 +433,8 @@ function devPhase(
         }
 
         case 'rework': {
-          fmt.log('develop', `  Reworking via ${devProvider}...`);
-          const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config);
+          fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
+          const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config, devTier);
           if (reworkResult.exit_code !== 0) {
             fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
             ok = false;
@@ -448,6 +492,7 @@ function qaPhase(
   fmt.log('verify', `${qaPackets.length} QA packet(s) to process`);
 
   const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
+  const qaTier: ModelTier = config.personas.qa.model ?? 'medium';
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
 
   for (const packet of qaPackets) {
@@ -490,8 +535,8 @@ function qaPhase(
     // Invoke QA
     const qaPrompt = buildQaPrompt(packet, config);
 
-    fmt.log('verify', `  Verifying via ${qaProvider}...`);
-    const qaResult = invokeAgent(qaProvider, qaPrompt, config);
+    fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
+    const qaResult = invokeAgent(qaProvider, qaPrompt, config, qaTier);
     if (qaResult.exit_code !== 0) {
       fmt.log('verify', `  ${fmt.sym.fail} QA agent failed`);
       failed.push(packet.id);

@@ -121,6 +121,15 @@ Edit the template at your project root:
         "enabled": true,
         "command": "claude",
         "permission_mode": "bypassPermissions"
+      },
+      "copilot": {
+        "enabled": false,
+        "command": "gh copilot --",
+        "model_map": {
+          "high": "claude-opus-4-6",
+          "medium": "GPT-5.4",
+          "low": "claude-haiku-4-5"
+        }
       }
     },
     "persona_providers": {

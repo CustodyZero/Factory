@@ -33,11 +33,14 @@ export interface PersonasConfig {
   readonly qa: PersonaConfig;
 }
 
+export type ModelMap = { readonly [K in ModelTier]?: string };
+
 export interface PipelineProviderConfig {
   readonly enabled: boolean;
   readonly command: string;
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
+  readonly model_map?: ModelMap;
 }
 
 export interface OrchestratorRetryStep {
@@ -155,11 +158,17 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       qa: { ...defaultPersonas.qa, ...rawPersonas?.qa },
     };
 
-    const defaultPipeline: PipelineConfig = {
-      providers: {
-        codex: { enabled: true, command: 'codex', sandbox: 'workspace-write' },
-        claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
+    const defaultProviders: Record<string, PipelineProviderConfig> = {
+      codex: { enabled: true, command: 'codex', sandbox: 'workspace-write' },
+      claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
+      copilot: {
+        enabled: false,
+        command: 'gh copilot --',
+        model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: 'claude-haiku-4-5' },
       },
+    };
+    const defaultPipeline: PipelineConfig = {
+      providers: defaultProviders,
       persona_providers: {
         planner: 'claude',
         developer: 'codex',

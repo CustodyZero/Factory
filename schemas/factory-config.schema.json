@@ -55,9 +55,10 @@
           "type": "object",
           "properties": {
             "codex": { "$ref": "#/$defs/pipeline_provider" },
-            "claude": { "$ref": "#/$defs/pipeline_provider" }
+            "claude": { "$ref": "#/$defs/pipeline_provider" },
+            "copilot": { "$ref": "#/$defs/pipeline_provider" }
           },
-          "additionalProperties": false
+          "additionalProperties": { "$ref": "#/$defs/pipeline_provider" }
         },
         "persona_providers": {
           "type": "object",
@@ -127,7 +128,8 @@
         "enabled": { "type": "boolean" },
         "command": { "type": "string", "minLength": 1 },
         "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
-        "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] }
+        "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] },
+        "model_map": { "$ref": "#/$defs/model_map" }
       },
       "additionalProperties": false
     }
