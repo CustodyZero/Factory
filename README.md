@@ -5,27 +5,34 @@
 
 A change-control system for governed AI-assisted development.
 
-The factory enforces that all work is scoped, intentional, and accepted
-through a risk-proportional process before it is considered done.
+The factory enforces that all work is scoped, intentional, and verified
+through an automated pipeline before it is considered done.
 
 It is not a project management tool. It is a **governance artifact store**
-with deterministic derivation rules.
+with a single-command pipeline that plans, implements, reviews, and verifies.
 
 ---
 
 ## Why
 
 AI agents can implement code. They cannot judge whether a change is safe
-to ship. The factory separates implementation (which agents can do) from
-acceptance (which requires human authority for high-risk changes).
+to ship. The factory separates intent (which humans define) from execution
+(which agents perform autonomously).
 
 Every change must declare its intent and scope before implementation
-begins. Acceptance criteria are determined by change class, not by
-the implementer.
+begins. Verification (build, lint, test) gates every completion.
 
-The native factory flow is:
+The factory flow:
 
-`intent/spec -> planner -> feature + dev/qa packets -> human approval -> supervisor -> developer/code_reviewer/qa agents -> acceptance -> delivery`
+```
+intent/spec → run.ts → plan → develop (with code review) → QA verify → done
+```
+
+**Human gates:** exactly two.
+1. Approve the spec (write the markdown document)
+2. Approve the intent (create the intent artifact with constraints)
+
+Everything after `run.ts` is autonomous.
 
 ---
 
@@ -85,99 +92,87 @@ Edit `factory.config.json` at the project root:
     "planner": {
       "description": "Decomposes intent into feature and packet artifacts",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "developer": {
       "description": "Implements the change",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "code_reviewer": {
       "description": "Reviews code changes for correctness, design, and contract adherence",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     },
     "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     }
   },
-  "orchestrator": {
-    "enabled": true,
-    "identity": {
-      "kind": "agent",
-      "id": "orchestrator"
+  "pipeline": {
+    "providers": {
+      "codex": {
+        "enabled": true,
+        "command": "codex",
+        "sandbox": "workspace-write"
+      },
+      "claude": {
+        "enabled": true,
+        "command": "claude",
+        "permission_mode": "bypassPermissions"
+      },
+      "copilot": {
+        "enabled": false,
+        "command": "gh copilot --",
+        "model_map": {
+          "high": "claude-opus-4-6",
+          "medium": "GPT-5.4",
+          "low": "claude-haiku-4-5"
+        }
+      }
     },
-    "output_dir": "reports/orchestrator",
-    "recent_run_limit": 25,
-    "recent_attempt_limit": 50,
-    "completion_identities": {
-      "developer": "codex-dev",
-      "code_reviewer": "claude-cr",
-      "qa": "claude-qa"
-    },
-    "personas": {
+    "persona_providers": {
       "planner": "claude",
       "developer": "codex",
       "code_reviewer": "claude",
       "qa": "claude"
     },
-    "providers": {
-      "codex": {
-        "enabled": true,
-        "command": "codex",
-        "sandbox": "workspace-write",
-        "models": {
-          "opus": "gpt-5.4",
-          "sonnet": "gpt-5.4-mini",
-          "haiku": "gpt-5.4-mini"
-        }
-      },
-      "claude": {
-        "enabled": true,
-        "command": "claude",
-        "permission_mode": "bypassPermissions",
-        "models": {
-          "opus": "opus",
-          "sonnet": "sonnet",
-          "haiku": "haiku"
-        }
-      }
+    "completion_identities": {
+      "developer": "codex-dev",
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
-    "retries": {
-      "max_supervisor_ticks": 50,
-      "planner": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "developer": [
-        { "provider": "codex", "model": "sonnet" },
-        { "provider": "codex", "model": "opus" },
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" }
-      ],
-      "code_reviewer": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "qa": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ]
-    }
+    "max_review_iterations": 3
   }
 }
 ```
 
+### Model Tiers
+
+Personas declare a **model tier** — `high`, `medium`, or `low` — representing
+the desired capability level. These are provider-neutral. Each provider
+translates tiers to concrete model IDs via its `model_map`. If no `model_map`
+is configured, the provider's default model is used.
+
+### Providers
+
+The pipeline supports multiple agent CLI providers:
+
+| Provider | Command | Notes |
+|----------|---------|-------|
+| `claude` | `claude` | Anthropic Claude Code CLI |
+| `codex` | `codex` | OpenAI Codex CLI |
+| `copilot` | `gh copilot --` | GitHub Copilot CLI (multi-model via `model_map`) |
+
+Each persona is mapped to a provider in `pipeline.persona_providers`.
+Custom providers can be added — any CLI that accepts a prompt argument works.
+
 ---
 
-## Planner-Native Flow
+## Pipeline Flow
 
-Factory now has a first-class planning layer. The preferred flow is:
+The pipeline is the single entry point for all factory work:
 
 1. Human creates an intent/spec artifact in `intents/`
 2. Planner agent runs `tools/plan.ts <intent-id>`
@@ -189,17 +184,36 @@ The planner and supervisor are intentionally separate:
 - planner decomposes work into artifacts
 - supervisor executes authorized artifacts deterministically
 
-The native deterministic orchestrator sits beside those actors:
-- planner decides decomposition
-- supervisor decides legal execution
-- orchestrator invokes `codex` and `claude` through fixed shell contracts
+1. **Plan** — Planner agent decomposes the spec/intent into a feature with dev/qa packet pairs
+2. **Develop** — For each dev packet (in dependency order):
+   - Developer agent implements
+   - Code reviewer agent reviews (different identity)
+   - Feedback loop if changes requested (bounded by `max_review_iterations`)
+   - Completion recorded (build/lint/test verification)
+3. **Verify** — For each QA packet:
+   - QA agent verifies (different identity from dev)
+   - Completion recorded
+4. **Done** — Feature marked complete, summary printed
 
-`gemini` is intentionally not part of the native harness. Use it manually if needed.
+### Idempotency
+
+`run.ts` is idempotent. If the pipeline fails mid-execution, fix the issue
+and re-run the same command. The pipeline derives its resume point from
+artifact state on disk — completed packets are skipped, in-progress packets
+resume from their current lifecycle status.
+
+### Identity Separation
+
+- Developer and code reviewer use different identities
+- QA agent uses a different identity from the developer (FI-7)
+- Identities are configured in `pipeline.completion_identities`
+
+---
 
 ## Your First Change
 
 Factory has no `create` command — intent, feature, and packet artifacts are JSON
-files you write by hand (or have an AI agent write). The planner-native flow above
+files you write by hand (or have an AI agent write). The pipeline flow above
 is the preferred path. The walkthrough below shows the lower-level direct packet flow.
 
 ### 1. Create a dev packet
@@ -216,7 +230,6 @@ is the preferred path. The walkthrough below shows the lower-level direct packet
     "Response time is under 50ms",
     "Endpoint is included in API tests"
   ],
-  "change_class": "local",
   "scope": { "packages": ["api"] },
   "owner": "alice",
   "created_at": "2025-01-15T10:00:00Z",
@@ -240,7 +253,6 @@ is the preferred path. The walkthrough below shows the lower-level direct packet
     "All dev packet acceptance criteria verified",
     "No regressions in existing API tests"
   ],
-  "change_class": "local",
   "scope": { "packages": ["api"] },
   "owner": "alice",
   "created_at": "2025-01-15T10:00:00Z",
@@ -284,7 +296,6 @@ npx tsx .factory/tools/complete.ts add-health-endpoint-dev
 ```
 
 This runs build + lint + tests and writes `factory/completions/add-health-endpoint-dev.json`.
-Since the change class is `local`, it auto-accepts.
 
 ### 6. Run the QA packet
 
@@ -298,8 +309,6 @@ npx tsx .factory/tools/complete.ts add-health-endpoint-qa --identity claude-qa
 
 The `--identity` flag ensures the QA completion is attributed to a different
 identity than the dev completion (FI-7).
-If the QA packet declares `environment_dependencies`, matching evidence records
-must exist before completion.
 
 ### 7. Commit
 
@@ -320,7 +329,7 @@ For multi-packet work, wrap packets in a feature:
     "Health endpoint exists and is tested",
     "Monitoring dashboard updated"
   ],
-  "status": "approved",
+  "status": "planned",
   "packets": [
     "add-health-endpoint-dev",
     "add-health-endpoint-qa"
@@ -362,8 +371,7 @@ shapes, depending on how large the spec is.
 ```
 
 **Referenced spec** — for large, human-authored Markdown specs that already
-live in the repository (architectural specs with sections, tables, diagrams,
-phasing plans, alternatives, etc.):
+live in the repository:
 
 ```json
 // factory/intents/016-platform-targets.json
@@ -395,23 +403,17 @@ Rules for `spec_path`:
 - Validated at `validate.ts` time so a broken reference fails CI, not at
   plan time
 
-Then run the planner handoff resolver:
+Then run the pipeline:
 
 ```sh
-npx tsx .factory/tools/plan.ts customer-dashboard
+npx tsx .factory/tools/run.ts customer-dashboard
 ```
-
-`plan.ts` returns the planner persona, model, and instructions for generating:
-- one planned feature artifact
-- dev/qa packet pairs
-- dependencies and change classes
-- explicit acceptance criteria
 
 ---
 
 ## Artifact Types
 
-The factory has seven artifact types. Each is a JSON file validated against
+The factory has four artifact types. Each is a JSON file validated against
 a schema in `.factory/schemas/` (or `schemas/` when working in the factory
 repo itself).
 
@@ -431,7 +433,7 @@ intents/<intent-id>.json
 Required fields:
 - `id` — kebab-case identifier (must match filename)
 - `title` — one-line summary of the requested outcome
-- `spec` — planner input describing the desired system behavior or change
+- `spec` (or `spec_path`) — planner input describing the desired system behavior or change
 - `status` — `proposed`, `planned`, `superseded`, or `delivered`
 - `created_by` — who created the intent
 - `created_at` — ISO 8601 timestamp
@@ -464,7 +466,6 @@ Required fields:
 - `title` — one-line summary
 - `intent` — what is changing and why
 - `acceptance_criteria` — testable conditions for completeness
-- `change_class` — `trivial`, `local`, `cross_cutting`, or `architectural`
 - `scope.packages` — which packages are affected
 - `owner` — who is responsible
 - `created_at` — ISO 8601 timestamp
@@ -478,16 +479,14 @@ draft → ready → implementing → review_requested → changes_requested → 
 ```
 Review states (`review_requested`, `changes_requested`, `review_approved`) apply only to dev packets.
 QA packets follow: `draft → ready → implementing → completed`.
-Legacy packets with `null` status are grandfathered — their state is derived from `started_at` and completion records.
 
 Optional fields:
 - `started_at` — when work began (normally set by `tools/start.ts`)
-- `status` — lifecycle status (see above). `null` for legacy packets. Also accepts `abandoned` or `deferred`.
+- `status` — lifecycle status (see above)
 - `branch` — git branch name for code review (set by `request-review.ts`)
-- `review_iteration` — number of review round-trips completed (incremented on each re-request after `changes_requested`, default 0)
+- `review_iteration` — number of review round-trips completed (default 0)
 - `dependencies` — packet IDs that must be completed first
-- `environment_dependencies` — external dependencies requiring evidence
-- `model` — model tier override (`opus`, `sonnet`, `haiku`)
+- `model` — model tier override (`high`, `medium`, `low`)
 - `instructions` — additional agent instructions (merged with persona instructions)
 - `feature_id` — parent feature ID
 - `tags` — freeform labels
@@ -508,38 +507,9 @@ Required fields:
 - `summary` — what was done
 - `verification` — `{ tests_pass, build_pass, lint_pass, ci_pass }` (all booleans)
 
-### Acceptance
-
-Human approval that a completed packet is accepted. Created by `accept.ts`.
-
-```
-acceptances/<packet-id>.json
-```
-
-Required fields:
-- `packet_id` — must reference a packet with a valid completion
-- `accepted_at` — ISO 8601 timestamp
-- `accepted_by` — identity (must be `human`, `cli`, or `ui` — **never `agent`**)
-
-### Rejection
-
-Reverts an auto-accepted cross-cutting packet back to completed status.
-
-```
-rejections/<packet-id>.json
-```
-
-### Evidence
-
-Proof that an environment dependency has been satisfied.
-
-```
-evidence/<dependency-key>.json
-```
-
 ### Feature
 
-A high-level intent that decomposes into dev/qa packet pairs.
+A planned execution unit that decomposes into dev/qa packet pairs.
 
 ```
 features/<feature-id>.json
@@ -549,7 +519,7 @@ Required fields:
 - `id` — kebab-case identifier (must match filename)
 - `intent` — what the project should do when this feature is complete
 - `acceptance_criteria` — feature-level success conditions
-- `status` — `draft`, `planned`, `approved`, `executing`, `completed`, `delivered`
+- `status` — `planned`, `executing`, `completed`, `delivered`
 - `packets` — ordered list of packet IDs (dev and qa)
 - `created_by` — identity
 
@@ -557,68 +527,39 @@ Required fields:
 
 ## Lifecycle
 
+### Pipeline lifecycle (preferred)
+
 ```
-not_started → in_progress → completed → accepted
-                                ↑            |
-                                |  (rejection)|
-                                +-------------+
+Human writes intent → run.ts plans, develops, reviews, verifies → done
+```
+
+### Manual packet lifecycle
+
+```
+not_started → in_progress → completed
 ```
 
 A packet moves through states based on which artifacts exist:
 
-| State                | Condition                                         |
-|----------------------|---------------------------------------------------|
-| `not_started`        | No completion, `started_at` is null               |
-| `in_progress`        | No completion, `started_at` is set                |
-| `environment_pending`| Completion exists, but environment deps are unmet |
-| `completed`          | Completion exists, not yet accepted                |
-| `accepted`           | Acceptance criteria satisfied (see below)          |
-
----
-
-## Acceptance Rules
-
-Acceptance is **proportional to risk**.
-
-| Change Class    | Acceptance Path                                              |
-|-----------------|--------------------------------------------------------------|
-| `trivial`       | Auto-accepted when verification passes                       |
-| `local`         | Auto-accepted when verification passes                       |
-| `cross_cutting` | Auto-accepted with audit flag (human can reject)             |
-| `architectural` | Requires explicit human acceptance record                    |
+| State         | Condition                           |
+|---------------|-------------------------------------|
+| `not_started` | No completion, `started_at` is null |
+| `in_progress` | No completion, `started_at` is set  |
+| `completed`   | Completion record exists            |
 
 ---
 
 ## Factory Invariants
 
-### Artifact Integrity
-
 **FI-1 — One completion per packet.**
 
-**FI-2 — One acceptance per packet.**
-
-**FI-3 — No agent acceptance or rejection.**
-Only `human`, `cli`, or `ui` identities may author acceptance or rejection records.
-
-**FI-4 — No acceptance without completion.**
-
-### Acceptance Rules
-
-**FI-5 — Architectural packets cannot auto-accept.**
-Architectural dev packets require explicit human acceptance after their QA counterpart completes.
-
-### Execution Governance
-
-**FI-6 — No progression without completion.**
-If a started packet lacks a completion record, no newer packet may have a completion.
-Packets marked `abandoned` or `deferred` are exempt.
+**FI-4 — Completion requires verification.**
+Build, lint, and test must have been run before a completion is recorded.
 
 **FI-7 — Commit-time completion enforcement and identity separation.**
 A commit must not include implementation files while any started packet lacks
 a completion. Enforced by the pre-commit hook.
 A QA packet must not be completed by the same identity that completed its dev counterpart.
-
-### Structural Integrity
 
 **FI-8 — Every dev packet in a feature must have a QA counterpart.**
 For each dev packet in a feature, a QA packet with `verifies` pointing to that dev packet
@@ -626,10 +567,6 @@ must exist in the same feature. Abandoned/deferred packets are exempt.
 
 **FI-9 — No cyclic packet dependencies.**
 The dependency graph across all packets must be a DAG. Cycles cause permanent blocked state.
-
-**FI-10 — Feature status must reflect reality.**
-Features marked `completed` or `delivered` must have completion records for all
-active (non-abandoned, non-deferred) packets.
 
 ### Schema Invariants (enforced at schema and validation levels)
 
@@ -640,7 +577,7 @@ active (non-abandoned, non-deferred) packets.
 - Packet IDs must match filenames (kebab-case)
 - Feature `packets` must reference existing packet IDs
 - Identity objects must have `kind` and `id` fields
-- Orphaned completions, acceptances, and rejections are errors
+- Orphaned completions are errors
 
 ---
 
@@ -648,6 +585,16 @@ active (non-abandoned, non-deferred) packets.
 
 When installed as a submodule at `.factory/`, tool paths use `.factory/tools/...`.
 When working in the factory repo itself, use `tools/...` directly.
+
+### Run (Pipeline)
+
+```sh
+npx tsx .factory/tools/run.ts <intent-id>
+```
+
+Single-command pipeline. Plans the intent, executes dev packets with code review,
+runs QA verification, marks the feature complete. Idempotent — safe to re-run
+after failures.
 
 ### Status
 
@@ -697,8 +644,7 @@ npx tsx .factory/tools/complete.ts <packet-id> [--summary "..."]
 ```
 
 Runs verification (build, lint, test), then creates a completion record.
-Dev packets must be in `review_approved` status before completion (legacy `null`-status
-packets are grandfathered).
+Dev packets must be in `review_approved` status before completion.
 
 ### Execute
 
@@ -757,20 +703,13 @@ npx tsx .factory/tools/validate.ts
 
 Schema validation + referential integrity + invariant enforcement.
 
-### Derive
-
-```sh
-npx tsx .factory/tools/derive.ts              # print to stdout
-npx tsx .factory/tools/derive.ts --write      # write to derived-state.json
-```
-
 ---
 
 ## Features
 
 Feature lifecycle:
 ```
-draft → planned → approved → executing → completed → delivered
+planned → executing → completed → delivered
 ```
 
 Packet lifecycle:
@@ -780,8 +719,8 @@ QA packets:   draft → ready → implementing → completed
 ```
 
 Execution protocol:
-1. Run `npx tsx .factory/tools/execute.ts <feature-id>`
-2. Spawn agents for ready packets using the assigned persona (developer/code_reviewer/qa)
+1. Run `npx tsx .factory/tools/run.ts <intent-id>` (preferred — runs everything)
+2. Or manually: run `execute.ts <feature-id>` to get the work list
 3. Dev agent: `start.ts` → implement → `request-review.ts` → code_reviewer runs `review.ts --approve` → `complete.ts`
 4. QA agent: `start.ts` → verify → `complete.ts`
 5. Re-run execute
@@ -848,33 +787,30 @@ When installed in a host project as a git submodule:
 │   ├── schemas/             # JSON schemas for all artifact types
 │   ├── tools/               # Factory tooling
 │   │   ├── config.ts        # Configuration loader
+│   │   ├── run.ts           # Pipeline entry point
 │   │   ├── validate.ts      # Schema + integrity validation
 │   │   ├── status.ts        # Status & next action
 │   │   ├── plan.ts          # Planner handoff resolver
 │   │   ├── execute.ts       # Feature execution resolver
-│   │   ├── orchestrate.ts   # Deterministic Codex/Claude shell harness
 │   │   ├── start.ts         # Packet claim command
 │   │   ├── complete.ts      # Completion record generator
+│   │   ├── request-review.ts # Code review request
+│   │   ├── review.ts        # Code review decision
 │   │   ├── completion-gate.ts # Pre-commit FI-7 enforcement
-│   │   ├── derive.ts        # State derivation
-│   │   ├── migrate.ts       # Schema migration for existing artifacts
+│   │   ├── output.ts        # Terminal output formatting
 │   │   └── test/            # Tooling tests
 │   ├── hooks/               # Git hooks
-│   │   └── pre-commit       # Build + lint + gate + validate
+│   │   └── pre-commit       # Completion gate + validate
 │   ├── templates/           # Setup templates
-│   ├── setup.sh             # Installation script
+│   ├── setup.sh             # Installation script (Linux/macOS)
+│   ├── setup.ps1            # Installation script (Windows)
 │   └── docs/
 │       └── integration.md   # Detailed integration guide
 ├── factory/                 # Factory artifacts (visible, one directory)
 │   ├── intents/             # Planner input specs
 │   ├── features/            # Planned execution units
 │   ├── packets/             # Work unit declarations
-│   ├── completions/         # Implementation evidence
-│   ├── acceptances/         # Human approval records
-│   ├── rejections/          # Audit reversals
-│   ├── evidence/            # Environment dependency proofs
-│   ├── reports/             # Orchestrator output capture
-│   └── supervisor/          # Supervisor state, orchestrator cache, and memory
+│   └── completions/         # Implementation evidence
 └── src/                     # Host project source (any language)
 ```
 
@@ -897,7 +833,7 @@ git submodule add https://github.com/custodyzero/factory.git .factory
 The setup script:
 1. Installs factory dependencies (isolated in `.factory/node_modules/`)
 2. Copies template `factory.config.json`, `CLAUDE.md`, and `AGENTS.md` to your project root (no-clobber)
-3. Creates `factory/` directory with artifact subdirectories and supervisor files
+3. Creates `factory/` directory with artifact subdirectories
 4. Configures `git config core.hooksPath .factory/hooks`
 
 See [`docs/integration.md`](docs/integration.md) for detailed integration guide.

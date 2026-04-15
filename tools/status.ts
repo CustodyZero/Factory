@@ -3,9 +3,7 @@
  * Factory — Status & Next Action
  *
  * Reconstructs workflow state from factory artifacts on disk.
- * Designed for session reconstruction: when context is lost (new session,
- * context compaction), this command tells the agent or operator exactly
- * where things stand and what to do next.
+ * Tells the agent or operator where things stand and what to do next.
  *
  * Usage:
  *   npx tsx tools/status.ts                  # human-readable report
@@ -25,18 +23,14 @@ import * as fmt from './output.js';
 export type PacketLifecycleStatus =
   | 'not_started'
   | 'in_progress'
-  | 'completed'
-  | 'accepted'
-  | 'environment_pending';
+  | 'completed';
 
 export interface PacketSummary {
   readonly id: string;
   readonly title: string;
-  readonly change_class: string;
+  readonly kind: string;
   readonly status: PacketLifecycleStatus;
   readonly has_completion: boolean;
-  readonly has_acceptance: boolean;
-  readonly audit_pending: boolean;
   readonly dependencies: ReadonlyArray<string>;
   readonly unmet_dependencies: ReadonlyArray<string>;
   readonly started_at: string | null;
@@ -51,16 +45,13 @@ export interface IntentSummary {
 
 export type NextActionKind =
   | 'plan_intent'
-  | 'review_plan'
-  | 'complete_packet'
-  | 'accept_packet'
-  | 'resolve_dependency'
+  | 'run_feature'
   | 'no_active_work'
   | 'all_clear';
 
 export interface NextAction {
   readonly kind: NextActionKind;
-  readonly packet_id: string | null;
+  readonly target_id: string | null;
   readonly message: string;
   readonly command: string | null;
 }
@@ -68,18 +59,14 @@ export interface NextAction {
 export interface FactoryStatus {
   readonly feature_filter: string | null;
   readonly intents_pending_planning: ReadonlyArray<IntentSummary>;
-  readonly features_awaiting_approval: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null }>;
+  readonly features_in_progress: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null; readonly status: string }>;
   readonly summary: {
     readonly total: number;
-    readonly accepted: number;
     readonly completed: number;
     readonly in_progress: number;
     readonly not_started: number;
-    readonly audit_pending: number;
   };
   readonly incomplete: ReadonlyArray<PacketSummary>;
-  readonly awaiting_acceptance: ReadonlyArray<PacketSummary>;
-  readonly audit_pending: ReadonlyArray<PacketSummary>;
   readonly blocked: ReadonlyArray<PacketSummary>;
   readonly next_action: NextAction;
 }
@@ -91,39 +78,25 @@ export interface FactoryStatus {
 interface RawPacket {
   readonly id: string;
   readonly title: string;
-  readonly change_class: string;
+  readonly kind?: string;
+  readonly change_class?: string;
   readonly started_at?: string | null;
   readonly status?: string | null;
   readonly dependencies?: ReadonlyArray<string>;
-  readonly environment_dependencies?: ReadonlyArray<string>;
 }
 
 interface RawCompletion {
-  readonly packet_id: string;
-  readonly verification: {
-    readonly tests_pass: boolean;
-    readonly build_pass: boolean;
-    readonly lint_pass: boolean;
-    readonly ci_pass: boolean;
-  };
-}
-
-interface RawAcceptance {
   readonly packet_id: string;
 }
 
 function readJsonDir<T>(artifactRoot: string, subdir: string): T[] {
   const dir = join(artifactRoot, subdir);
   if (!existsSync(dir)) return [];
-
   return readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
     .map((f) => {
-      try {
-        return JSON.parse(readFileSync(join(dir, f), 'utf-8')) as T;
-      } catch {
-        return null;
-      }
+      try { return JSON.parse(readFileSync(join(dir, f), 'utf-8')) as T; }
+      catch { return null; }
     })
     .filter((x): x is T => x !== null);
 }
@@ -147,68 +120,28 @@ export interface RawIntent {
   readonly feature_id?: string | null;
 }
 
-function featureRequiresSeparateApproval(
-  feature: { readonly status: string; readonly intent_id?: string | null },
-  intentById: ReadonlyMap<string, RawIntent>,
-): boolean {
-  if (feature.status !== 'planned') {
-    return false;
-  }
-  if (typeof feature.intent_id !== 'string') {
-    return true;
-  }
-  return intentById.get(feature.intent_id)?.status !== 'approved';
-}
-
 export interface StatusInput {
   readonly packets: ReadonlyArray<RawPacket>;
   readonly completions: ReadonlyArray<RawCompletion>;
-  readonly acceptances: ReadonlyArray<RawAcceptance>;
   readonly featureFilter?: string | undefined;
   readonly features?: ReadonlyArray<RawFeature> | undefined;
   readonly intents?: ReadonlyArray<RawIntent> | undefined;
   readonly commands?: {
-    readonly complete?: (packetId: string) => string;
+    readonly run?: (featureId: string) => string;
     readonly plan?: (intentId: string) => string;
   } | undefined;
 }
 
-function verificationPasses(v: RawCompletion['verification']): boolean {
-  return v.tests_pass && v.build_pass && v.lint_pass && v.ci_pass;
-}
-
 function derivePacketLifecycle(
   packet: RawPacket,
-  completionMap: ReadonlyMap<string, RawCompletion>,
-  acceptanceIds: ReadonlySet<string>,
+  completionIds: ReadonlySet<string>,
 ): PacketLifecycleStatus {
-  const completion = completionMap.get(packet.id);
-  const hasAcceptance = acceptanceIds.has(packet.id);
-
-  if (completion === undefined) {
-    return packet.started_at != null ? 'in_progress' : 'not_started';
-  }
-
-  if (hasAcceptance) return 'accepted';
-
-  const cc = packet.change_class;
-  if ((cc === 'trivial' || cc === 'local' || cc === 'cross_cutting') && verificationPasses(completion.verification)) {
-    return 'accepted';
-  }
-
-  return 'completed';
+  if (completionIds.has(packet.id)) return 'completed';
+  return packet.started_at != null ? 'in_progress' : 'not_started';
 }
 
 export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
-  const completionMap = new Map<string, RawCompletion>();
-  for (const c of input.completions) {
-    completionMap.set(c.packet_id, c);
-  }
-
-  const acceptanceIds = new Set<string>();
-  for (const a of input.acceptances) {
-    acceptanceIds.add(a.packet_id);
-  }
+  const completionIds = new Set(input.completions.map((c) => c.packet_id));
 
   let filteredPackets = input.packets;
   let featureFilter: string | null = null;
@@ -221,44 +154,22 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
     }
   }
 
+  const completedIds = new Set<string>();
   const allPackets: PacketSummary[] = [];
-  const acceptedIds = new Set<string>();
 
   for (const packet of filteredPackets) {
-    const status = derivePacketLifecycle(packet, completionMap, acceptanceIds);
-    const hasCompletion = completionMap.has(packet.id);
-    const hasAcceptance = acceptanceIds.has(packet.id);
-
-    const auditPending = status === 'accepted' &&
-      packet.change_class === 'cross_cutting' &&
-      !hasAcceptance;
-
+    const status = derivePacketLifecycle(packet, completionIds);
     const deps = packet.dependencies ?? [];
-    const unmetDeps: string[] = [];
-    for (const dep of deps) {
-      if (!acceptedIds.has(dep)) {
-        const depPacket = input.packets.find((p) => p.id === dep);
-        if (depPacket !== undefined) {
-          const depStatus = derivePacketLifecycle(depPacket, completionMap, acceptanceIds);
-          if (depStatus !== 'accepted') {
-            unmetDeps.push(dep);
-          }
-        }
-      }
-    }
+    const unmetDeps = deps.filter((dep) => !completionIds.has(dep));
 
-    if (status === 'accepted') {
-      acceptedIds.add(packet.id);
-    }
+    if (status === 'completed') completedIds.add(packet.id);
 
     allPackets.push({
       id: packet.id,
       title: packet.title,
-      change_class: packet.change_class,
+      kind: packet.kind ?? 'dev',
       status,
-      has_completion: hasCompletion,
-      has_acceptance: hasAcceptance,
-      audit_pending: auditPending,
+      has_completion: completionIds.has(packet.id),
       dependencies: deps,
       unmet_dependencies: unmetDeps,
       started_at: packet.started_at ?? null,
@@ -266,19 +177,13 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
   }
 
   const incomplete = allPackets.filter((p) => p.status === 'in_progress');
-  const awaitingAcceptance = allPackets.filter((p) =>
-    p.status === 'completed' && p.change_class === 'architectural' && !p.has_acceptance,
-  );
-  const auditPending = allPackets.filter((p) => p.audit_pending);
-  const blocked = allPackets.filter((p) => p.unmet_dependencies.length > 0 && p.status !== 'accepted');
+  const blocked = allPackets.filter((p) => p.unmet_dependencies.length > 0 && p.status !== 'completed');
 
   const summary = {
     total: allPackets.length,
-    accepted: allPackets.filter((p) => p.status === 'accepted').length,
     completed: allPackets.filter((p) => p.status === 'completed').length,
     in_progress: incomplete.length,
     not_started: allPackets.filter((p) => p.status === 'not_started').length,
-    audit_pending: auditPending.length,
   };
 
   const intentsPendingPlanning = (input.intents ?? [])
@@ -287,38 +192,26 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
       (typeof intent.feature_id !== 'string' || intent.feature_id.length === 0)
     )
     .map((intent) => ({
-      id: intent.id,
-      title: intent.title,
-      status: intent.status,
+      id: intent.id, title: intent.title, status: intent.status,
       feature_id: typeof intent.feature_id === 'string' ? intent.feature_id : null,
     }));
 
-  const intentById = new Map((input.intents ?? []).map((intent) => [intent.id, intent]));
-
-  const featuresAwaitingApproval = (input.features ?? [])
-    .filter((feature) => featureRequiresSeparateApproval(feature, intentById))
-    .map((feature) => ({
-      id: feature.id,
-      intent_id: typeof feature.intent_id === 'string' ? feature.intent_id : null,
+  const featuresInProgress = (input.features ?? [])
+    .filter((f) => f.status === 'planned' || f.status === 'executing')
+    .map((f) => ({
+      id: f.id,
+      intent_id: typeof f.intent_id === 'string' ? f.intent_id : null,
+      status: f.status,
     }));
 
-  const nextAction = deriveNextAction(
-    incomplete,
-    awaitingAcceptance,
-    blocked,
-    featuresAwaitingApproval,
-    intentsPendingPlanning,
-    input.commands,
-  );
+  const nextAction = deriveNextAction(incomplete, blocked, featuresInProgress, intentsPendingPlanning, input.commands);
 
   return {
     feature_filter: featureFilter,
     intents_pending_planning: intentsPendingPlanning,
-    features_awaiting_approval: featuresAwaitingApproval,
+    features_in_progress: featuresInProgress,
     summary,
     incomplete,
-    awaiting_acceptance: awaitingAcceptance,
-    audit_pending: auditPending,
     blocked,
     next_action: nextAction,
   };
@@ -326,55 +219,27 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
 
 function deriveNextAction(
   incomplete: ReadonlyArray<PacketSummary>,
-  awaitingAcceptance: ReadonlyArray<PacketSummary>,
   blocked: ReadonlyArray<PacketSummary>,
-  featuresAwaitingApproval: ReadonlyArray<{ readonly id: string; readonly intent_id: string | null }>,
+  featuresInProgress: ReadonlyArray<{ readonly id: string }>,
   intentsPendingPlanning: ReadonlyArray<IntentSummary>,
-  commands?: {
-    readonly complete?: (packetId: string) => string;
-    readonly plan?: (intentId: string) => string;
-  },
+  commands?: { readonly run?: (featureId: string) => string; readonly plan?: (intentId: string) => string },
 ): NextAction {
+  if (featuresInProgress.length > 0) {
+    const feature = featuresInProgress[0]!;
+    return {
+      kind: 'run_feature',
+      target_id: feature.id,
+      message: `Feature '${feature.id}' is in progress. Run the pipeline to continue.`,
+      command: commands?.run?.(feature.id) ?? `npx tsx tools/run.ts ${feature.id}`,
+    };
+  }
+
   if (incomplete.length > 0) {
-    const sorted = [...incomplete].sort((a, b) =>
-      (a.started_at ?? '').localeCompare(b.started_at ?? ''),
-    );
-    const first = sorted[0]!;
+    const first = incomplete[0]!;
     return {
-      kind: 'complete_packet',
-      packet_id: first.id,
-      message: `Packet '${first.id}' is in-progress but has no completion record. Create the completion before proceeding.`,
-      command: commands?.complete?.(first.id) ?? `npx tsx tools/complete.ts ${first.id}`,
-    };
-  }
-
-  if (blocked.length > 0) {
-    const first = blocked[0]!;
-    const dep = first.unmet_dependencies[0]!;
-    return {
-      kind: 'resolve_dependency',
-      packet_id: first.id,
-      message: `Packet '${first.id}' is blocked by unmet dependency '${dep}'. Resolve the dependency first.`,
-      command: null,
-    };
-  }
-
-  if (awaitingAcceptance.length > 0) {
-    const first = awaitingAcceptance[0]!;
-    return {
-      kind: 'accept_packet',
-      packet_id: first.id,
-      message: `Packet '${first.id}' (${first.change_class}) is completed and requires human acceptance.`,
-      command: null,
-    };
-  }
-
-  if (featuresAwaitingApproval.length > 0) {
-    const first = featuresAwaitingApproval[0]!;
-    return {
-      kind: 'review_plan',
-      packet_id: null,
-      message: `Feature '${first.id}' is planned and requires direct human approval before execution.`,
+      kind: 'run_feature',
+      target_id: first.id,
+      message: `Packet '${first.id}' is in-progress but has no completion record.`,
       command: null,
     };
   }
@@ -383,18 +248,25 @@ function deriveNextAction(
     const first = intentsPendingPlanning[0]!;
     return {
       kind: 'plan_intent',
-      packet_id: null,
-      message: first.status === 'approved'
-        ? `Intent '${first.id}' is approved and ready for planner decomposition. Derived planned features will inherit execution authority.`
-        : `Intent '${first.id}' is proposed and ready for planner decomposition.`,
-      command: commands?.plan?.(first.id) ?? `npx tsx tools/plan.ts ${first.id}`,
+      target_id: first.id,
+      message: `Intent '${first.id}' is ready for pipeline execution.`,
+      command: commands?.plan?.(first.id) ?? `npx tsx tools/run.ts ${first.id}`,
+    };
+  }
+
+  if (blocked.length > 0) {
+    return {
+      kind: 'no_active_work',
+      target_id: null,
+      message: `${String(blocked.length)} packet(s) blocked by unmet dependencies.`,
+      command: null,
     };
   }
 
   return {
     kind: 'all_clear',
-    packet_id: null,
-    message: 'All packets are accepted. No active work. Ready for next packet.',
+    target_id: null,
+    message: 'All packets complete. No active work.',
     command: null,
   };
 }
@@ -406,48 +278,28 @@ function deriveNextAction(
 function renderStatus(status: FactoryStatus, projectName: string): string {
   const lines: string[] = [];
   const detail = status.feature_filter !== null
-    ? `[${projectName}] \u2014 Feature: ${status.feature_filter}`
+    ? `[${projectName}] — Feature: ${status.feature_filter}`
     : `[${projectName}]`;
 
   lines.push(fmt.header('STATUS', detail));
   lines.push('');
-
   lines.push(`  ${fmt.bold('Summary:')}`);
-  lines.push(`    Total packets:      ${String(status.summary.total)}`);
-  lines.push(`    Accepted:           ${fmt.success(String(status.summary.accepted))}`);
-  lines.push(`    Completed:          ${fmt.success(String(status.summary.completed))}`);
-  lines.push(`    In-progress:        ${fmt.info(String(status.summary.in_progress))}`);
-  lines.push(`    Not started:        ${fmt.muted(String(status.summary.not_started))}`);
-  lines.push(`    Audit pending:      ${String(status.summary.audit_pending)}`);
+  lines.push(`    Total packets:  ${String(status.summary.total)}`);
+  lines.push(`    Completed:      ${fmt.success(String(status.summary.completed))}`);
+  lines.push(`    In-progress:    ${fmt.info(String(status.summary.in_progress))}`);
+  lines.push(`    Not started:    ${fmt.muted(String(status.summary.not_started))}`);
   lines.push('');
 
   if (status.incomplete.length > 0) {
-    lines.push(`  ${fmt.sym.warn} ${fmt.warn('Incomplete packets (started, no completion):')}`);
+    lines.push(`  ${fmt.sym.warn} ${fmt.warn('In progress:')}`);
     for (const p of status.incomplete) {
-      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
-      lines.push(`      "${p.title}"`);
-    }
-    lines.push('');
-  }
-
-  if (status.awaiting_acceptance.length > 0) {
-    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Awaiting human acceptance:')}`);
-    for (const p of status.awaiting_acceptance) {
-      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
-    }
-    lines.push('');
-  }
-
-  if (status.features_awaiting_approval.length > 0) {
-    lines.push(`  ${fmt.sym.pending} ${fmt.warn('Planned features awaiting direct human approval:')}`);
-    for (const feature of status.features_awaiting_approval) {
-      lines.push(`    - ${fmt.bold(feature.id)}${feature.intent_id !== null ? ` ${fmt.muted(`(intent: ${feature.intent_id})`)}` : ''}`);
+      lines.push(`    - ${fmt.bold(p.id)} (${p.kind}) "${p.title}"`);
     }
     lines.push('');
   }
 
   if (status.intents_pending_planning.length > 0) {
-    lines.push(`  ${fmt.sym.plan} ${fmt.info('Intent specs awaiting planner decomposition:')}`);
+    lines.push(`  ${fmt.sym.plan} ${fmt.info('Intents ready for pipeline:')}`);
     for (const intent of status.intents_pending_planning) {
       lines.push(`    - ${fmt.bold(intent.id)}`);
       lines.push(`      "${intent.title}" ${fmt.muted(`(${intent.status})`)}`);
@@ -455,16 +307,8 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
     lines.push('');
   }
 
-  if (status.audit_pending.length > 0) {
-    lines.push(`  ${fmt.sym.audit} ${fmt.bold('Audit pending (accepted, review recommended):')}`);
-    for (const p of status.audit_pending) {
-      lines.push(`    - ${fmt.bold(p.id)} ${fmt.muted(`(${p.change_class})`)}`);
-    }
-    lines.push('');
-  }
-
   if (status.blocked.length > 0) {
-    lines.push(`  ${fmt.sym.blocked} ${fmt.error('Blocked by unmet dependencies:')}`);
+    lines.push(`  ${fmt.sym.blocked} ${fmt.error('Blocked:')}`);
     for (const p of status.blocked) {
       lines.push(`    - ${fmt.bold(p.id)} ${fmt.sym.arrow} needs: ${p.unmet_dependencies.join(', ')}`);
     }
@@ -493,7 +337,6 @@ function main(): void {
 
   const packets = readJsonDir<RawPacket>(artifactRoot, 'packets');
   const completions = readJsonDir<RawCompletion>(artifactRoot, 'completions');
-  const acceptances = readJsonDir<RawAcceptance>(artifactRoot, 'acceptances');
   const features = readJsonDir<RawFeature>(artifactRoot, 'features');
   const intents = readJsonDir<RawIntent>(artifactRoot, 'intents');
 
@@ -501,67 +344,21 @@ function main(): void {
   const featureFilter = featureIdx !== -1 ? process.argv[featureIdx + 1] : undefined;
 
   const status = deriveFactoryStatus({
-    packets,
-    completions,
-    acceptances,
-    featureFilter,
-    features,
-    intents,
+    packets, completions, featureFilter, features, intents,
     commands: {
-      complete: (packetId) => buildToolCommand('complete.ts', [packetId], undefined, config),
-      plan: (intentId) => buildToolCommand('plan.ts', [intentId], undefined, config),
+      run: (featureId) => buildToolCommand('run.ts', [featureId], undefined, config),
+      plan: (intentId) => buildToolCommand('run.ts', [intentId], undefined, config),
     },
   });
 
-  // Read supervisor state if present
-  const supervisorStatePath = join(artifactRoot, 'supervisor', 'state.json');
-  let supervisorSummary: { enabled: boolean; tracked_features: number; pending_escalations: number; phases: Record<string, number> } | null = null;
-  if (existsSync(supervisorStatePath)) {
-    try {
-      const rawState = JSON.parse(readFileSync(supervisorStatePath, 'utf-8')) as Record<string, unknown>;
-      const feats = rawState['features'] as Record<string, Record<string, unknown>> | undefined;
-      const escalations = rawState['pending_escalations'] as Array<Record<string, unknown>> | undefined;
-      const phases: Record<string, number> = {};
-      if (feats !== undefined) {
-        for (const ft of Object.values(feats)) {
-          const phase = typeof ft['phase'] === 'string' ? ft['phase'] : 'unknown';
-          phases[phase] = (phases[phase] ?? 0) + 1;
-        }
-      }
-      const unresolvedEscalations = (escalations ?? []).filter((e) => e['resolved'] !== true).length;
-      supervisorSummary = {
-        enabled: true,
-        tracked_features: feats !== undefined ? Object.keys(feats).length : 0,
-        pending_escalations: unresolvedEscalations,
-        phases,
-      };
-    } catch {
-      // Ignore parse errors — validate.ts will catch them
-    }
-  }
-
   if (process.argv.includes('--json')) {
-    const output = supervisorSummary !== null ? { ...status, supervisor: supervisorSummary } : status;
-    process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(status, null, 2) + '\n');
   } else {
-    let rendered = renderStatus(status, config.project_name);
-    if (supervisorSummary !== null) {
-      const lines: string[] = [];
-      lines.push('');
-      lines.push('  Supervisor:');
-      lines.push(`    Tracked features: ${String(supervisorSummary.tracked_features)}`);
-      lines.push(`    Pending escalations: ${String(supervisorSummary.pending_escalations)}`);
-      if (Object.keys(supervisorSummary.phases).length > 0) {
-        lines.push(`    Phases: ${Object.entries(supervisorSummary.phases).map(([p, c]) => `${p}(${String(c)})`).join(' ')}`);
-      }
-      rendered += lines.join('\n') + '\n';
-    }
-    process.stdout.write(rendered);
+    process.stdout.write(renderStatus(status, config.project_name));
   }
 }
 
-const isDirectExecution = process.argv[1]?.endsWith('status.ts') ||
-  process.argv[1]?.endsWith('status.js');
+const isDirectExecution = process.argv[1]?.endsWith('status.ts') || process.argv[1]?.endsWith('status.js');
 if (isDirectExecution) {
   main();
 }

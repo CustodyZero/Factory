@@ -2,90 +2,42 @@
 
 This file defines how all contributors — AI agents and humans — must operate
 in this repository. It is the complete operational reference for the factory
-workflow. AI agents must follow it as hard constraints; humans should treat
-it as the authoritative process guide.
-
-It applies to all agents regardless of provider (Claude, GPT, Gemini, Copilot, Cursor, etc.).
+pipeline. AI agents must follow it as hard constraints; humans should treat
+it as the authoritative process reference.
 
 ---
 
 ## 1. The Factory Controls All Work
 
-This repository uses a factory system to govern all implementation work.
-The factory is the source of truth for what work exists, what is in progress, and what is complete.
+No code changes happen outside the factory's packet system. Every implementation
+must trace back to a packet. Every packet must trace back to a feature. Every
+feature must trace back to an intent that a human approved.
 
-**You must not implement code without using the factory.**
+**Session reconstruction:** run `npx tsx tools/status.ts` at the start of every
+session. It tells you where things stand and what to do next.
 
-### Before Starting Any Work
-
-```sh
-npx tsx tools/status.ts
-```
-
-This tells you:
-- What packets are in progress
-- What is blocked
-- What needs completion
-- What the next legal action is
-
-**If a feature is active:**
-```sh
-npx tsx tools/execute.ts <feature-id>
-```
-
-This tells you which packets are ready to implement **and which persona to use**.
-Before touching implementation, explicitly claim the packet:
-```sh
-npx tsx tools/start.ts <packet-id>
-```
-
-### After Implementation — Code Review (Dev Packets Only)
-
-Dev packets must pass code review before completion. QA packets skip this step.
-
-```sh
-npx tsx tools/request-review.ts <packet-id>                  # Developer signals code is ready for review
-npx tsx tools/review.ts <packet-id> --approve                # Code reviewer approves
-npx tsx tools/review.ts <packet-id> --request-changes        # Code reviewer requests changes
-```
-
-The developer ↔ code review loop repeats until the reviewer approves:
-```
-implementing → review_requested → [changes_requested → implementing → review_requested →]* review_approved → completed
-```
-
-The `branch` field on the packet identifies the git branch under review.
-The `review_iteration` field tracks the number of review round-trips (incremented on each
-re-request after `changes_requested`). Review feedback lives in git (branch diffs, git notes)
-— not in factory artifacts.
-
-### After Code Review (or for QA Packets)
-
-```sh
-npx tsx tools/complete.ts <packet-id>                        # dev packets (uses default identity)
-npx tsx tools/complete.ts <packet-id> --identity claude-qa   # QA packets (distinct identity)
-```
-
-This runs build + lint + tests and creates a completion record.
-**Do this before committing. Completion is the deliverable, not the packet.**
-**Dev packets must be in `review_approved` status before complete.ts will accept them.**
-
-**QA agents must use `--identity` to distinguish themselves from the developer agent.**
-FI-7 requires that the QA completion identity differs from the dev completion identity.
-If both use the default, validation will reject the QA completion.
-
-The pre-commit hook will reject commits that include implementation files
-without a matching completion record.
-
----
-
-## 2. Factory Lifecycle
+## 2. Pipeline Lifecycle
 
 ```
-Intent/Spec → Planner → Feature + Dev/QA Packets → Human Approval → Supervisor → Execution → Delivery
+Intent (human writes spec + constraints)
+  |
+  v
+run.ts <intent-id>      <-- single command, runs to completion
+  |-- Plan: planner decomposes spec into feature + dev/qa packet pairs
+  |-- Develop: for each dev packet
+  |     |-- Developer agent implements
+  |     |-- Code reviewer agent reviews (different identity)
+  |     |-- Feedback loop if needed (bounded by max_review_iterations)
+  |     |-- Completion recorded (build/lint/test verification)
+  |-- Verify: for each QA packet
+  |     |-- QA agent verifies (different identity from dev)
+  |     |-- Completion recorded
+  |-- Done: feature marked complete, summary printed
 ```
 
-### Dev/QA Packet Pairs
+**Human gates:** exactly two.
+1. Approve the spec (write the markdown document)
+2. Approve the intent (create the intent artifact with constraints)
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
@@ -190,90 +142,75 @@ artifacts are never written inside the submodule.
 
 ## 3. Non-Negotiable Rules
 
-### 3.1 No Implementation Without a Packet
+3.1. **No implementation without a packet.** If there is no packet artifact,
+     there is no authority to change code. Create the packet first.
 
-Every code change must be associated with a factory packet.
-Do not write code and then create the packet after the fact.
+3.2. **No commit without a completion.** The pre-commit hook enforces this.
+     Run `complete.ts` after implementation; it records build/lint/test results.
 
-### 3.2 No Commit Without Completion
+3.3. **No facades.** No stubbed success paths, no TODOs that return success,
+     no silent fallbacks. If something is not done, it must fail explicitly.
 
-Run `npx tsx tools/complete.ts <packet-id>` before committing.
-The pre-commit hook enforces this. If it blocks you, create the completion first.
+3.4. **Single intent per change.** Don't mix refactoring with features,
+     cleanup with behavior changes, or infrastructure with implementation.
 
-### 3.3 No Facades
+3.5. **Tests required for non-trivial changes.**
 
-Do not introduce code that makes the system appear correct when it is not.
-No stubbed success paths, no TODO implementations that return success,
-no silent fallbacks that mask failure.
+3.6. **Reviewer must differ from implementer (FI-7).** QA packet completion
+     identity must be different from the dev packet completion identity.
 
-If something is not implemented, it must fail explicitly.
+3.7. **Every dev packet needs a QA counterpart (FI-8).**
 
-### 3.4 Single Intent Per Change
+## 4. Artifact Types
 
-One packet = one intent. Do not mix:
-- Refactor + feature
-- Cleanup + behavior change
-- Dependency update + logic change
+All artifacts live under the `artifact_dir` (configured in factory.config.json,
+typically `factory/`).
 
-### 3.5 Tests Are Required
+| Directory | What | Created by |
+|-----------|------|------------|
+| `intents/` | High-level specs with constraints | Human |
+| `features/` | Planned execution units (packet lists) | Planner agent |
+| `packets/` | Individual dev/qa work units | Planner agent |
+| `completions/` | Verification evidence (build/lint/test) | `complete.ts` |
 
-Non-trivial changes must include tests. A successful build is not evidence of correctness.
-
-### 3.6 Reviewer Must Differ from Implementer
-
-FI-7: A QA packet cannot be completed by the same identity that completed its dev counterpart.
-The factory validates this. If you implemented the dev packet, you cannot review the QA packet.
-
-### 3.7 Every Dev Packet Needs a QA Counterpart
-
-FI-8: Every dev packet in a feature must have a corresponding QA packet in the same feature.
-The factory validates this. Plan features as dev/qa pairs from the start.
-
----
-
-## 4. Session Reconstruction
-
-If you are starting a new session or have lost context:
-
-1. Run `npx tsx tools/status.ts`
-2. Read the output — it tells you exactly where things stand
-3. If an intent is proposed, run `npx tsx tools/plan.ts <intent-id>`
-4. If a feature is active, run `npx tsx tools/execute.ts <feature-id>`
-5. The output tells you what to do next **and which persona to use**
-
-Do not rely on memory. Do not guess. Read the factory state.
-
----
-
-## 5. Execution Protocol (for feature-level work)
-
-When executing a feature, **execute.ts is the single authority on what to do next**.
-Do not decide when to stop or what step comes next — always ask execute.ts.
+### Packet lifecycle
 
 ```
-loop:
-  1. Run: npx tsx tools/execute.ts <feature-id>
-  2. Read the action kind in the output:
-     - spawn_packets  → spawn agents for ready packets using the assigned persona, run `npx tsx tools/start.ts <packet-id>` for each assigned packet, complete each, go to 1
-     - awaiting_acceptance → stop, inform human that architectural packets need acceptance
-     - all_complete   → feature is done, ready for delivery
-     - blocked        → resolve dependencies or replan
+(created) -> draft -> ready -> implementing -> review_requested
+  -> changes_requested -> implementing -> review_requested
+  -> review_approved -> completed
 ```
 
-Each iteration is stateless. If interrupted, re-run `tools/execute.ts` to resume.
+QA packets skip the review cycle: `implementing -> completed`.
 
-The natural flow for each story: dev packet (developer) → QA packet (qa) → acceptance (human, if architectural).
+### Packet kinds
 
----
+- **dev** — implements code changes. Goes through code review.
+- **qa** — verifies a dev packet's work. Must have `verifies` field pointing
+  to the dev packet ID. Completed by a different identity than the dev packet.
 
-## 6. Planner Protocol
+## 5. Tools
 
-The factory includes a distinct **planner actor** for decomposition. The planner is
-responsible for turning an intent/spec artifact into a planned feature and dev/qa packet pairs.
+| Command | Purpose |
+|---------|---------|
+| `run.ts <intent-id>` | Full pipeline: plan, develop, review, verify, done |
+| `status.ts` | Session reconstruction — where things stand |
+| `plan.ts <intent-id>` | Resolve planner action for an intent |
+| `execute.ts <feature-id>` | What packets are ready for execution |
+| `start.ts <packet-id>` | Claim a packet before implementation |
+| `request-review.ts <packet-id>` | Signal code is ready for review |
+| `review.ts <packet-id> --approve\|--request-changes` | Code review decision |
+| `complete.ts <packet-id>` | Run verification, create completion record |
+| `validate.ts` | Schema + integrity validation |
+| `completion-gate.ts` | Pre-commit enforcement (FI-7) |
 
-The planner does not execute work. The supervisor does not plan work.
+## 6. Factory Invariants
 
-### Planner Flow
+- **FI-1:** One completion per packet (no duplicates)
+- **FI-4:** Completion requires verification to have been run
+- **FI-7:** QA completion identity must differ from dev completion identity
+- **FI-8:** Every dev packet in a feature must have a QA counterpart
+- **FI-9:** No cyclic packet dependencies
 
 1. Human creates `intents/<intent-id>.json`. The intent must declare exactly one
    of `spec` (inline body for short intents) or `spec_path` (path relative to the
@@ -301,9 +238,13 @@ Planner invariants:
 - Do not bypass the governing approval authority for the intent/spec or feature
 - Preserve the existing completion/acceptance model
 
----
+- **verification:** build, lint, test commands run during `complete.ts`
+- **personas:** planner, developer, code_reviewer, qa — each with
+  description, instructions, and model tier (high/medium/low)
+- **pipeline:** provider mappings (codex/claude/copilot), completion identities,
+  max review iterations, per-provider model_map
 
-## 7. Supervisor Protocol
+## 8. Where to Find Things
 
 The factory includes a **supervisor actor** for automated orchestration. The supervisor
 is a stateless tick function that reads factory state and returns the next action.

@@ -1,8 +1,8 @@
 {
   "name": "factory",
   "private": true,
-  "version": "0.1.0",
-  "description": "Change-control factory for governed AI-assisted development",
+  "version": "0.2.0",
+  "description": "Pipeline-driven factory for governed AI-assisted development",
   "author": "CustodyZero (https://custodyzero.com)",
   "license": "Apache-2.0",
   "repository": {
@@ -11,11 +11,9 @@
   },
   "type": "module",
   "scripts": {
-    "factory:accept": "npx tsx tools/accept.ts",
+    "factory:run": "npx tsx tools/run.ts",
     "factory:complete": "npx tsx tools/complete.ts",
-    "factory:derive": "npx tsx tools/derive.ts",
     "factory:execute": "npx tsx tools/execute.ts",
-    "factory:orchestrate": "npx tsx tools/orchestrate.ts",
     "factory:plan": "npx tsx tools/plan.ts",
     "factory:start": "npx tsx tools/start.ts",
     "factory:status": "npx tsx tools/status.ts",

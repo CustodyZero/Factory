@@ -33,89 +33,57 @@
     "planner": {
       "description": "Decomposes intent into feature and packet artifacts",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "developer": {
       "description": "Implements the change",
       "instructions": [],
-      "model": "opus"
+      "model": "high"
     },
     "code_reviewer": {
       "description": "Reviews code changes for correctness, design, and contract adherence",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     },
     "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": [],
-      "model": "sonnet"
+      "model": "medium"
     }
   },
-  "orchestrator": {
-    "enabled": true,
-    "identity": {
-      "kind": "agent",
-      "id": "orchestrator"
+  "pipeline": {
+    "providers": {
+      "codex": {
+        "enabled": true,
+        "command": "codex",
+        "sandbox": "workspace-write"
+      },
+      "claude": {
+        "enabled": true,
+        "command": "claude",
+        "permission_mode": "bypassPermissions"
+      },
+      "copilot": {
+        "enabled": false,
+        "command": "gh copilot --",
+        "model_map": {
+          "high": "claude-opus-4-6",
+          "medium": "GPT-5.4",
+          "low": "claude-haiku-4-5"
+        }
+      }
     },
-    "output_dir": "reports/orchestrator",
-    "recent_run_limit": 25,
-    "recent_attempt_limit": 50,
-    "completion_identities": {
-      "developer": "codex-dev",
-      "code_reviewer": "claude-cr",
-      "qa": "claude-qa"
-    },
-    "personas": {
+    "persona_providers": {
       "planner": "claude",
       "developer": "codex",
       "code_reviewer": "claude",
       "qa": "claude"
     },
-    "providers": {
-      "codex": {
-        "enabled": true,
-        "command": "codex",
-        "sandbox": "workspace-write",
-        "models": {
-          "opus": "gpt-5.4",
-          "sonnet": "gpt-5.4-mini",
-          "haiku": "gpt-5.4-mini"
-        }
-      },
-      "claude": {
-        "enabled": true,
-        "command": "claude",
-        "permission_mode": "bypassPermissions",
-        "models": {
-          "opus": "opus",
-          "sonnet": "sonnet",
-          "haiku": "haiku"
-        }
-      }
+    "completion_identities": {
+      "developer": "codex-dev",
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
-    "retries": {
-      "max_supervisor_ticks": 50,
-      "planner": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "developer": [
-        { "provider": "codex", "model": "sonnet" },
-        { "provider": "codex", "model": "opus" },
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" }
-      ],
-      "code_reviewer": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "qa": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ]
-    }
+    "max_review_iterations": 3
   }
 }

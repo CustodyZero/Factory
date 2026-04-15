@@ -1,26 +1,27 @@
 #!/bin/sh
+# Factory pre-commit hook
+# Enforces: completion gate (FI-7) + artifact validation
+#
+# Build and lint are NOT run here — they already ran during complete.ts.
+# This hook only blocks commits that violate factory invariants.
+
 set -e
 
-# Load configuration from factory.config.json
-# Falls back to defaults if jq is not available
+# Resolve factory tooling directory from config
 if command -v jq >/dev/null 2>&1 && [ -f factory.config.json ]; then
-  BUILD_CMD=$(jq -r '.verification.build' factory.config.json)
-  LINT_CMD=$(jq -r '.verification.lint' factory.config.json)
   FACTORY_DIR=$(jq -r '.factory_dir // "."' factory.config.json)
 else
-  BUILD_CMD="true"
-  LINT_CMD="true"
   FACTORY_DIR="."
 fi
 
-# Resolve tool paths relative to factory_dir
 if [ "$FACTORY_DIR" = "." ]; then
   TOOLS_DIR="tools"
 else
   TOOLS_DIR="${FACTORY_DIR}/tools"
 fi
 
-$BUILD_CMD
-$LINT_CMD
+# Completion gate: started packets need completions before implementation commits
 npx tsx "${TOOLS_DIR}/completion-gate.ts"
+
+# Schema + integrity validation
 npx tsx "${TOOLS_DIR}/validate.ts"

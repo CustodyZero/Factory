@@ -132,7 +132,7 @@
     },
     "model": {
       "type": "string",
-      "enum": ["opus", "sonnet", "haiku"],
+      "enum": ["high", "medium", "low"],
       "description": "Model tier override for this packet. Overrides the persona default. Falls through to persona config if omitted."
     },
     "instructions": {

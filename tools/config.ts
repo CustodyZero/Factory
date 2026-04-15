@@ -16,9 +16,9 @@ import { join } from 'node:path';
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelTier = 'opus' | 'sonnet' | 'haiku';
-export type OrchestratorProvider = 'codex' | 'claude' | 'copilot';
-export type OrchestratorPersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
+export type ModelTier = 'high' | 'medium' | 'low';
+export type PipelineProvider = 'codex' | 'claude' | 'copilot';
+export type PipelinePersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
 
 export interface PersonaConfig {
   readonly description: string;
@@ -33,56 +33,32 @@ export interface PersonasConfig {
   readonly qa: PersonaConfig;
 }
 
-export interface SupervisorConfig {
-  readonly enabled: boolean;
-  readonly identity: { readonly kind: string; readonly id: string };
-}
+export type ModelMap = { readonly [K in ModelTier]?: string };
 
-export interface OrchestratorProviderConfig {
+export interface PipelineProviderConfig {
   readonly enabled: boolean;
   readonly command: string;
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
-  readonly models: Readonly<Record<ModelTier, string>>;
+  readonly model_map?: ModelMap;
 }
 
-export interface OrchestratorRetryStep {
-  readonly provider: OrchestratorProvider;
-  readonly model: ModelTier;
-}
-
-export interface OrchestratorRetryConfig {
-  readonly max_supervisor_ticks: number;
-  readonly max_transient_retries: number;
-  readonly planner: ReadonlyArray<OrchestratorRetryStep>;
-  readonly developer: ReadonlyArray<OrchestratorRetryStep>;
-  readonly code_reviewer: ReadonlyArray<OrchestratorRetryStep>;
-  readonly qa: ReadonlyArray<OrchestratorRetryStep>;
-}
-
-export interface OrchestratorConfig {
-  readonly enabled: boolean;
-  readonly identity: { readonly kind: string; readonly id: string };
-  readonly output_dir: string;
-  readonly recent_run_limit: number;
-  readonly recent_attempt_limit: number;
+export interface PipelineConfig {
+  readonly providers: {
+    readonly [key: string]: PipelineProviderConfig;
+  };
+  readonly persona_providers: {
+    readonly planner: PipelineProvider;
+    readonly developer: PipelineProvider;
+    readonly code_reviewer: PipelineProvider;
+    readonly qa: PipelineProvider;
+  };
   readonly completion_identities: {
     readonly developer: string;
     readonly code_reviewer: string;
     readonly qa: string;
   };
-  readonly personas: {
-    readonly planner: OrchestratorProvider;
-    readonly developer: OrchestratorProvider;
-    readonly code_reviewer: OrchestratorProvider;
-    readonly qa: OrchestratorProvider;
-  };
-  readonly providers: {
-    readonly codex: OrchestratorProviderConfig;
-    readonly claude: OrchestratorProviderConfig;
-    readonly copilot: OrchestratorProviderConfig;
-  };
-  readonly retries: OrchestratorRetryConfig;
+  readonly max_review_iterations: number;
 }
 
 export interface FactoryConfig {
@@ -103,8 +79,7 @@ export interface FactoryConfig {
     readonly id: string;
   };
   readonly personas: PersonasConfig;
-  readonly supervisor?: SupervisorConfig;
-  readonly orchestrator?: OrchestratorConfig;
+  readonly pipeline?: PipelineConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,127 +136,52 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       code_reviewer: { ...defaultPersonas.code_reviewer, ...rawPersonas?.code_reviewer },
       qa: { ...defaultPersonas.qa, ...rawPersonas?.qa },
     };
-    const defaultOrchestrator: OrchestratorConfig = {
-      enabled: true,
-      identity: { kind: 'agent', id: 'orchestrator' },
-      output_dir: 'reports/orchestrator',
-      recent_run_limit: 25,
-      recent_attempt_limit: 50,
-      completion_identities: {
-        developer: 'codex-dev',
-        code_reviewer: 'claude-cr',
-        qa: 'claude-qa',
+
+    const defaultProviders: Record<string, PipelineProviderConfig> = {
+      codex: { enabled: true, command: 'codex', sandbox: 'workspace-write' },
+      claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
+      copilot: {
+        enabled: false,
+        command: 'gh copilot --',
+        model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: 'claude-haiku-4-5' },
       },
-      personas: {
+    };
+    const defaultPipeline: PipelineConfig = {
+      providers: defaultProviders,
+      persona_providers: {
         planner: 'claude',
         developer: 'codex',
         code_reviewer: 'claude',
         qa: 'claude',
       },
-      providers: {
-        codex: {
-          enabled: true,
-          command: 'codex',
-          sandbox: 'workspace-write',
-          models: {
-            opus: 'gpt-5.4',
-            sonnet: 'gpt-5.4-mini',
-            haiku: 'gpt-5.4-mini',
-          },
-        },
-        claude: {
-          enabled: true,
-          command: 'claude',
-          permission_mode: 'bypassPermissions',
-          models: {
-            opus: 'opus',
-            sonnet: 'sonnet',
-            haiku: 'haiku',
-          },
-        },
-        copilot: {
-          enabled: false,
-          command: 'gh',
-          models: {
-            opus: 'gpt-5',
-            sonnet: 'gpt-5-mini',
-            haiku: 'gpt-5-mini',
-          },
-        },
+      completion_identities: {
+        developer: 'codex-dev',
+        code_reviewer: 'claude-cr',
+        qa: 'claude-qa',
       },
-      retries: {
-        max_supervisor_ticks: 50,
-        max_transient_retries: 2,
-        planner: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
-        developer: [
-          { provider: 'codex', model: 'sonnet' },
-          { provider: 'codex', model: 'opus' },
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-        ],
-        code_reviewer: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
-        qa: [
-          { provider: 'claude', model: 'sonnet' },
-          { provider: 'claude', model: 'opus' },
-          { provider: 'codex', model: 'opus' },
-        ],
+      max_review_iterations: 3,
+    };
+    const rawPipeline = (parsed as Record<string, unknown>)['pipeline'] as Partial<PipelineConfig> | undefined;
+    const rawProviders = rawPipeline?.providers as Record<string, Partial<PipelineProviderConfig>> | undefined;
+    const mergedProviders: Record<string, PipelineProviderConfig> = {};
+    for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
+      mergedProviders[key] = { ...defaultProviders[key], ...rawProviders?.[key] } as PipelineProviderConfig;
+    }
+    const pipeline: PipelineConfig = {
+      ...defaultPipeline,
+      ...rawPipeline,
+      providers: mergedProviders,
+      persona_providers: {
+        ...defaultPipeline.persona_providers,
+        ...rawPipeline?.persona_providers,
+      },
+      completion_identities: {
+        ...defaultPipeline.completion_identities,
+        ...rawPipeline?.completion_identities,
       },
     };
-    const rawOrchestrator = (parsed as Record<string, unknown>)['orchestrator'] as Partial<OrchestratorConfig> | undefined;
-    const rawOrchestratorProviders = rawOrchestrator?.providers as Partial<OrchestratorConfig['providers']> | undefined;
-    const rawOrchestratorPersonas = rawOrchestrator?.personas as Partial<OrchestratorConfig['personas']> | undefined;
-    const rawOrchestratorRetries = rawOrchestrator?.retries as Partial<OrchestratorRetryConfig> | undefined;
-    const orchestrator: OrchestratorConfig = {
-      ...defaultOrchestrator,
-      ...rawOrchestrator,
-      personas: {
-        ...defaultOrchestrator.personas,
-        ...rawOrchestratorPersonas,
-      },
-      providers: {
-        codex: {
-          ...defaultOrchestrator.providers.codex,
-          ...rawOrchestratorProviders?.codex,
-          models: {
-            ...defaultOrchestrator.providers.codex.models,
-            ...rawOrchestratorProviders?.codex?.models,
-          },
-        },
-        claude: {
-          ...defaultOrchestrator.providers.claude,
-          ...rawOrchestratorProviders?.claude,
-          models: {
-            ...defaultOrchestrator.providers.claude.models,
-            ...rawOrchestratorProviders?.claude?.models,
-          },
-        },
-        copilot: {
-          ...defaultOrchestrator.providers.copilot,
-          ...(rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined,
-          models: {
-            ...defaultOrchestrator.providers.copilot.models,
-            ...((rawOrchestratorProviders as Record<string, unknown> | undefined)?.['copilot'] as Partial<OrchestratorProviderConfig> | undefined)?.models,
-          },
-        },
-      },
-      retries: {
-        ...defaultOrchestrator.retries,
-        ...rawOrchestratorRetries,
-        planner: rawOrchestratorRetries?.planner ?? defaultOrchestrator.retries.planner,
-        developer: rawOrchestratorRetries?.developer ?? defaultOrchestrator.retries.developer,
-        code_reviewer: rawOrchestratorRetries?.code_reviewer ?? defaultOrchestrator.retries.code_reviewer,
-        qa: rawOrchestratorRetries?.qa ?? defaultOrchestrator.retries.qa,
-      },
-    };
-    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, orchestrator } as FactoryConfig;
+
+    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, pipeline } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
@@ -310,12 +210,6 @@ export function buildToolCommand(
 
 /**
  * Resolves the factory tooling root (where tools, schemas, hooks live).
- *
- * When factory_dir is "." (default / factory-is-the-project), returns PROJECT_ROOT.
- * When factory_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
- *
- * This is NOT where artifacts (packets, completions, etc.) live — use
- * resolveArtifactRoot() for that.
  */
 export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig): string {
   const root = projectRoot ?? findProjectRoot();
@@ -325,13 +219,6 @@ export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig)
 
 /**
  * Resolves the artifact root (where packets, completions, features, etc. live).
- *
- * When artifact_dir is "." (default), returns PROJECT_ROOT.
- * When artifact_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
- *
- * Artifacts belong to the host project, not the factory tooling directory.
- * In submodule installs, artifacts consolidate under a single visible directory
- * (e.g., factory/) while tooling hides in .factory/.
  */
 export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig): string {
   const root = projectRoot ?? findProjectRoot();
@@ -346,11 +233,9 @@ export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig
  */
 export function isInfrastructureFile(filepath: string, config: FactoryConfig): boolean {
   for (const pattern of config.infrastructure_patterns) {
-    // Pattern ending in / matches directory prefix
     if (pattern.endsWith('/') && filepath.startsWith(pattern)) {
       return true;
     }
-    // Exact filename match (for root config files)
     if (filepath === pattern) {
       return true;
     }
