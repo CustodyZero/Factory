@@ -14,15 +14,13 @@ Read `AGENTS.md` first. It defines all operating constraints.
 
 ```sh
 npx tsx .factory/tools/status.ts              # What is the factory state?
-npx tsx .factory/tools/execute.ts <feature>   # What packets are ready? (returns packet + persona)
-npx tsx .factory/tools/start.ts <packet>      # Claim a packet before implementation
-npx tsx .factory/tools/request-review.ts <packet>  # Request code review (dev packets only)
-npx tsx .factory/tools/review.ts <packet> --approve|--request-changes  # Code review decision
-npx tsx .factory/tools/complete.ts <packet>   # Create completion record (--identity <id> for QA)
-npx tsx .factory/tools/accept.ts <packet>     # Accept a completed packet (human action)
-npx tsx .factory/tools/supervise.ts           # Supervisor tick — next orchestration action
-npx tsx .factory/tools/supervise.ts --init    # Initialize supervisor state
+npx tsx .factory/tools/run.ts <intent-id>     # Run full pipeline for an intent
+npx tsx .factory/tools/plan.ts <intent-id>    # Resolve planner action for intent
+npx tsx .factory/tools/execute.ts <feature>   # What packets are ready?
+npx tsx .factory/tools/start.ts <packet>      # Claim a packet
+npx tsx .factory/tools/request-review.ts <p>  # Signal code ready for review
+npx tsx .factory/tools/review.ts <p> --approve # Approve code review
+npx tsx .factory/tools/complete.ts <packet>   # Create completion record
 npx tsx .factory/tools/validate.ts            # Validate factory integrity
-npx tsx .factory/tools/migrate.ts             # Migrate pre-existing artifacts to new schema
 npx vitest run --config .factory/vitest.config.ts  # Run factory tooling tests
 ```

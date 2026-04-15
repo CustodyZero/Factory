@@ -1,4 +1,4 @@
-# Claude Code — Factory Project
+# Claude Code — Factory
 
 Read `AGENTS.md` first. It defines all operating constraints.
 
@@ -14,18 +14,13 @@ Read `AGENTS.md` first. It defines all operating constraints.
 
 ```sh
 npx tsx tools/status.ts              # What is the factory state?
-npx tsx tools/execute.ts <feature>   # What packets are ready? (returns packet + persona)
-npx tsx tools/start.ts <packet>      # Claim a packet before implementation
-npx tsx tools/request-review.ts <packet>  # Request code review (dev packets only)
-npx tsx tools/review.ts <packet> --approve|--request-changes  # Code review decision
-npx tsx tools/complete.ts <packet>   # Create completion record (--identity <id> for QA)
-npx tsx tools/accept.ts <packet>     # Accept a completed packet (human action)
-npx tsx tools/supervise.ts           # Supervisor tick — next orchestration action
-npx tsx tools/supervise.ts --init    # Initialize supervisor state
+npx tsx tools/run.ts <intent-id>     # Run full pipeline for an intent
+npx tsx tools/plan.ts <intent-id>    # Resolve planner action for intent
+npx tsx tools/execute.ts <feature>   # What packets are ready?
+npx tsx tools/start.ts <packet>      # Claim a packet
+npx tsx tools/request-review.ts <p>  # Signal code ready for review
+npx tsx tools/review.ts <p> --approve # Approve code review
+npx tsx tools/complete.ts <packet>   # Create completion record
 npx tsx tools/validate.ts            # Validate factory integrity
-npx tsx tools/migrate.ts             # Migrate pre-existing artifacts to new schema
-npm test                             # Run factory tooling tests
+npx vitest run                       # Run factory tooling tests
 ```
-
-Note: This repo uses `factory_dir: "."` because the factory IS the project.
-When installed in a host project, paths become `factory/tools/...` instead.

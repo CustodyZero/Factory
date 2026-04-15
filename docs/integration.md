@@ -20,12 +20,10 @@ The setup script:
    - `CLAUDE.md` — AI agent instructions
    - `AGENTS.md` — agent operating constraints
 3. Creates `factory/` directory with artifact subdirectories:
-   - `factory/features/`, `factory/packets/`, `factory/completions/`, etc.
-   - `factory/supervisor/` with SUPERVISOR.md and memory.md
-   - `factory/reports/orchestrator/` for captured LLM run output
+   - `factory/intents/`, `factory/features/`, `factory/packets/`, `factory/completions/`
 4. Configures `git config core.hooksPath .factory/hooks`
 
-After setup, the normal first-run sequence for an agent-driven project is:
+After setup, the normal workflow is:
 
 1. Create an intent/spec artifact under `factory/intents/`
 2. Run `npx tsx .factory/tools/plan.ts <intent-id>`
@@ -45,11 +43,7 @@ factory/                 # Artifacts (visible, one directory)
 ├── intents/
 ├── features/
 ├── packets/
-├── completions/
-├── acceptances/
-├── rejections/
-├── evidence/
-└── supervisor/
+└── completions/
 factory.config.json      # Configuration
 CLAUDE.md                # AI instructions
 AGENTS.md                # Agent constraints
@@ -116,72 +110,31 @@ Edit the template at your project root:
       "model": "sonnet"
     }
   },
-  "orchestrator": {
-    "enabled": true,
-    "identity": {
-      "kind": "agent",
-      "id": "orchestrator"
+  "pipeline": {
+    "providers": {
+      "codex": {
+        "enabled": true,
+        "command": "codex",
+        "sandbox": "workspace-write"
+      },
+      "claude": {
+        "enabled": true,
+        "command": "claude",
+        "permission_mode": "bypassPermissions"
+      }
     },
-    "output_dir": "reports/orchestrator",
-    "recent_run_limit": 25,
-    "recent_attempt_limit": 50,
-    "completion_identities": {
-      "developer": "codex-dev",
-      "code_reviewer": "claude-cr",
-      "qa": "claude-qa"
-    },
-    "personas": {
+    "persona_providers": {
       "planner": "claude",
       "developer": "codex",
       "code_reviewer": "claude",
       "qa": "claude"
     },
-    "providers": {
-      "codex": {
-        "enabled": true,
-        "command": "codex",
-        "sandbox": "workspace-write",
-        "models": {
-          "opus": "gpt-5.4",
-          "sonnet": "gpt-5.4-mini",
-          "haiku": "gpt-5.4-mini"
-        }
-      },
-      "claude": {
-        "enabled": true,
-        "command": "claude",
-        "permission_mode": "bypassPermissions",
-        "models": {
-          "opus": "opus",
-          "sonnet": "sonnet",
-          "haiku": "haiku"
-        }
-      }
+    "completion_identities": {
+      "developer": "codex-dev",
+      "code_reviewer": "claude-cr",
+      "qa": "claude-qa"
     },
-    "retries": {
-      "max_supervisor_ticks": 50,
-      "planner": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "developer": [
-        { "provider": "codex", "model": "sonnet" },
-        { "provider": "codex", "model": "opus" },
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" }
-      ],
-      "code_reviewer": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ],
-      "qa": [
-        { "provider": "claude", "model": "sonnet" },
-        { "provider": "claude", "model": "opus" },
-        { "provider": "codex", "model": "opus" }
-      ]
-    }
+    "max_review_iterations": 3
   }
 }
 ```
@@ -200,7 +153,7 @@ Edit the template at your project root:
 | `infrastructure_patterns` | string[] | File paths/prefixes that are not "implementation work" |
 | `completed_by_default` | identity | Default identity written into completion records |
 | `personas` | object | Planner, developer, code_reviewer, and qa persona defaults |
-| `orchestrator` | object | Native Codex/Claude harness configuration and provider mappings |
+| `pipeline` | object | Provider mappings, completion identities, review iteration limits |
 
 ### Infrastructure patterns
 
@@ -212,6 +165,43 @@ Adjust these patterns to match your project structure. Common additions:
 - CI configuration directories (`.github/`, `.gitlab/`)
 - Project-level config files (`.sln`, `Makefile`, `Cargo.toml`)
 - Documentation directories
+
+---
+
+## Pipeline Flow
+
+The pipeline (`run.ts`) is the single entry point for all factory work:
+
+```
+npx tsx .factory/tools/run.ts <intent-id>
+```
+
+This runs to completion autonomously:
+
+1. **Plan** — Planner agent decomposes the spec/intent into a feature with dev/qa packet pairs
+2. **Develop** — For each dev packet (in dependency order):
+   - Developer agent implements
+   - Code reviewer agent reviews (different identity)
+   - Feedback loop if changes requested (bounded by `max_review_iterations`)
+   - Completion recorded (build/lint/test verification)
+3. **Verify** — For each QA packet:
+   - QA agent verifies (different identity from dev)
+   - Completion recorded
+4. **Done** — Feature marked complete, summary printed
+
+### Human Gates
+
+Exactly two:
+1. Approve the spec (write the markdown document)
+2. Approve the intent (create the intent artifact with constraints)
+
+Everything after `run.ts` is autonomous. Completion IS acceptance.
+
+### Agent Identity Separation
+
+- Dev and QA agents use different identities (FI-7)
+- Code reviewer uses a different identity from the developer
+- Identities are configured in `pipeline.completion_identities`
 
 ---
 
@@ -235,15 +225,13 @@ inside `.factory/node_modules/` and do not affect the host project.
 
 ## Pre-commit Hook
 
-The pre-commit hook runs four steps in order:
+The pre-commit hook runs two steps:
 
-1. **Build** — runs `verification.build` from config
-2. **Lint** — runs `verification.lint` from config
-3. **Completion gate** — FI-7 enforcement (blocks if implementation files
+1. **Completion gate** — FI-7 enforcement (blocks if implementation files
    are staged without completion records)
-4. **Validate** — full factory validation (schema + integrity + invariants)
+2. **Validate** — full factory validation (schema + integrity + invariants)
 
-If any step fails, the commit is blocked.
+If either step fails, the commit is blocked.
 
 The hook resolves tool paths from `factory_dir` in the config, so it
 works regardless of whether factory is at the project root or in a
@@ -304,8 +292,9 @@ The factory tooling has its own test suite covering:
 - Completion gate logic
 - Status derivation
 - Execute resolver
-- Supervisor resolver
-- Packet start / supervisor enforcement via validation paths
+- Plan resolver
+- Configuration utilities
+- Terminal output formatting
 
 All tests are pure function tests — no I/O, no mocking.
 
@@ -315,8 +304,8 @@ All tests are pure function tests — no I/O, no mocking.
 
 ### Committing factory artifacts
 
-Factory artifacts (packets, completions, acceptances, etc.) under `factory/`
-are meant to be committed alongside your code. They are the governance trail.
+Factory artifacts (packets, completions, etc.) under `factory/` are meant
+to be committed alongside your code. They are the governance trail.
 
 ### Updating factory tooling
 
@@ -336,19 +325,7 @@ Add to your project's `.gitignore`:
 
 ```
 .factory/node_modules/
-.factory/derived-state.json
 ```
 
 The setup script does not modify your `.gitignore` — add these entries
 manually.
-
----
-
-## Migration Guidance
-
-Planner-native flow is backward-compatible with existing downstream repos.
-
-- Existing features and packets remain valid without `intent_id`
-- Existing approved features can continue through `execute.ts` or `supervise.ts` unchanged
-- `npx tsx .factory/tools/migrate.ts` now ensures `factory/intents/` exists for new planner-driven work
-- New work should start from `factory/intents/<intent-id>.json`, then flow through `plan.ts` before approval and execution

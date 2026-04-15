@@ -1,10 +1,9 @@
 #!/usr/bin/env tsx
 /**
- * Factory — Planner Handoff Resolver
+ * Factory — Planner Resolver
  *
- * Reads an intent/spec artifact and determines whether planning work is needed,
- * whether a generated feature is awaiting human approval, or whether execution
- * can hand off to the supervisor.
+ * Reads an intent/spec artifact and returns the planner assignment
+ * needed to decompose it into a feature and packet pairs.
  *
  * Usage:
  *   npx tsx tools/plan.ts <intent-id>
@@ -13,16 +12,10 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { isAbsolute, join, normalize, sep } from 'node:path';
-import { buildToolCommand, findProjectRoot, loadConfig, resolveArtifactRoot } from './config.js';
+import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 import type { ModelTier } from './config.js';
 import * as fmt from './output.js';
 
-/**
- * On-disk shape of an intent artifact. Either `spec` (inline body) or
- * `spec_path` (reference to a Markdown file relative to the project root)
- * must be present. Enforced by intent.schema.json and validated by
- * validate.ts / hydrateIntent.
- */
 export interface RawIntentArtifact {
   readonly id: string;
   readonly title: string;
@@ -33,10 +26,6 @@ export interface RawIntentArtifact {
   readonly feature_id?: string | null;
 }
 
-/**
- * Hydrated intent passed to the pure planner resolver. `spec` is always
- * populated with the authoritative spec body (inline or from spec_path).
- */
 export interface IntentArtifact {
   readonly id: string;
   readonly title: string;
@@ -48,16 +37,14 @@ export interface IntentArtifact {
 
 export interface FeatureArtifact {
   readonly id: string;
-  readonly status: 'draft' | 'planned' | 'approved' | 'executing' | 'completed' | 'delivered';
+  readonly status: string;
   readonly intent_id?: string | null;
 }
 
 export type PlanActionKind =
   | 'plan_feature'
-  | 'awaiting_approval'
-  | 'ready_for_execution'
-  | 'all_complete'
-  | 'blocked';
+  | 'already_planned'
+  | 'all_complete';
 
 export interface PlannerAssignment {
   readonly intent_id: string;
@@ -75,7 +62,6 @@ export interface PlanAction {
   readonly intent_id: string;
   readonly feature_id: string | null;
   readonly planner_assignment: PlannerAssignment | null;
-  readonly command: string | null;
   readonly message: string;
 }
 
@@ -86,7 +72,6 @@ export interface PlanInput {
     readonly instructions: ReadonlyArray<string>;
     readonly model?: ModelTier;
   };
-  readonly superviseCommand?: ((featureId: string) => string) | undefined;
 }
 
 function readJson<T>(path: string): T | null {
@@ -113,11 +98,6 @@ export type ResolveSpecPathResult =
   | { readonly ok: true; readonly absolutePath: string }
   | { readonly ok: false; readonly error: string };
 
-/**
- * Resolves an intent's `spec_path` to an absolute path under the project
- * root. Rejects empty, absolute, and traversing paths. Does not touch the
- * filesystem — callers are responsible for checking file existence.
- */
 export function resolveSpecPath(projectRoot: string, specPath: string): ResolveSpecPathResult {
   if (specPath.length === 0) {
     return { ok: false, error: "'spec_path' must not be empty" };
@@ -140,15 +120,6 @@ export type HydrateIntentResult =
   | { readonly ok: true; readonly intent: IntentArtifact }
   | { readonly ok: false; readonly error: string };
 
-/**
- * Produces a hydrated IntentArtifact from a raw on-disk intent. If the raw
- * intent uses `spec_path`, the file is read through the injected reader and
- * its contents become the intent's `spec`. Enforces the mutual exclusion
- * between `spec` and `spec_path`.
- *
- * `readFile` receives the absolute resolved path and must either return the
- * file contents or throw. Injecting it keeps this function pure and testable.
- */
 export function hydrateIntent(
   raw: RawIntentArtifact,
   projectRoot: string,
@@ -168,11 +139,8 @@ export function hydrateIntent(
     return {
       ok: true,
       intent: {
-        id: raw.id,
-        title: raw.title,
-        spec: raw.spec!,
-        constraints: raw.constraints,
-        status: raw.status,
+        id: raw.id, title: raw.title, spec: raw.spec!,
+        constraints: raw.constraints, status: raw.status,
         feature_id: raw.feature_id ?? null,
       },
     };
@@ -188,46 +156,25 @@ export function hydrateIntent(
     contents = readFile(resolved.absolutePath);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      error: `Intent '${raw.id}': failed to read spec_path '${raw.spec_path!}': ${message}`,
-    };
+    return { ok: false, error: `Intent '${raw.id}': failed to read spec_path '${raw.spec_path!}': ${message}` };
   }
 
   if (contents.length === 0) {
-    return {
-      ok: false,
-      error: `Intent '${raw.id}': spec_path '${raw.spec_path!}' is empty.`,
-    };
+    return { ok: false, error: `Intent '${raw.id}': spec_path '${raw.spec_path!}' is empty.` };
   }
 
   return {
     ok: true,
     intent: {
-      id: raw.id,
-      title: raw.title,
-      spec: contents,
-      constraints: raw.constraints,
-      status: raw.status,
+      id: raw.id, title: raw.title, spec: contents,
+      constraints: raw.constraints, status: raw.status,
       feature_id: raw.feature_id ?? null,
     },
   };
 }
 
 export function resolvePlanAction(input: PlanInput): PlanAction {
-  const linkedFeatures = input.features.filter((feature) => feature.intent_id === input.intent.id);
-
-  if (linkedFeatures.length > 1) {
-    return {
-      kind: 'blocked',
-      intent_id: input.intent.id,
-      feature_id: null,
-      planner_assignment: null,
-      command: null,
-      message: `Intent '${input.intent.id}' is linked to multiple features. Resolve the ambiguity before planning or execution.`,
-    };
-  }
-
+  const linkedFeatures = input.features.filter((f) => f.intent_id === input.intent.id);
   const linkedFeature = linkedFeatures[0] ?? null;
   const intentApproved = input.intent.status === 'approved';
   const plannerInstructions = [
@@ -236,14 +183,13 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
     'Create dev/qa packet pairs for the feature. Every dev packet must have one QA counterpart.',
     'Set packet.feature_id to the generated feature id and feature.intent_id to this intent id.',
     'Define dependencies, change classes, and acceptance criteria explicitly.',
-    'Do not approve the feature and do not start execution.',
   ];
 
   if (linkedFeature === null) {
     return {
       kind: 'plan_feature',
       intent_id: input.intent.id,
-      feature_id: input.intent.feature_id ?? null,
+      feature_id: null,
       planner_assignment: {
         intent_id: input.intent.id,
         persona: 'planner',
@@ -273,33 +219,20 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
       };
     }
     return {
-      kind: 'awaiting_approval',
+      kind: 'all_complete',
       intent_id: input.intent.id,
       feature_id: linkedFeature.id,
       planner_assignment: null,
-      command: null,
-      message: `Intent '${input.intent.id}' has a planned feature '${linkedFeature.id}' awaiting human approval.`,
-    };
-  }
-
-  if (linkedFeature.status === 'approved' || linkedFeature.status === 'executing') {
-    return {
-      kind: 'ready_for_execution',
-      intent_id: input.intent.id,
-      feature_id: linkedFeature.id,
-      planner_assignment: null,
-      command: input.superviseCommand?.(linkedFeature.id) ?? `npx tsx tools/supervise.ts --json --feature ${linkedFeature.id}`,
-      message: `Intent '${input.intent.id}' has approved feature '${linkedFeature.id}'. Hand off to supervisor for execution.`,
+      message: `Intent '${input.intent.id}' is linked to feature '${linkedFeature.id}' (${linkedFeature.status}). No action needed.`,
     };
   }
 
   return {
-    kind: 'all_complete',
+    kind: 'already_planned',
     intent_id: input.intent.id,
     feature_id: linkedFeature.id,
     planner_assignment: null,
-    command: null,
-    message: `Intent '${input.intent.id}' is linked to feature '${linkedFeature.id}' in status '${linkedFeature.status}'. No planning action required.`,
+    message: `Intent '${input.intent.id}' already has feature '${linkedFeature.id}' (${linkedFeature.status}).`,
   };
 }
 
@@ -320,14 +253,6 @@ function renderAction(action: PlanAction): string {
     lines.push(`    - model: ${action.planner_assignment.model}`);
     lines.push(`    - feature path: ${fmt.muted(action.planner_assignment.feature_path)}`);
     lines.push(`    - packets dir: ${fmt.muted(action.planner_assignment.packets_dir)}`);
-    for (const instruction of action.planner_assignment.instructions) {
-      lines.push(`    - ${instruction}`);
-    }
-    lines.push('');
-  }
-
-  if (action.command !== null) {
-    lines.push(`  ${fmt.info('Command:')} ${action.command}`);
     lines.push('');
   }
 
@@ -373,7 +298,6 @@ function main(): void {
     intent: hydrated.intent,
     features,
     plannerPersona: config.personas.planner,
-    superviseCommand: (featureId) => buildToolCommand('supervise.ts', ['--json', '--feature', featureId], undefined, config),
   });
 
   if (jsonMode) {

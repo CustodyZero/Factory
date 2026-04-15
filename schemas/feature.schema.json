@@ -4,14 +4,7 @@
   "title": "Factory Feature",
   "description": "A high-level intent that decomposes into multiple packets. Features are the unit of planning; packets are the unit of execution. Planner-generated planned features linked to an approved intent inherit execution authority from that intent.",
   "type": "object",
-  "required": [
-    "id",
-    "intent",
-    "acceptance_criteria",
-    "status",
-    "packets",
-    "created_by"
-  ],
+  "required": ["id", "intent", "acceptance_criteria", "status", "packets", "created_by"],
   "properties": {
     "id": {
       "type": "string",
@@ -21,17 +14,17 @@
     "intent": {
       "type": "string",
       "minLength": 1,
-      "description": "What the project should do when this feature is complete. Written by the human."
+      "description": "What the project should do when this feature is complete."
     },
     "acceptance_criteria": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
       "minItems": 1,
-      "description": "Testable conditions that must all be true for this feature to be considered delivered. Each criterion must be independently verifiable."
+      "description": "Testable conditions for feature delivery."
     },
     "status": {
       "type": "string",
-      "enum": ["draft", "planned", "approved", "executing", "completed", "delivered"],
+      "enum": ["planned", "executing", "completed", "delivered"],
       "description": "Feature lifecycle status."
     },
     "packets": {
@@ -43,53 +36,23 @@
       "type": "object",
       "required": ["kind", "id"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["human", "agent", "cli", "ui"],
-          "description": "Identity type of the creator."
-        },
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Stable identifier for the creator."
-        }
+        "kind": { "type": "string", "enum": ["human", "agent", "cli", "ui"] },
+        "id": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
-    "created_at": {
-      "type": "string",
-      "format": "date-time",
-      "description": "ISO 8601 creation timestamp."
-    },
-    "approved_at": {
-      "type": ["string", "null"],
-      "format": "date-time",
-      "description": "ISO 8601 timestamp when the plan was approved. Null if not yet approved."
-    },
-    "intent_id": {
-      "type": ["string", "null"],
-      "description": "ID of the source intent/spec artifact, if this feature was planner-generated."
-    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "intent_id": { "type": ["string", "null"], "description": "Source intent ID." },
     "planned_by": {
       "type": ["object", "null"],
       "required": ["kind", "id"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["human", "agent", "cli", "ui"]
-        },
-        "id": {
-          "type": "string",
-          "minLength": 1
-        }
+        "kind": { "type": "string", "enum": ["human", "agent", "cli", "ui"] },
+        "id": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
-    "planned_at": {
-      "type": ["string", "null"],
-      "format": "date-time",
-      "description": "ISO 8601 timestamp when the planner created this feature."
-    }
+    "planned_at": { "type": ["string", "null"], "format": "date-time" }
   },
   "additionalProperties": false
 }

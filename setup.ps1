@@ -11,7 +11,7 @@
 
     Layout after setup:
         .factory\     - tooling (git submodule, hidden)
-        factory\      - artifacts (features, packets, completions, etc.)
+        factory\      - artifacts (features, packets, completions)
 
     What this script does:
         1. Installs factory dependencies (inside .factory/)
@@ -83,14 +83,11 @@ try {
 
     Write-Host ''
     Write-Host 'Creating artifact directories...'
-    foreach ($subdir in @('intents', 'features', 'packets', 'completions', 'acceptances', 'rejections', 'evidence', 'supervisor', 'reports/orchestrator')) {
+    foreach ($subdir in @('intents', 'features', 'packets', 'completions')) {
         $path = "$ArtifactDir/$subdir"
         if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
         Write-Host "  MKDIR $path/"
     }
-
-    Copy-Template "$FactoryDir/templates/SUPERVISOR.md" "$ArtifactDir/supervisor/SUPERVISOR.md"
-    Copy-Template "$FactoryDir/templates/memory.md" "$ArtifactDir/supervisor/memory.md"
 }
 finally {
     Pop-Location
@@ -117,6 +114,6 @@ Write-Host ''
 Write-Host 'Next steps:'
 Write-Host "  1. Edit factory.config.json - set project_name and verification commands"
 Write-Host '  2. Edit CLAUDE.md - customize for your project'
-Write-Host "  3. Run: npx tsx $FactoryDir/tools/supervise.ts --init  (initialize supervisor)"
-Write-Host "  4. Run: npx tsx $FactoryDir/tools/status.ts"
+Write-Host "  3. Create an intent under $ArtifactDir/intents/ and run:"
+Write-Host "     npx tsx $FactoryDir/tools/run.ts <intent-id>"
 Write-Host ''

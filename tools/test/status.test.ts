@@ -14,7 +14,7 @@ function makePacket(
   id: string,
   overrides: Partial<{
     title: string;
-    change_class: string;
+    kind: string;
     started_at: string | null;
     dependencies: string[];
   }> = {},
@@ -22,25 +22,13 @@ function makePacket(
   return {
     id,
     title: overrides.title ?? `Packet ${id}`,
-    change_class: overrides.change_class ?? 'local',
+    kind: overrides.kind ?? 'dev',
     started_at: overrides.started_at !== undefined ? overrides.started_at : '2026-03-20T00:00:00Z',
     dependencies: overrides.dependencies ?? [],
   };
 }
 
-function makeCompletion(packetId: string, allPass = true) {
-  return {
-    packet_id: packetId,
-    verification: {
-      tests_pass: allPass,
-      build_pass: allPass,
-      lint_pass: allPass,
-      ci_pass: allPass,
-    },
-  };
-}
-
-function makeAcceptance(packetId: string) {
+function makeCompletion(packetId: string) {
   return { packet_id: packetId };
 }
 
@@ -48,7 +36,6 @@ function makeInput(overrides: Partial<StatusInput> = {}): StatusInput {
   return {
     packets: overrides.packets ?? [],
     completions: overrides.completions ?? [],
-    acceptances: overrides.acceptances ?? [],
   };
 }
 
@@ -64,58 +51,25 @@ describe('deriveFactoryStatus', () => {
     expect(status.incomplete).toEqual([]);
   });
 
-  it('FS-U2: all clear when all packets are accepted', () => {
+  it('FS-U2: all clear when all packets are completed', () => {
     const status = deriveFactoryStatus(makeInput({
       packets: [makePacket('s1'), makePacket('s2')],
       completions: [makeCompletion('s1'), makeCompletion('s2')],
     }));
-    expect(status.summary.accepted).toBe(2);
+    expect(status.summary.completed).toBe(2);
     expect(status.next_action.kind).toBe('all_clear');
   });
 
-  it('FS-U3: incomplete packet produces complete_packet next action', () => {
+  it('FS-U3: incomplete packet surfaces in status', () => {
     const status = deriveFactoryStatus(makeInput({
       packets: [makePacket('s1'), makePacket('s2')],
       completions: [makeCompletion('s1')],
     }));
     expect(status.incomplete).toHaveLength(1);
     expect(status.incomplete[0]!.id).toBe('s2');
-    expect(status.next_action.kind).toBe('complete_packet');
-    expect(status.next_action.packet_id).toBe('s2');
   });
 
-  it('FS-U4: architectural packet awaiting human acceptance', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [makePacket('s1', { change_class: 'architectural' })],
-      completions: [makeCompletion('s1')],
-    }));
-    expect(status.awaiting_acceptance).toHaveLength(1);
-    expect(status.next_action.kind).toBe('accept_packet');
-    expect(status.next_action.packet_id).toBe('s1');
-  });
-
-  it('FS-U5: cross-cutting with passing verification is accepted with audit flag', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [makePacket('s1', { change_class: 'cross_cutting' })],
-      completions: [makeCompletion('s1')],
-    }));
-    expect(status.summary.accepted).toBe(1);
-    expect(status.audit_pending).toHaveLength(1);
-    expect(status.audit_pending[0]!.id).toBe('s1');
-    expect(status.next_action.kind).toBe('all_clear');
-  });
-
-  it('FS-U6: cross-cutting with human acceptance clears audit', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [makePacket('s1', { change_class: 'cross_cutting' })],
-      completions: [makeCompletion('s1')],
-      acceptances: [makeAcceptance('s1')],
-    }));
-    expect(status.audit_pending).toHaveLength(0);
-    expect(status.next_action.kind).toBe('all_clear');
-  });
-
-  it('FS-U7: not-started packets are not listed as incomplete', () => {
+  it('FS-U4: not-started packets are not listed as incomplete', () => {
     const status = deriveFactoryStatus(makeInput({
       packets: [makePacket('s1', { started_at: null })],
     }));
@@ -123,74 +77,34 @@ describe('deriveFactoryStatus', () => {
     expect(status.summary.not_started).toBe(1);
   });
 
-  it('FS-U8: oldest incomplete packet is recommended first', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [
-        makePacket('s2', { started_at: '2026-03-20T02:00:00Z' }),
-        makePacket('s1', { started_at: '2026-03-20T01:00:00Z' }),
-      ],
-    }));
-    expect(status.next_action.packet_id).toBe('s1');
-  });
-
-  it('FS-U9: incomplete packet takes priority over acceptance debt', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [
-        makePacket('s1', { change_class: 'architectural' }),
-        makePacket('s2'),
-      ],
-      completions: [makeCompletion('s1')],
-    }));
-    expect(status.next_action.kind).toBe('complete_packet');
-    expect(status.next_action.packet_id).toBe('s2');
-  });
-
-  it('FS-U10: failing verification prevents auto-acceptance for local', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [makePacket('s1')],
-      completions: [makeCompletion('s1', false)],
-    }));
-    expect(status.summary.completed).toBe(1);
-    expect(status.summary.accepted).toBe(0);
-  });
-
-  it('FS-U11: summary counts across mixed states', () => {
+  it('FS-U5: summary counts across mixed states', () => {
     const status = deriveFactoryStatus(makeInput({
       packets: [
         makePacket('p1', { started_at: null }),
         makePacket('p2'),
-        makePacket('p3', { change_class: 'architectural' }),
+        makePacket('p3'),
         makePacket('p4'),
       ],
       completions: [makeCompletion('p3'), makeCompletion('p4')],
     }));
     expect(status.summary.not_started).toBe(1);
     expect(status.summary.in_progress).toBe(1);
-    expect(status.summary.completed).toBe(1);
-    expect(status.summary.accepted).toBe(1);
+    expect(status.summary.completed).toBe(2);
     expect(status.summary.total).toBe(4);
   });
 
-  it('FS-U12: next action command includes correct packet ID', () => {
-    const status = deriveFactoryStatus(makeInput({
-      packets: [makePacket('s14-some-work')],
-    }));
-    expect(status.next_action.command).toContain('s14-some-work');
-  });
-
-  it('FS-U13: feature filter scopes status to feature packets only', () => {
+  it('FS-U6: feature filter scopes status to feature packets only', () => {
     const status = deriveFactoryStatus({
       packets: [makePacket('p1'), makePacket('p2'), makePacket('p3')],
       completions: [makeCompletion('p1')],
-      acceptances: [],
       featureFilter: 'my-feature',
-      features: [{ id: 'my-feature', intent: 'test', status: 'approved', packets: ['p1', 'p2'] }],
+      features: [{ id: 'my-feature', intent: 'test', status: 'planned', packets: ['p1', 'p2'] }],
     });
     expect(status.summary.total).toBe(2);
     expect(status.feature_filter).toBe('my-feature');
   });
 
-  it('FS-U14: no feature filter shows all packets', () => {
+  it('FS-U7: no feature filter shows all packets', () => {
     const status = deriveFactoryStatus(makeInput({
       packets: [makePacket('p1'), makePacket('p2')],
     }));
@@ -198,11 +112,10 @@ describe('deriveFactoryStatus', () => {
     expect(status.feature_filter).toBeNull();
   });
 
-  it('FS-U15: proposed intent becomes next planning action when execution is clear', () => {
+  it('FS-U8: proposed intent becomes next planning action when execution is clear', () => {
     const status = deriveFactoryStatus({
       packets: [],
       completions: [],
-      acceptances: [],
       intents: [{ id: 'customer-dashboard', title: 'Customer dashboard', status: 'proposed', feature_id: null }],
       features: [],
     });
@@ -210,15 +123,32 @@ describe('deriveFactoryStatus', () => {
     expect(status.next_action.command).toContain('customer-dashboard');
   });
 
-  it('FS-U16: planned feature awaiting approval is surfaced before all_clear', () => {
+  it('FS-U9: features in progress produce run_feature action', () => {
     const status = deriveFactoryStatus({
-      packets: [],
+      packets: [makePacket('p1')],
       completions: [],
-      acceptances: [],
       intents: [],
-      features: [{ id: 'customer-dashboard', intent: 'Dashboard', status: 'planned', packets: [], intent_id: 'customer-dashboard' }],
+      features: [{ id: 'my-feature', intent: 'test', status: 'executing', packets: ['p1'] }],
     });
-    expect(status.next_action.kind).toBe('review_plan');
+    expect(status.next_action.kind).toBe('run_feature');
+    expect(status.features_in_progress).toHaveLength(1);
+  });
+
+  it('FS-U10: packet kind is exposed in summary', () => {
+    const status = deriveFactoryStatus(makeInput({
+      packets: [makePacket('p1', { kind: 'qa' })],
+    }));
+    expect(status.incomplete[0]!.kind).toBe('qa');
+  });
+
+  it('FS-U11: blocked packets with unmet dependencies are reported', () => {
+    const status = deriveFactoryStatus(makeInput({
+      packets: [
+        makePacket('p1', { started_at: null, dependencies: ['external-dep'] }),
+      ],
+    }));
+    expect(status.blocked).toHaveLength(1);
+    expect(status.blocked[0]!.unmet_dependencies).toContain('external-dep');
   });
 
   it('FS-U17: approved intent suppresses redundant feature approval gate', () => {

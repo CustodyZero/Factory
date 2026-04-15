@@ -1,8 +1,9 @@
 /**
- * Tests for factory plan — the planner handoff resolver.
+ * Tests for factory plan — the planner resolver.
  */
 
 import { describe, it, expect } from 'vitest';
+import { join } from 'node:path';
 import { hydrateIntent, resolvePlanAction, resolveSpecPath } from '../plan.js';
 import type { PlanInput, RawIntentArtifact } from '../plan.js';
 
@@ -43,7 +44,7 @@ describe('resolvePlanAction', () => {
       features: [makeFeature()],
       plannerPersona: { instructions: [], model: 'opus' },
     });
-    expect(action.kind).toBe('awaiting_approval');
+    expect(action.kind).toBe('already_planned');
   });
 
   it('PL-U3: approved intent lets planned linked feature hand off to supervisor', () => {
@@ -59,20 +60,42 @@ describe('resolvePlanAction', () => {
   it('PL-U4: approved feature also hands off to supervisor', () => {
     const action = resolvePlanAction({
       intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
-      features: [makeFeature({ status: 'approved' })],
+      features: [makeFeature({ status: 'completed' })],
       plannerPersona: { instructions: [], model: 'opus' },
     });
-    expect(action.kind).toBe('ready_for_execution');
-    expect(action.command).toContain('supervise.ts --json --feature customer-dashboard');
+    expect(action.kind).toBe('all_complete');
   });
 
   it('PL-U5: multiple linked features block planning handoff', () => {
     const action = resolvePlanAction({
-      intent: makeIntent(),
-      features: [makeFeature({ id: 'f1' }), makeFeature({ id: 'f2' })],
+      intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
+      features: [makeFeature({ status: 'delivered' })],
       plannerPersona: { instructions: [], model: 'opus' },
     });
-    expect(action.kind).toBe('blocked');
+    expect(action.kind).toBe('all_complete');
+  });
+
+  it('PL-U5: planner assignment includes spec and constraints', () => {
+    const action = resolvePlanAction({
+      intent: makeIntent({
+        spec: 'Build the dashboard',
+        constraints: ['Keep API stable', 'No new dependencies'],
+      }),
+      features: [],
+      plannerPersona: { instructions: [], model: 'opus' },
+    });
+    expect(action.kind).toBe('plan_feature');
+    expect(action.planner_assignment?.spec).toBe('Build the dashboard');
+    expect(action.planner_assignment?.constraints).toEqual(['Keep API stable', 'No new dependencies']);
+  });
+
+  it('PL-U6: executing feature returns already_planned', () => {
+    const action = resolvePlanAction({
+      intent: makeIntent({ status: 'planned', feature_id: 'customer-dashboard' }),
+      features: [makeFeature({ status: 'executing' })],
+      plannerPersona: { instructions: [], model: 'opus' },
+    });
+    expect(action.kind).toBe('already_planned');
   });
 });
 
@@ -113,13 +136,13 @@ describe('resolveSpecPath', () => {
   it('SP-U5: resolves safe relative path under project root', () => {
     const result = resolveSpecPath('/project', 'docs/specs/016.md');
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.absolutePath).toBe('/project/docs/specs/016.md');
+    if (result.ok) expect(result.absolutePath).toBe(join('/project', 'docs', 'specs', '016.md'));
   });
 
   it('SP-U6: normalizes redundant segments that stay under root', () => {
     const result = resolveSpecPath('/project', 'docs/./specs/016.md');
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.absolutePath).toBe('/project/docs/specs/016.md');
+    if (result.ok) expect(result.absolutePath).toBe(join('/project', 'docs', 'specs', '016.md'));
   });
 });
 
@@ -152,7 +175,7 @@ describe('hydrateIntent', () => {
   it('HI-U4: hydrates spec_path by reading through the injected reader', () => {
     const raw = makeRaw({ spec_path: 'docs/specs/016.md' });
     const readFile = (path: string): string => {
-      expect(path).toBe('/project/docs/specs/016.md');
+      expect(path).toBe(join('/project', 'docs', 'specs', '016.md'));
       return '# 016 — Platform Targets\n\nFull spec body here.';
     };
     const result = hydrateIntent(raw, '/project', readFile);

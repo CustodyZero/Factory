@@ -2,22 +2,12 @@
 /**
  * Factory — Completion Record Generator
  *
- * Creates a completion record for a packet after successful verification.
- * Runs build, lint, and tests (configured in factory.config.json) to
- * populate verification fields truthfully.
+ * Creates a completion record for a packet after running verification.
+ * Runs build, lint, and tests (from factory.config.json), collects
+ * changed files from git, and writes completions/<packet-id>.json.
  *
  * Usage:
  *   npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]
- *
- * Behavior:
- *   1. Validates the packet exists and has no existing completion
- *   2. Runs build, lint, and tests (records pass/fail for each)
- *   3. Collects changed files from git diff
- *   4. Writes completions/<packet-id>.json
- *   5. Re-runs factory:validate to confirm the result is clean
- *
- * This script exists to make completion the natural next step after
- * implementation, not an afterthought.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -26,269 +16,157 @@ import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
 import * as fmt from './output.js';
 
-const config = loadConfig();
-const PROJECT_ROOT = findProjectRoot();
-const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT, config);
-
 // ---------------------------------------------------------------------------
-// CLI argument parsing
+// Exported function for programmatic use by run.ts
 // ---------------------------------------------------------------------------
 
-const args = process.argv.slice(2);
-const packetId = args[0];
-const summaryIdx = args.indexOf('--summary');
-const customSummary = summaryIdx !== -1 ? args[summaryIdx + 1] : undefined;
-const identityIdx = args.indexOf('--identity');
-const identityOverride = identityIdx !== -1 ? args[identityIdx + 1] : undefined;
-
-if (packetId == null || packetId === '' || packetId.startsWith('--')) {
-  console.error('Usage: npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]');
-  console.error('');
-  console.error('Creates a completion record after running verification checks.');
-  console.error('The completion record is the factory deliverable — not the packet.');
-  console.error('');
-  console.error('Options:');
-  console.error('  --identity <id>  Override completed_by.id (e.g., "claude-qa" for QA agents)');
-  process.exit(1);
+export interface CompleteOptions {
+  readonly packetId: string;
+  readonly summary?: string;
+  readonly identity?: string;
+  readonly projectRoot?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Validate preconditions
-// ---------------------------------------------------------------------------
-
-const packetPath = join(ARTIFACT_ROOT, 'packets', `${packetId}.json`);
-if (!existsSync(packetPath)) {
-  console.error(`ERROR: Packet not found: packets/${packetId}.json`);
-  process.exit(1);
+export interface CompleteResult {
+  readonly packet_id: string;
+  readonly build_pass: boolean;
+  readonly lint_pass: boolean;
+  readonly tests_pass: boolean;
+  readonly ci_pass: boolean;
+  readonly files_changed: string[];
 }
 
-const completionPath = join(ARTIFACT_ROOT, 'completions', `${packetId}.json`);
-if (existsSync(completionPath)) {
-  console.error(`ERROR: Completion already exists: completions/${packetId}.json`);
-  console.error('FI-1 forbids duplicate completions. Delete the existing one first if re-completing.');
-  process.exit(1);
-}
+export function completePacket(options: CompleteOptions): CompleteResult {
+  const config = loadConfig(options.projectRoot);
+  const projectRoot = options.projectRoot ?? findProjectRoot();
+  const artifactRoot = resolveArtifactRoot(projectRoot, config);
+  const { packetId } = options;
 
-const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
-const title = typeof packet['title'] === 'string' ? packet['title'] : packetId;
-const packetKind = typeof packet['kind'] === 'string' ? packet['kind'] : 'dev';
-const startedAt = typeof packet['started_at'] === 'string' ? packet['started_at'] : null;
-const envDeps = Array.isArray(packet['environment_dependencies'])
-  ? (packet['environment_dependencies'] as string[]).filter((d) => typeof d === 'string')
-  : [];
-const acceptanceCriteria = Array.isArray(packet['acceptance_criteria'])
-  ? (packet['acceptance_criteria'] as unknown[]).filter((c): c is string => typeof c === 'string')
-  : [];
-const RUNTIME_HINTS = /\b(render|display|show|launch|screenshot|ui|ipc|window|desktop|browser|click|navigate|visual|run the code|exercise the app|manual verification)\b/i;
-
-if (startedAt === null) {
-  console.error(`ERROR: Packet '${packetId}' has not been started.`);
-  console.error(`Run: npx tsx tools/start.ts ${packetId}`);
-  process.exit(1);
-}
-
-// Dev packets require code review approval before completion
-const packetStatus = typeof packet['status'] === 'string' ? packet['status'] : null;
-if (packetKind === 'dev' && packetStatus !== null && packetStatus !== 'review_approved') {
-  // Legacy packets (null status) are grandfathered — they skip the review gate.
-  // All new dev packets must go through: implementing → review_requested → review_approved → completed.
-  if (packetStatus === 'implementing') {
-    console.error(`ERROR: Dev packet '${packetId}' has not been through code review.`);
-    console.error(`  Current status: implementing`);
-    console.error(`  Run: npx tsx tools/request-review.ts ${packetId}`);
-    console.error(`  Then have the code_reviewer persona run: npx tsx tools/review.ts ${packetId} --approve`);
-    process.exit(1);
-  } else if (packetStatus === 'review_requested') {
-    console.error(`ERROR: Dev packet '${packetId}' is awaiting code review.`);
-    console.error(`  Current status: review_requested`);
-    console.error(`  The code_reviewer must run: npx tsx tools/review.ts ${packetId} --approve`);
-    process.exit(1);
-  } else if (packetStatus === 'changes_requested') {
-    console.error(`ERROR: Dev packet '${packetId}' has changes requested by code review.`);
-    console.error(`  Current status: changes_requested`);
-    console.error(`  Address the feedback, then: npx tsx tools/request-review.ts ${packetId}`);
-    process.exit(1);
+  const packetPath = join(artifactRoot, 'packets', `${packetId}.json`);
+  if (!existsSync(packetPath)) {
+    throw new Error(`Packet not found: packets/${packetId}.json`);
   }
-  // Other statuses (draft, ready, etc.) fall through — they'll fail on other gates
-}
 
-console.log(`\nCreating completion for: ${title}`);
-console.log(`Packet: ${packetId} (${packetKind})\n`);
-
-// ---------------------------------------------------------------------------
-// QA evidence gate — QA packets with environment_dependencies require evidence
-// ---------------------------------------------------------------------------
-
-if (packetKind === 'qa' && envDeps.length > 0) {
-  const missingEvidence: string[] = [];
-  for (const dep of envDeps) {
-    const evidencePath = join(ARTIFACT_ROOT, 'evidence', `${dep}.json`);
-    if (!existsSync(evidencePath)) {
-      missingEvidence.push(dep);
-    } else {
-      // Check expiration
-      try {
-        const ev = JSON.parse(readFileSync(evidencePath, 'utf-8')) as Record<string, unknown>;
-        if (typeof ev['expires_at'] === 'string' && new Date(ev['expires_at']) < new Date()) {
-          missingEvidence.push(`${dep} (expired)`);
-        }
-      } catch {
-        missingEvidence.push(`${dep} (unreadable)`);
-      }
-    }
+  const completionPath = join(artifactRoot, 'completions', `${packetId}.json`);
+  if (existsSync(completionPath)) {
+    throw new Error(`Completion already exists: completions/${packetId}.json (FI-1)`);
   }
-  if (missingEvidence.length > 0) {
-    console.error('ERROR: QA packet has environment_dependencies without matching evidence records.');
-    console.error('');
-    console.error('  Missing evidence:');
-    for (const m of missingEvidence) {
-      console.error(`    - ${m}`);
-    }
-    console.error('');
-    console.error('QA packets with environment_dependencies require evidence records before');
-    console.error('completion. Evidence records must be created by a human (verified_by.kind');
-    console.error('must be "human", "cli", or "ui" — never "agent").');
-    console.error('');
-    console.error('Create evidence records in evidence/<dependency-key>.json, then retry.');
-    process.exit(1);
+
+  const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+  const startedAt = typeof packet['started_at'] === 'string' ? packet['started_at'] : null;
+  if (startedAt === null) {
+    throw new Error(`Packet '${packetId}' has not been started.`);
   }
-  console.log('  Environment evidence: all present and valid');
-}
 
-if (packetKind === 'qa' && envDeps.length === 0) {
-  const runtimeCriteria = acceptanceCriteria.filter((criterion) => RUNTIME_HINTS.test(criterion));
-  if (runtimeCriteria.length > 0) {
-    console.error('ERROR: QA packet requires runtime-style verification but declares no environment_dependencies.');
-    console.error('');
-    console.error(`  Packet: ${packetId}`);
-    console.error(`  Example criterion: ${runtimeCriteria[0]}`);
-    console.error('');
-    console.error('Declare environment_dependencies in the QA packet so evidence collection is enforceable,');
-    console.error('then create the corresponding evidence/<dependency-key>.json records before completion.');
-    process.exit(1);
-  }
-}
+  // Run verification
+  const buildPass = runVerification('build', config.verification.build, projectRoot);
+  const lintPass = runVerification('lint', config.verification.lint, projectRoot);
+  const testsPass = runVerification('tests', config.verification.test, projectRoot);
+  const ciPass = buildPass && lintPass && testsPass;
 
-// ---------------------------------------------------------------------------
-// Run verification (commands from factory.config.json)
-// ---------------------------------------------------------------------------
-
-interface VerificationStep {
-  name: string;
-  command: string;
-  pass: boolean;
-  output: string;
-}
-
-function runStep(name: string, command: string): VerificationStep {
-  console.log(`  Running ${name}...`);
+  // Collect changed files
+  let filesChanged: string[] = [];
   try {
-    const output = execSync(command, {
-      cwd: PROJECT_ROOT,
-      encoding: 'utf-8',
-      timeout: 300_000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    console.log(`  ${fmt.sym.ok} ${fmt.success(`${name} passed`)}`);
-    return { name, command, pass: true, output };
-  } catch (err: unknown) {
-    const stderr = err instanceof Error && 'stderr' in err ? String((err as { stderr: unknown }).stderr) : '';
-    console.log(`  ${fmt.sym.fail} ${fmt.error(`${name} failed`)}`);
-    return { name, command, pass: false, output: stderr };
+    const diffOutput = execSync('git diff --name-only HEAD~1', {
+      cwd: projectRoot, encoding: 'utf-8', timeout: 10_000,
+    }).trim();
+    if (diffOutput.length > 0) {
+      filesChanged = diffOutput.split('\n');
+    }
+  } catch { /* best-effort */ }
+
+  const summary = options.summary ?? `Completed implementation for packet ${packetId}.`;
+  const failedSteps = [
+    ...(buildPass ? [] : ['build']),
+    ...(lintPass ? [] : ['lint']),
+    ...(testsPass ? [] : ['tests']),
+  ];
+  const verificationNotes = failedSteps.length > 0
+    ? `Verification failed for: ${failedSteps.join(', ')}`
+    : 'All verification passed.';
+
+  const completion = {
+    packet_id: packetId,
+    completed_at: new Date().toISOString(),
+    completed_by: options.identity !== undefined
+      ? { ...config.completed_by_default, id: options.identity }
+      : config.completed_by_default,
+    summary,
+    files_changed: filesChanged,
+    verification: {
+      tests_pass: testsPass,
+      build_pass: buildPass,
+      lint_pass: lintPass,
+      ci_pass: ciPass,
+      notes: verificationNotes,
+    },
+  };
+
+  writeFileSync(completionPath, JSON.stringify(completion, null, 2) + '\n', 'utf-8');
+
+  // Update packet status
+  packet['status'] = 'completed';
+  writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+
+  return { packet_id: packetId, build_pass: buildPass, lint_pass: lintPass, tests_pass: testsPass, ci_pass: ciPass, files_changed: filesChanged };
+}
+
+function runVerification(name: string, command: string, cwd: string): boolean {
+  try {
+    execSync(command, { cwd, encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] });
+    return true;
+  } catch {
+    return false;
   }
 }
 
-const steps: VerificationStep[] = [
-  runStep('build', config.verification.build),
-  runStep('lint', config.verification.lint),
-  runStep('tests', config.verification.test),
-];
-
-const buildPass = steps[0]?.pass ?? false;
-const lintPass = steps[1]?.pass ?? false;
-const testsPass = steps[2]?.pass ?? false;
-const ciPass = buildPass && lintPass && testsPass;
-
 // ---------------------------------------------------------------------------
-// Collect changed files from git
+// CLI entry point
 // ---------------------------------------------------------------------------
 
-let filesChanged: string[] = [];
-try {
-  const diffOutput = execSync('git diff --name-only HEAD~1', {
-    cwd: PROJECT_ROOT,
-    encoding: 'utf-8',
-    timeout: 10_000,
-  }).trim();
-  if (diffOutput.length > 0) {
-    filesChanged = diffOutput.split('\n');
+function main(): void {
+  const args = process.argv.slice(2);
+  const packetId = args[0];
+  const summaryIdx = args.indexOf('--summary');
+  const customSummary = summaryIdx !== -1 ? args[summaryIdx + 1] : undefined;
+  const identityIdx = args.indexOf('--identity');
+  const identityOverride = identityIdx !== -1 ? args[identityIdx + 1] : undefined;
+
+  if (packetId == null || packetId === '' || packetId.startsWith('--')) {
+    console.error('Usage: npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]');
+    process.exit(1);
   }
-} catch {
-  // Best-effort
+
+  console.log(`\nCreating completion for: ${packetId}\n`);
+
+  try {
+    const result = completePacket({ packetId, summary: customSummary, identity: identityOverride });
+
+    console.log(`\nCompletion written: completions/${packetId}.json`);
+    console.log(`  Packet status updated to: completed`);
+
+    if (!result.ci_pass) {
+      console.log(`\n${fmt.sym.warn} ${fmt.warn('Verification did not fully pass.')}`);
+    }
+
+    // Re-validate
+    const config = loadConfig();
+    console.log('\nRe-validating factory...');
+    try {
+      execSync(config.validation.command, { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: 'inherit' });
+    } catch {
+      console.error('\nFactory validation failed after creating completion.');
+      process.exit(1);
+    }
+
+    console.log(`\n${fmt.sym.ok} ${fmt.success('Completion created and validated successfully.')}`);
+  } catch (e) {
+    console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Build verification notes
-// ---------------------------------------------------------------------------
-
-const failedSteps = steps.filter((s) => !s.pass).map((s) => s.name);
-const verificationNotes = failedSteps.length > 0
-  ? `Verification failed for: ${failedSteps.join(', ')}`
-  : `All verification passed. ${steps.map((s) => s.name).join(', ')} — all green.`;
-
-// ---------------------------------------------------------------------------
-// Write completion record
-// ---------------------------------------------------------------------------
-
-const summary = customSummary ?? `Completed implementation for packet ${packetId}.`;
-
-const completion = {
-  packet_id: packetId,
-  completed_at: new Date().toISOString(),
-  completed_by: identityOverride !== undefined
-    ? { ...config.completed_by_default, id: identityOverride }
-    : config.completed_by_default,
-  summary,
-  files_changed: filesChanged,
-  verification: {
-    tests_pass: testsPass,
-    build_pass: buildPass,
-    lint_pass: lintPass,
-    ci_pass: ciPass,
-    notes: verificationNotes,
-  },
-};
-
-writeFileSync(completionPath, JSON.stringify(completion, null, 2) + '\n', 'utf-8');
-
-// Update packet status to 'completed'
-packet['status'] = 'completed';
-writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
-
-console.log(`\nCompletion written: completions/${packetId}.json`);
-console.log(`  Packet status updated to: completed`);
-
-if (!ciPass) {
-  console.log(`\n${fmt.sym.warn} ${fmt.warn('Verification did not fully pass. The completion record reflects this honestly.')}`);
-  console.log('  Fix the failures and re-create the completion if needed.');
+const isDirectExecution = process.argv[1]?.endsWith('complete.ts') || process.argv[1]?.endsWith('complete.js');
+if (isDirectExecution) {
+  main();
 }
-
-// ---------------------------------------------------------------------------
-// Re-validate
-// ---------------------------------------------------------------------------
-
-console.log('\nRe-validating factory...');
-try {
-  execSync(config.validation.command, {
-    cwd: PROJECT_ROOT,
-    encoding: 'utf-8',
-    timeout: 30_000,
-    stdio: 'inherit',
-  });
-} catch {
-  console.error('\nFactory validation failed after creating completion. Check the output above.');
-  process.exit(1);
-}
-
-console.log(`\n${fmt.sym.ok} ${fmt.success('Completion created and validated successfully.')}`);
-console.log('  Remember: the completion is the deliverable, not the packet.');

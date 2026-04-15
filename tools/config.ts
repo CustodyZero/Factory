@@ -33,17 +33,11 @@ export interface PersonasConfig {
   readonly qa: PersonaConfig;
 }
 
-export interface SupervisorConfig {
-  readonly enabled: boolean;
-  readonly identity: { readonly kind: string; readonly id: string };
-}
-
-export interface OrchestratorProviderConfig {
+export interface PipelineProviderConfig {
   readonly enabled: boolean;
   readonly command: string;
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
-  readonly models: Readonly<Record<ModelTier, string>>;
 }
 
 export interface OrchestratorRetryStep {
@@ -103,8 +97,7 @@ export interface FactoryConfig {
     readonly id: string;
   };
   readonly personas: PersonasConfig;
-  readonly supervisor?: SupervisorConfig;
-  readonly orchestrator?: OrchestratorConfig;
+  readonly pipeline?: PipelineConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,18 +154,13 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       code_reviewer: { ...defaultPersonas.code_reviewer, ...rawPersonas?.code_reviewer },
       qa: { ...defaultPersonas.qa, ...rawPersonas?.qa },
     };
-    const defaultOrchestrator: OrchestratorConfig = {
-      enabled: true,
-      identity: { kind: 'agent', id: 'orchestrator' },
-      output_dir: 'reports/orchestrator',
-      recent_run_limit: 25,
-      recent_attempt_limit: 50,
-      completion_identities: {
-        developer: 'codex-dev',
-        code_reviewer: 'claude-cr',
-        qa: 'claude-qa',
+
+    const defaultPipeline: PipelineConfig = {
+      providers: {
+        codex: { enabled: true, command: 'codex', sandbox: 'workspace-write' },
+        claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
       },
-      personas: {
+      persona_providers: {
         planner: 'claude',
         developer: 'codex',
         code_reviewer: 'claude',
@@ -310,12 +298,6 @@ export function buildToolCommand(
 
 /**
  * Resolves the factory tooling root (where tools, schemas, hooks live).
- *
- * When factory_dir is "." (default / factory-is-the-project), returns PROJECT_ROOT.
- * When factory_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
- *
- * This is NOT where artifacts (packets, completions, etc.) live — use
- * resolveArtifactRoot() for that.
  */
 export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig): string {
   const root = projectRoot ?? findProjectRoot();
@@ -325,13 +307,6 @@ export function resolveFactoryRoot(projectRoot?: string, config?: FactoryConfig)
 
 /**
  * Resolves the artifact root (where packets, completions, features, etc. live).
- *
- * When artifact_dir is "." (default), returns PROJECT_ROOT.
- * When artifact_dir is "factory" (submodule mode), returns PROJECT_ROOT/factory/.
- *
- * Artifacts belong to the host project, not the factory tooling directory.
- * In submodule installs, artifacts consolidate under a single visible directory
- * (e.g., factory/) while tooling hides in .factory/.
  */
 export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig): string {
   const root = projectRoot ?? findProjectRoot();
@@ -346,11 +321,9 @@ export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig
  */
 export function isInfrastructureFile(filepath: string, config: FactoryConfig): boolean {
   for (const pattern of config.infrastructure_patterns) {
-    // Pattern ending in / matches directory prefix
     if (pattern.endsWith('/') && filepath.startsWith(pattern)) {
       return true;
     }
-    // Exact filename match (for root config files)
     if (filepath === pattern) {
       return true;
     }

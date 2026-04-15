@@ -2,17 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "factory-config.schema.json",
   "title": "Factory Config",
-  "description": "Project-local configuration for Factory tooling, personas, verification, supervisor, and orchestrator behavior.",
+  "description": "Project-local configuration for Factory tooling, personas, verification, and pipeline behavior.",
   "type": "object",
   "required": [
-    "project_name",
-    "factory_dir",
-    "artifact_dir",
-    "verification",
-    "validation",
-    "infrastructure_patterns",
-    "completed_by_default",
-    "personas"
+    "project_name", "factory_dir", "artifact_dir",
+    "verification", "validation", "infrastructure_patterns",
+    "completed_by_default", "personas"
   ],
   "properties": {
     "$schema": { "type": "string" },
@@ -53,37 +48,19 @@
       },
       "additionalProperties": false
     },
-    "supervisor": {
+    "pipeline": {
       "type": "object",
-      "required": ["enabled", "identity"],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "identity": { "$ref": "#/$defs/identity" }
-      },
-      "additionalProperties": false
-    },
-    "orchestrator": {
-      "type": "object",
-      "required": ["enabled", "identity", "personas", "providers"],
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "identity": { "$ref": "#/$defs/identity" },
-        "output_dir": { "type": "string", "minLength": 1 },
-        "recent_run_limit": { "type": "integer", "minimum": 1 },
-        "recent_attempt_limit": { "type": "integer", "minimum": 1 },
-        "completion_identities": {
+        "providers": {
           "type": "object",
-          "required": ["developer", "code_reviewer", "qa"],
           "properties": {
-            "developer": { "type": "string", "minLength": 1 },
-            "code_reviewer": { "type": "string", "minLength": 1 },
-            "qa": { "type": "string", "minLength": 1 }
+            "codex": { "$ref": "#/$defs/pipeline_provider" },
+            "claude": { "$ref": "#/$defs/pipeline_provider" }
           },
           "additionalProperties": false
         },
-        "personas": {
+        "persona_providers": {
           "type": "object",
-          "required": ["planner", "developer", "code_reviewer", "qa"],
           "properties": {
             "planner": { "$ref": "#/$defs/provider_name" },
             "developer": { "$ref": "#/$defs/provider_name" },
@@ -92,9 +69,8 @@
           },
           "additionalProperties": false
         },
-        "providers": {
+        "completion_identities": {
           "type": "object",
-          "required": ["codex", "claude"],
           "properties": {
             "codex": { "$ref": "#/$defs/provider" },
             "claude": { "$ref": "#/$defs/provider" },
@@ -125,14 +101,8 @@
       "type": "object",
       "required": ["kind", "id"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["human", "agent", "cli", "ui"]
-        },
-        "id": {
-          "type": "string",
-          "minLength": 1
-        }
+        "kind": { "type": "string", "enum": ["human", "agent", "cli", "ui"] },
+        "id": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
@@ -141,14 +111,8 @@
       "required": ["description", "instructions"],
       "properties": {
         "description": { "type": "string", "minLength": 1 },
-        "instructions": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "model": {
-          "type": "string",
-          "enum": ["opus", "sonnet", "haiku"]
-        }
+        "instructions": { "type": "array", "items": { "type": "string" } },
+        "model": { "type": "string", "enum": ["opus", "sonnet", "haiku"] }
       },
       "additionalProperties": false
     },
@@ -156,47 +120,14 @@
       "type": "string",
       "enum": ["codex", "claude", "copilot"]
     },
-    "retry_step": {
+    "pipeline_provider": {
       "type": "object",
-      "required": ["provider", "model"],
-      "properties": {
-        "provider": { "$ref": "#/$defs/provider_name" },
-        "model": {
-          "type": "string",
-          "enum": ["opus", "sonnet", "haiku"]
-        }
-      },
-      "additionalProperties": false
-    },
-    "retry_steps": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "$ref": "#/$defs/retry_step" }
-    },
-    "provider": {
-      "type": "object",
-      "required": ["enabled", "command", "models"],
+      "required": ["enabled", "command"],
       "properties": {
         "enabled": { "type": "boolean" },
         "command": { "type": "string", "minLength": 1 },
-        "sandbox": {
-          "type": "string",
-          "enum": ["read-only", "workspace-write", "danger-full-access"]
-        },
-        "permission_mode": {
-          "type": "string",
-          "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]
-        },
-        "models": {
-          "type": "object",
-          "required": ["opus", "sonnet", "haiku"],
-          "properties": {
-            "opus": { "type": "string", "minLength": 1 },
-            "sonnet": { "type": "string", "minLength": 1 },
-            "haiku": { "type": "string", "minLength": 1 }
-          },
-          "additionalProperties": false
-        }
+        "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
+        "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] }
       },
       "additionalProperties": false
     }

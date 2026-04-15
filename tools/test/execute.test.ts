@@ -1,5 +1,5 @@
 /**
- * Tests for factory execute — the stateless action resolver.
+ * Tests for factory execute — the stateless work list resolver.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -14,7 +14,7 @@ function makeFeature(overrides: Partial<Feature> = {}): Feature {
   return {
     id: overrides.id ?? 'test-feature',
     intent: overrides.intent ?? 'Test feature',
-    status: overrides.status ?? 'approved',
+    status: overrides.status ?? 'planned',
     packets: overrides.packets ?? [],
     created_by: overrides.created_by ?? { kind: 'human', id: 'operator' },
     approved_at: overrides.approved_at ?? '2026-03-21T00:00:00Z',
@@ -27,7 +27,6 @@ function makeDevPacket(id: string, deps: string[] = [], started_at: string | nul
     id,
     kind: 'dev' as const,
     title: `Dev ${id}`,
-    change_class: 'local' as const,
     dependencies: deps,
     started_at,
   };
@@ -39,17 +38,8 @@ function makeQaPacket(id: string, verifies: string, deps: string[] = [], started
     kind: 'qa' as const,
     verifies,
     title: `QA ${id}`,
-    change_class: 'local' as const,
     dependencies: deps,
     started_at,
-  };
-}
-
-function makeRuntimeQaPacket(id: string, verifies: string, deps: string[] = [], envDeps: string[] = []) {
-  return {
-    ...makeQaPacket(id, verifies, deps),
-    environment_dependencies: envDeps,
-    acceptance_criteria: ['Run the code and verify the browser UI renders correctly'],
   };
 }
 
@@ -72,12 +62,12 @@ function readyIds(assignments: ReadonlyArray<PacketAssignment>): string[] {
 // ---------------------------------------------------------------------------
 
 describe('resolveExecuteAction', () => {
-  it('EX-U1: rejects feature in draft status', () => {
+  it('EX-U1: rejects feature not in planned/executing status', () => {
     const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ status: 'draft', packets: ['p1'] }),
+      feature: makeFeature({ status: 'completed', packets: ['p1'] }),
     }));
-    expect(action.kind).toBe('not_approved');
-    expect(action.message).toContain('draft');
+    expect(action.kind).toBe('not_ready');
+    expect(action.message).toContain('completed');
   });
 
   it('EX-U1b: planned feature linked to approved intent is execution-authorized', () => {
@@ -224,11 +214,11 @@ describe('resolveExecuteAction', () => {
     expect(action.kind).toBe('spawn_packets');
   });
 
-  it('EX-U13: completed status is not allowed for execution', () => {
+  it('EX-U13: delivered status is not allowed for execution', () => {
     const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ status: 'completed', packets: ['p1'] }),
+      feature: makeFeature({ status: 'delivered', packets: ['p1'] }),
     }));
-    expect(action.kind).toBe('not_approved');
+    expect(action.kind).toBe('not_ready');
   });
 
   it('EX-U14: message includes progress counts', () => {
@@ -241,116 +231,17 @@ describe('resolveExecuteAction', () => {
     expect(readyIds(action.ready_packets)).toEqual(['p2']);
   });
 
-  it('EX-U15: all local dev+qa complete produces all_complete', () => {
+  it('EX-U15: all dev+qa complete produces all_complete', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
       packets: [makeDevPacket('dev-1'), makeQaPacket('qa-1', 'dev-1', ['dev-1'])],
       completionIds: new Set(['dev-1', 'qa-1']),
     }));
     expect(action.kind).toBe('all_complete');
-    expect(action.message).toContain('ready for delivery');
+    expect(action.message).toContain('delivery');
   });
 
-  it('EX-U16: architectural dev packet with QA complete but no acceptance produces awaiting_acceptance', () => {
-    const archDev = { ...makeDevPacket('dev-1'), change_class: 'architectural' as const };
-    const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
-      packets: [archDev, qaPacket],
-      completionIds: new Set(['dev-1', 'qa-1']),
-    }));
-    expect(action.kind).toBe('awaiting_acceptance');
-    expect(action.message).toContain('dev-1');
-    expect(action.message).toContain('accept');
-  });
-
-  it('EX-U17: architectural dev packet with acceptance produces all_complete', () => {
-    const archDev = { ...makeDevPacket('dev-1'), change_class: 'architectural' as const };
-    const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
-      packets: [archDev, qaPacket],
-      completionIds: new Set(['dev-1', 'qa-1']),
-      acceptanceIds: new Set(['dev-1']),
-    }));
-    expect(action.kind).toBe('all_complete');
-  });
-
-  it('EX-U18: architectural dev packet without QA complete does not trigger awaiting_acceptance', () => {
-    // If QA hasn't completed, the feature isn't "all complete" yet
-    const archDev = { ...makeDevPacket('dev-1'), change_class: 'architectural' as const };
-    const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
-      packets: [archDev, qaPacket],
-      completionIds: new Set(['dev-1']),
-    }));
-    // QA is ready to execute, not awaiting_acceptance
-    expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets).toEqual([{
-      packet_id: 'qa-1',
-      persona: 'qa',
-      task: 'verify',
-      model: 'opus',
-      instructions: [],
-      start_command: 'npx tsx tools/start.ts qa-1',
-    }]);
-  });
-
-  it('EX-U19: mixed dev/qa — only architectural dev packets need acceptance', () => {
-    const localDev = makeDevPacket('dev-1');
-    const localQa = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
-    const archDev = { ...makeDevPacket('dev-2'), change_class: 'architectural' as const };
-    const archQa = makeQaPacket('qa-2', 'dev-2', ['dev-2']);
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1', 'dev-2', 'qa-2'] }),
-      packets: [localDev, localQa, archDev, archQa],
-      completionIds: new Set(['dev-1', 'qa-1', 'dev-2', 'qa-2']),
-    }));
-    expect(action.kind).toBe('awaiting_acceptance');
-    expect(action.message).toContain('dev-2');
-    expect(action.message).not.toContain('dev-1');
-  });
-
-  it('EX-U20: full dev/qa lifecycle — dev → qa → acceptance → complete', () => {
-    const archDev = { ...makeDevPacket('dev-1'), change_class: 'architectural' as const };
-    const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
-    const feature = makeFeature({ packets: ['dev-1', 'qa-1'] });
-
-    // Step 1: dev ready
-    const a1 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket] }));
-    expect(a1.kind).toBe('spawn_packets');
-    expect(a1.ready_packets).toEqual([{
-      packet_id: 'dev-1',
-      persona: 'developer',
-      task: 'implement',
-      model: 'opus',
-      instructions: [],
-      start_command: 'npx tsx tools/start.ts dev-1',
-    }]);
-
-    // Step 2: dev complete, qa ready
-    const a2 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1']) }));
-    expect(a2.kind).toBe('spawn_packets');
-    expect(a2.ready_packets).toEqual([{
-      packet_id: 'qa-1',
-      persona: 'qa',
-      task: 'verify',
-      model: 'opus',
-      instructions: [],
-      start_command: 'npx tsx tools/start.ts qa-1',
-    }]);
-
-    // Step 3: both complete, awaiting acceptance
-    const a3 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1', 'qa-1']) }));
-    expect(a3.kind).toBe('awaiting_acceptance');
-
-    // Step 4: accepted
-    const a4 = resolveExecuteAction(makeInput({ feature, packets: [archDev, qaPacket], completionIds: new Set(['dev-1', 'qa-1']), acceptanceIds: new Set(['dev-1']) }));
-    expect(a4.kind).toBe('all_complete');
-  });
-
-  it('EX-U21: persona instructions from config are included in assignment', () => {
+  it('EX-U16: persona instructions from config are included in assignment', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Use MCP server X'], model: 'opus' as const },
@@ -374,7 +265,7 @@ describe('resolveExecuteAction', () => {
     }]);
   });
 
-  it('EX-U22: packet-level instructions merge with persona instructions', () => {
+  it('EX-U17: packet-level instructions merge with persona instructions', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Always lint'], model: 'opus' as const },
@@ -390,10 +281,9 @@ describe('resolveExecuteAction', () => {
       personas,
     });
     expect(action.ready_packets[0]!.instructions).toEqual(['Always lint', 'Requires GPU access']);
-    expect(action.ready_packets[0]!.start_command).toBe('npx tsx tools/start.ts dev-1');
   });
 
-  it('EX-U23: QA packet gets qa persona instructions', () => {
+  it('EX-U18: QA packet gets qa persona instructions', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: ['Dev instruction'], model: 'opus' as const },
@@ -413,7 +303,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.instructions).toEqual(['Review instruction']);
   });
 
-  it('EX-U24: no personas provided defaults to empty instructions and opus model', () => {
+  it('EX-U19: no personas provided defaults to empty instructions and opus model', () => {
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1'] }),
       packets: [makeDevPacket('dev-1')],
@@ -422,7 +312,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.model).toBe('opus');
   });
 
-  it('EX-U25: model resolves from persona config', () => {
+  it('EX-U20: model resolves from persona config', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
@@ -439,7 +329,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.model).toBe('sonnet');
   });
 
-  it('EX-U26: packet-level model overrides persona model', () => {
+  it('EX-U21: packet-level model overrides persona model', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'sonnet' as const },
@@ -457,15 +347,15 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.model).toBe('opus');
   });
 
-  it('EX-U27: model fallback chain — packet > persona > opus default', () => {
-    // No persona config, no packet model → defaults to opus
+  it('EX-U22: model fallback chain — packet > persona > opus default', () => {
+    // No persona config, no packet model -> defaults to opus
     const a1 = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1'] }),
       packets: [makeDevPacket('dev-1')],
     }));
     expect(a1.ready_packets[0]!.model).toBe('opus');
 
-    // Persona model set, no packet model → persona model
+    // Persona model set, no packet model -> persona model
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'haiku' as const },
@@ -481,7 +371,7 @@ describe('resolveExecuteAction', () => {
     });
     expect(a2.ready_packets[0]!.model).toBe('haiku');
 
-    // Packet model set → packet model wins
+    // Packet model set -> packet model wins
     const packet = { ...makeDevPacket('dev-1'), model: 'sonnet' as const };
     const a3 = resolveExecuteAction({
       ...makeInput({
@@ -493,34 +383,11 @@ describe('resolveExecuteAction', () => {
     expect(a3.ready_packets[0]!.model).toBe('sonnet');
   });
 
-  it('EX-U28: runtime QA packet without environment_dependencies is blocked before handoff', () => {
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
-      packets: [makeDevPacket('dev-1'), makeRuntimeQaPacket('qa-1', 'dev-1', ['dev-1'])],
-      completionIds: new Set(['dev-1']),
-    }));
-    expect(action.kind).toBe('blocked');
-    expect(action.blocked_packets[0]?.id).toBe('qa-1');
-    expect(action.blocked_packets[0]?.blocked_by[0]).toContain('environment_dependencies');
-  });
-
-  it('EX-U29: QA packet with environment_dependencies advertises evidence requirement', () => {
-    const action = resolveExecuteAction(makeInput({
-      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
-      packets: [makeDevPacket('dev-1'), makeRuntimeQaPacket('qa-1', 'dev-1', ['dev-1'], ['browser-env'])],
-      completionIds: new Set(['dev-1']),
-    }));
-    expect(action.kind).toBe('spawn_packets');
-    expect(action.ready_packets[0]?.instructions).toContain(
-      'Evidence required before completion for environment_dependencies: browser-env',
-    );
-  });
-
   // -------------------------------------------------------------------------
   // Packet status field tests (Phase 2 — explicit lifecycle status)
   // -------------------------------------------------------------------------
 
-  it('EX-U30: packet with implementing status and started_at is reported as in-progress', () => {
+  it('EX-U23: packet with implementing status and started_at is reported as in-progress', () => {
     const packet = { ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'), status: 'implementing' as const };
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1'] }),
@@ -531,7 +398,7 @@ describe('resolveExecuteAction', () => {
     expect(action.in_progress_packets[0]!.packet_id).toBe('dev-1');
   });
 
-  it('EX-U31: packet with completed status and completion record is reported as completed', () => {
+  it('EX-U24: packet with completed status and completion record is reported as completed', () => {
     const packet = { ...makeDevPacket('dev-1'), status: 'completed' as const };
     const action = resolveExecuteAction(makeInput({
       feature: makeFeature({ packets: ['dev-1'] }),
@@ -545,7 +412,7 @@ describe('resolveExecuteAction', () => {
   // Code review lifecycle tests (Phase 3)
   // -------------------------------------------------------------------------
 
-  it('EX-U32: dev packet with review_requested status dispatches code_reviewer persona', () => {
+  it('EX-U25: dev packet with review_requested status dispatches code_reviewer persona', () => {
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
       status: 'review_requested' as const,
@@ -562,7 +429,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.task).toBe('review');
   });
 
-  it('EX-U33: dev packet with changes_requested status dispatches developer for rework', () => {
+  it('EX-U26: dev packet with changes_requested status dispatches developer for rework', () => {
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
       status: 'changes_requested' as const,
@@ -580,7 +447,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.task).toBe('rework');
   });
 
-  it('EX-U34: dev packet with review_approved status dispatches developer for finalize', () => {
+  it('EX-U27: dev packet with review_approved status dispatches developer for finalize', () => {
     const packet = {
       ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
       status: 'review_approved' as const,
@@ -597,7 +464,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.task).toBe('finalize');
   });
 
-  it('EX-U35: code_reviewer gets branch info in instructions', () => {
+  it('EX-U28: code_reviewer gets branch info in instructions', () => {
     const personas = {
       planner: { description: 'planner', instructions: [], model: 'opus' as const },
       developer: { description: 'dev', instructions: [], model: 'opus' as const },
@@ -623,7 +490,7 @@ describe('resolveExecuteAction', () => {
     expect(action.ready_packets[0]!.instructions).toContain('Review branch: feature/dev-1');
   });
 
-  it('EX-U36: full review lifecycle — implementing → review → changes → re-review → approve → complete', () => {
+  it('EX-U29: full review lifecycle — implementing -> review -> changes -> re-review -> approve -> complete', () => {
     const feature = makeFeature({ packets: ['dev-1', 'qa-1'] });
     const qaPacket = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
 
@@ -672,8 +539,7 @@ describe('resolveExecuteAction', () => {
     expect(a6.ready_packets[0]!.task).toBe('verify');
   });
 
-  it('EX-U37: QA packets are not affected by review status routing', () => {
-    // QA packets with a status field should still be handled normally
+  it('EX-U30: QA packets are not affected by review status routing', () => {
     const qaPacket = {
       ...makeQaPacket('qa-1', 'dev-1', ['dev-1']),
       status: 'implementing' as const,

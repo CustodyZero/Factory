@@ -10,7 +10,7 @@ set -e
 #
 # Layout after setup:
 #   .factory/     — tooling (git submodule, hidden)
-#   factory/      — artifacts (features, packets, completions, etc.)
+#   factory/      — artifacts (features, packets, completions)
 #
 # What this script does:
 #   1. Installs factory dependencies (inside .factory/)
@@ -70,13 +70,10 @@ copy_template "${FACTORY_DIR}/templates/AGENTS.md" "AGENTS.md"
 
 echo ""
 echo "Creating artifact directories..."
-for subdir in intents features packets completions acceptances rejections evidence supervisor reports/orchestrator; do
+for subdir in intents features packets completions; do
   mkdir -p "${ARTIFACT_DIR}/${subdir}"
   echo "  MKDIR ${ARTIFACT_DIR}/${subdir}/"
 done
-
-copy_template "${FACTORY_DIR}/templates/SUPERVISOR.md" "${ARTIFACT_DIR}/supervisor/SUPERVISOR.md"
-copy_template "${FACTORY_DIR}/templates/memory.md" "${ARTIFACT_DIR}/supervisor/memory.md"
 
 # ── 4. Configure git hooks ──────────────────────────────────────────────────
 
@@ -93,6 +90,6 @@ echo ""
 echo "Next steps:"
 echo "  1. Edit factory.config.json — set project_name and verification commands"
 echo "  2. Edit CLAUDE.md — customize for your project"
-echo "  3. Run: npx tsx ${FACTORY_DIR}/tools/supervise.ts --init  (initialize supervisor)"
-echo "  4. Run: npx tsx ${FACTORY_DIR}/tools/status.ts"
+echo "  3. Create an intent under ${ARTIFACT_DIR}/intents/ and run:"
+echo "     npx tsx ${FACTORY_DIR}/tools/run.ts <intent-id>"
 echo ""

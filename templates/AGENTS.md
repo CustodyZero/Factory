@@ -2,90 +2,42 @@
 
 This file defines how all contributors — AI agents and humans — must operate
 in this repository. It is the complete operational reference for the factory
-workflow. AI agents must follow it as hard constraints; humans should treat
-it as the authoritative process guide.
-
-It applies to all agents regardless of provider (Claude, GPT, Gemini, Copilot, Cursor, etc.).
+pipeline. AI agents must follow it as hard constraints; humans should treat
+it as the authoritative process reference.
 
 ---
 
 ## 1. The Factory Controls All Work
 
-This repository uses a factory system to govern all implementation work.
-The factory is the source of truth for what work exists, what is in progress, and what is complete.
+No code changes happen outside the factory's packet system. Every implementation
+must trace back to a packet. Every packet must trace back to a feature. Every
+feature must trace back to an intent that a human approved.
 
-**You must not implement code without using the factory.**
+**Session reconstruction:** run `npx tsx .factory/tools/status.ts` at the start
+of every session.
 
-### Before Starting Any Work
-
-```sh
-npx tsx .factory/tools/status.ts
-```
-
-This tells you:
-- What packets are in progress
-- What is blocked
-- What needs completion
-- What the next legal action is
-
-**If a feature is active:**
-```sh
-npx tsx .factory/tools/execute.ts <feature-id>
-```
-
-This tells you which packets are ready to implement **and which persona to use**.
-Before touching implementation, explicitly claim the packet:
-```sh
-npx tsx .factory/tools/start.ts <packet-id>
-```
-
-### After Implementation — Code Review (Dev Packets Only)
-
-Dev packets must pass code review before completion. QA packets skip this step.
-
-```sh
-npx tsx .factory/tools/request-review.ts <packet-id>                  # Developer signals code is ready for review
-npx tsx .factory/tools/review.ts <packet-id> --approve                # Code reviewer approves
-npx tsx .factory/tools/review.ts <packet-id> --request-changes        # Code reviewer requests changes
-```
-
-The developer ↔ code review loop repeats until the reviewer approves:
-```
-implementing → review_requested → [changes_requested → implementing → review_requested →]* review_approved → completed
-```
-
-The `branch` field on the packet identifies the git branch under review.
-The `review_iteration` field tracks the number of review round-trips (incremented on each
-re-request after `changes_requested`). Review feedback lives in git (branch diffs, git notes)
-— not in factory artifacts.
-
-### After Code Review (or for QA Packets)
-
-```sh
-npx tsx .factory/tools/complete.ts <packet-id>                        # dev packets (uses default identity)
-npx tsx .factory/tools/complete.ts <packet-id> --identity claude-qa   # QA packets (distinct identity)
-```
-
-This runs build + lint + tests and creates a completion record.
-**Do this before committing. Completion is the deliverable, not the packet.**
-**Dev packets must be in `review_approved` status before complete.ts will accept them.**
-
-**QA agents must use `--identity` to distinguish themselves from the developer agent.**
-FI-7 requires that the QA completion identity differs from the dev completion identity.
-If both use the default, validation will reject the QA completion.
-
-The pre-commit hook will reject commits that include implementation files
-without a matching completion record.
-
----
-
-## 2. Factory Lifecycle
+## 2. Pipeline Lifecycle
 
 ```
-Intent/Spec → Planner → Feature + Dev/QA Packets → Human Approval → Supervisor → Execution → Delivery
+Intent (human writes spec + constraints)
+  |
+  v
+run.ts <intent-id>      <-- single command, runs to completion
+  |-- Plan: planner decomposes spec into feature + dev/qa packet pairs
+  |-- Develop: for each dev packet
+  |     |-- Developer agent implements
+  |     |-- Code reviewer agent reviews (different identity)
+  |     |-- Feedback loop if needed
+  |     |-- Completion recorded
+  |-- Verify: for each QA packet
+  |     |-- QA agent verifies (different identity from dev)
+  |     |-- Completion recorded
+  |-- Done: feature marked complete
 ```
 
-### Dev/QA Packet Pairs
+**Human gates:** exactly two.
+1. Approve the spec (write the markdown document)
+2. Approve the intent (create the intent artifact with constraints)
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
