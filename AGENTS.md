@@ -240,9 +240,9 @@ Planner invariants:
 
 - **verification:** build, lint, test commands run during `complete.ts`
 - **personas:** planner, developer, code_reviewer, qa — each with
-  description, instructions, and model tier (opus/sonnet/haiku)
-- **pipeline:** provider mappings (codex/claude), completion identities,
-  max review iterations
+  description, instructions, and model tier (high/medium/low)
+- **pipeline:** provider mappings (codex/claude/copilot), completion identities,
+  max review iterations, per-provider model_map
 
 ## 8. Where to Find Things
 
