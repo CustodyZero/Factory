@@ -204,6 +204,56 @@ function planPhase(
   return { feature_id: created.id };
 }
 
+/**
+ * Derive the current lifecycle phase of a dev packet from its artifact state.
+ * Returns the entry point for resumption.
+ */
+type DevResumePoint =
+  | 'completed'      // has completion record — skip entirely
+  | 'implement'      // not started, or implementing — (re)invoke developer
+  | 'request_review' // implementing done, needs review request
+  | 'review'         // review_requested — invoke reviewer
+  | 'rework'         // changes_requested — invoke developer for rework
+  | 'finalize'       // review_approved — run completion
+  ;
+
+function deriveDevResumePoint(packet: RawPacket, hasCompletion: boolean): DevResumePoint {
+  if (hasCompletion) return 'completed';
+  const status = packet.status ?? null;
+  switch (status) {
+    case 'review_requested': return 'review';
+    case 'changes_requested': return 'rework';
+    case 'review_approved': return 'finalize';
+    default: return 'implement'; // null, 'draft', 'ready', 'implementing'
+  }
+}
+
+/**
+ * Topological sort of packets by dependencies.
+ * Returns packets in dependency order (leaves first).
+ * Packets whose dependencies are not in the input set are placed last.
+ */
+function topoSort(packets: ReadonlyArray<RawPacket>): RawPacket[] {
+  const idSet = new Set(packets.map((p) => p.id));
+  const visited = new Set<string>();
+  const result: RawPacket[] = [];
+  const packetMap = new Map(packets.map((p) => [p.id, p]));
+
+  function visit(id: string): void {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const p = packetMap.get(id);
+    if (p === undefined) return;
+    for (const dep of p.dependencies ?? []) {
+      if (idSet.has(dep)) visit(dep);
+    }
+    result.push(p);
+  }
+
+  for (const p of packets) visit(p.id);
+  return result;
+}
+
 function devPhase(
   feature: Feature,
   config: FactoryConfig,
@@ -215,125 +265,164 @@ function devPhase(
   const completionIds = new Set(completions.map((c) => c.packet_id));
 
   const devPackets = packets.filter((p) => p.kind === 'dev' && feature.packets.includes(p.id));
+  const sorted = topoSort(devPackets);
   const completed: string[] = [];
   const failed: string[] = [];
 
-  fmt.log('develop', `${devPackets.length} dev packet(s) to process`);
+  fmt.log('develop', `${sorted.length} dev packet(s) to process`);
 
   const maxReviewIterations = config.pipeline?.max_review_iterations ?? 3;
+  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
+  const reviewProvider = config.pipeline?.persona_providers.code_reviewer ?? 'claude';
 
-  for (const packet of devPackets) {
-    if (completionIds.has(packet.id)) {
+  for (const packet of sorted) {
+    // Re-read packet from disk each iteration (previous agent may have changed it)
+    const freshPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? packet;
+    // Re-read completions (previous packet may have just completed)
+    if (!completionIds.has(packet.id) && existsSync(join(artifactRoot, 'completions', `${packet.id}.json`))) {
+      completionIds.add(packet.id);
+    }
+
+    const resumePoint = deriveDevResumePoint(freshPacket, completionIds.has(packet.id));
+
+    if (resumePoint === 'completed') {
       fmt.log('develop', `${fmt.sym.ok} ${packet.id} — already complete`);
       completed.push(packet.id);
       continue;
     }
 
-    fmt.log('develop', `${fmt.sym.arrow} ${fmt.bold(packet.id)} — "${packet.title}"`);
-
-    if (dryRun) {
-      fmt.log('develop', `  [dry-run] Would implement, review, and complete`);
-      continue;
-    }
-
-    // Start packet
-    try {
-      execSync(buildToolCommand('start.ts', [packet.id], undefined, config), {
-        cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch { /* idempotent */ }
-
-    // Invoke developer
-    const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
-    const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
-    const devPrompt = buildDevPrompt(packet, config);
-
-    fmt.log('develop', `  Implementing via ${devProvider}...`);
-    const devResult = invokeAgent(devProvider, devPrompt, config);
-    if (devResult.exit_code !== 0) {
-      fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
+    // Check dependencies are met before proceeding
+    const deps = freshPacket.dependencies ?? [];
+    const unmetDeps = deps.filter((d) => !completionIds.has(d));
+    if (unmetDeps.length > 0) {
+      fmt.log('develop', `${fmt.sym.blocked} ${packet.id} — blocked by: ${unmetDeps.join(', ')}`);
       failed.push(packet.id);
       continue;
     }
-    fmt.log('develop', `  ${fmt.sym.ok} Implementation done`);
 
-    // Request review
-    try {
-      execSync(buildToolCommand('request-review.ts', [packet.id], undefined, config), {
-        cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (e) {
-      fmt.log('develop', `  ${fmt.sym.warn} Could not request review: ${e instanceof Error ? e.message : String(e)}`);
+    fmt.log('develop', `${fmt.sym.arrow} ${fmt.bold(packet.id)} — "${freshPacket.title}" (resume: ${resumePoint})`);
+
+    if (dryRun) {
+      fmt.log('develop', `  [dry-run] Would resume from '${resumePoint}'`);
+      continue;
     }
 
-    // Code review loop
-    const reviewProvider = config.pipeline?.persona_providers.code_reviewer ?? 'claude';
-    let reviewIteration = 0;
-    let approved = false;
+    // -- State machine: enter at the derived resume point and fall through --
 
-    while (reviewIteration < maxReviewIterations && !approved) {
-      fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider}...`);
-      const reviewPrompt = buildReviewPrompt(packet, config);
-      const reviewResult = invokeAgent(reviewProvider, reviewPrompt, config);
+    let currentPoint: DevResumePoint = resumePoint;
+    let ok = true;
 
-      if (reviewResult.exit_code !== 0) {
-        fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
-        break;
-      }
+    while (currentPoint !== 'completed' && ok) {
+      switch (currentPoint) {
+        case 'implement': {
+          // Start packet (idempotent)
+          try {
+            execSync(buildToolCommand('start.ts', [packet.id], undefined, config), {
+              cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+            });
+          } catch { /* already started is fine */ }
 
-      // Check packet status after review
-      const updatedPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
-      const status = updatedPacket?.status ?? null;
-
-      if (status === 'review_approved') {
-        approved = true;
-        fmt.log('review', `  ${fmt.sym.ok} Review approved`);
-      } else if (status === 'changes_requested') {
-        fmt.log('review', `  ${fmt.sym.warn} Changes requested — reworking...`);
-        reviewIteration++;
-
-        // Rework
-        const reworkResult = invokeAgent(devProvider, buildReworkPrompt(packet, config), config);
-        if (reworkResult.exit_code !== 0) {
-          fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
+          fmt.log('develop', `  Implementing via ${devProvider}...`);
+          const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config);
+          if (devResult.exit_code !== 0) {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
+            ok = false;
+            break;
+          }
+          fmt.log('develop', `  ${fmt.sym.ok} Implementation done`);
+          currentPoint = 'request_review';
           break;
         }
 
-        // Re-request review
-        try {
-          execSync(buildToolCommand('request-review.ts', [packet.id], undefined, config), {
-            cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-          });
-        } catch { /* best-effort */ }
-      } else {
-        // Review didn't transition the status — assume approved
-        try {
-          execSync(buildToolCommand('review.ts', [packet.id, '--approve'], undefined, config), {
-            cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-          });
-        } catch { /* best-effort */ }
-        approved = true;
-        fmt.log('review', `  ${fmt.sym.ok} Review complete`);
+        case 'request_review': {
+          try {
+            execSync(buildToolCommand('request-review.ts', [packet.id], undefined, config), {
+              cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+            });
+          } catch (e) {
+            fmt.log('develop', `  ${fmt.sym.warn} Could not request review: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          currentPoint = 'review';
+          break;
+        }
+
+        case 'review': {
+          const iterationPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? freshPacket;
+          const reviewIteration = iterationPacket.review_iteration ?? 0;
+
+          if (reviewIteration >= maxReviewIterations) {
+            fmt.log('develop', `  ${fmt.sym.fail} Review not approved after ${maxReviewIterations} iterations`);
+            ok = false;
+            break;
+          }
+
+          fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider}...`);
+          const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config);
+          if (reviewResult.exit_code !== 0) {
+            fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
+            ok = false;
+            break;
+          }
+
+          // Re-read packet status after review agent ran
+          const afterReview = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
+          const afterStatus = afterReview?.status ?? null;
+
+          if (afterStatus === 'review_approved') {
+            fmt.log('review', `  ${fmt.sym.ok} Review approved`);
+            currentPoint = 'finalize';
+          } else if (afterStatus === 'changes_requested') {
+            fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
+            currentPoint = 'rework';
+          } else {
+            // Review didn't transition status — force approve
+            try {
+              execSync(buildToolCommand('review.ts', [packet.id, '--approve'], undefined, config), {
+                cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+              });
+            } catch { /* best-effort */ }
+            fmt.log('review', `  ${fmt.sym.ok} Review complete`);
+            currentPoint = 'finalize';
+          }
+          break;
+        }
+
+        case 'rework': {
+          fmt.log('develop', `  Reworking via ${devProvider}...`);
+          const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config);
+          if (reworkResult.exit_code !== 0) {
+            fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
+            ok = false;
+            break;
+          }
+          // Re-request review
+          currentPoint = 'request_review';
+          break;
+        }
+
+        case 'finalize': {
+          fmt.log('develop', `  Running verification...`);
+          try {
+            execSync(
+              buildToolCommand('complete.ts', [packet.id, '--identity', devIdentity], undefined, config),
+              { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] },
+            );
+            fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+            completionIds.add(packet.id);
+            currentPoint = 'completed';
+          } catch {
+            fmt.log('develop', `  ${fmt.sym.fail} Completion failed`);
+            ok = false;
+          }
+          break;
+        }
       }
     }
 
-    if (!approved) {
-      fmt.log('develop', `  ${fmt.sym.fail} Review not approved after ${maxReviewIterations} iterations`);
-      failed.push(packet.id);
-      continue;
-    }
-
-    // Complete
-    fmt.log('develop', `  Running verification...`);
-    try {
-      execSync(
-        buildToolCommand('complete.ts', [packet.id, '--identity', devIdentity], undefined, config),
-        { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-      fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+    if (currentPoint === 'completed') {
       completed.push(packet.id);
-    } catch {
-      fmt.log('develop', `  ${fmt.sym.fail} Completion failed`);
+    } else {
       failed.push(packet.id);
     }
   }
@@ -346,7 +435,7 @@ function qaPhase(
   config: FactoryConfig,
   artifactRoot: string,
   dryRun: boolean,
-): { completed: string[]; failed: string[] } {
+): { completed: string[]; failed: string[]; skipped: string[] } {
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
   const completions = readJsonDir<{ packet_id: string }>(join(artifactRoot, 'completions'));
   const completionIds = new Set(completions.map((c) => c.packet_id));
@@ -354,13 +443,33 @@ function qaPhase(
   const qaPackets = packets.filter((p) => p.kind === 'qa' && feature.packets.includes(p.id));
   const completed: string[] = [];
   const failed: string[] = [];
+  const skipped: string[] = [];
 
   fmt.log('verify', `${qaPackets.length} QA packet(s) to process`);
 
+  const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
+  const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
+
   for (const packet of qaPackets) {
+    // Re-check completion on disk (previous QA may have just completed)
+    if (!completionIds.has(packet.id) && existsSync(join(artifactRoot, 'completions', `${packet.id}.json`))) {
+      completionIds.add(packet.id);
+    }
+
     if (completionIds.has(packet.id)) {
       fmt.log('verify', `${fmt.sym.ok} ${packet.id} — already complete`);
       completed.push(packet.id);
+      continue;
+    }
+
+    // Check that the dev packet it verifies is completed
+    const deps = packet.dependencies ?? [];
+    const verifies = packet.verifies;
+    const allDeps = verifies && !deps.includes(verifies) ? [...deps, verifies] : [...deps];
+    const unmetDeps = allDeps.filter((d) => !completionIds.has(d));
+    if (unmetDeps.length > 0) {
+      fmt.log('verify', `${fmt.sym.blocked} ${packet.id} — skipped (dev not complete: ${unmetDeps.join(', ')})`);
+      skipped.push(packet.id);
       continue;
     }
 
@@ -371,16 +480,14 @@ function qaPhase(
       continue;
     }
 
-    // Start
+    // Start (idempotent)
     try {
       execSync(buildToolCommand('start.ts', [packet.id], undefined, config), {
         cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
       });
-    } catch { /* idempotent */ }
+    } catch { /* already started is fine */ }
 
     // Invoke QA
-    const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
-    const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
     const qaPrompt = buildQaPrompt(packet, config);
 
     fmt.log('verify', `  Verifying via ${qaProvider}...`);
@@ -399,6 +506,7 @@ function qaPhase(
         { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] },
       );
       fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+      completionIds.add(packet.id);
       completed.push(packet.id);
     } catch {
       fmt.log('verify', `  ${fmt.sym.fail} Completion failed`);
@@ -406,7 +514,7 @@ function qaPhase(
     }
   }
 
-  return { completed, failed };
+  return { completed, failed, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +628,13 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
     return { intent_id: intentId, feature_id: planResult.feature_id, packets_completed: [], packets_failed: [], success: false, message: msg };
   }
 
+  // Early exit: feature already fully done
+  if (feature.status === 'completed' || feature.status === 'delivered') {
+    const msg = `Feature '${feature.id}' is already ${feature.status}. Nothing to do.`;
+    fmt.log('done', fmt.success(msg));
+    return { intent_id: intentId, feature_id: feature.id, packets_completed: [...feature.packets], packets_failed: [], success: true, message: msg };
+  }
+
   // Update feature status to executing
   try {
     const featureData = JSON.parse(readFileSync(featurePath, 'utf-8')) as Record<string, unknown>;
@@ -533,7 +648,12 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   const featurePackets = packets.filter((p) => feature.packets.includes(p.id));
   const devCount = featurePackets.filter((p) => p.kind === 'dev').length;
   const qaCount = featurePackets.filter((p) => p.kind === 'qa').length;
-  fmt.log('plan', `Feature ${fmt.bold(feature.id)}: ${devCount} dev + ${qaCount} qa packets`);
+
+  // Count what's already done
+  const existingCompletions = readJsonDir<{ packet_id: string }>(join(artifactRoot, 'completions'));
+  const existingCompletionIds = new Set(existingCompletions.map((c) => c.packet_id));
+  const alreadyDone = featurePackets.filter((p) => existingCompletionIds.has(p.id)).length;
+  fmt.log('plan', `Feature ${fmt.bold(feature.id)}: ${devCount} dev + ${qaCount} qa packets (${alreadyDone} already complete)`);
 
   // Phase 2: Development
   process.stderr.write('\n');
@@ -548,10 +668,13 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   // Update feature status
   const allCompleted = [...devResult.completed, ...qaResult.completed];
   const allFailed = [...devResult.failed, ...qaResult.failed];
-  if (allFailed.length === 0 && !dryRun && allCompleted.length === feature.packets.length) {
+  const allSkipped = qaResult.skipped;
+  const totalProcessed = allCompleted.length + allFailed.length + allSkipped.length;
+  if (allFailed.length === 0 && allSkipped.length === 0 && !dryRun && allCompleted.length === feature.packets.length) {
     try {
       const featureData = JSON.parse(readFileSync(featurePath, 'utf-8')) as Record<string, unknown>;
       featureData['status'] = 'completed';
+      featureData['completed_at'] = timestamp();
       writeFileSync(featurePath, JSON.stringify(featureData, null, 2) + '\n', 'utf-8');
     } catch { /* best-effort */ }
   }
@@ -559,12 +682,18 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   // Summary
   process.stderr.write('\n');
   process.stderr.write(fmt.divider() + '\n');
-  const success = allFailed.length === 0;
+  const success = allFailed.length === 0 && allSkipped.length === 0;
   if (success) {
     fmt.log('done', fmt.success(`All ${allCompleted.length} packet(s) completed successfully`));
   } else {
-    fmt.log('done', fmt.error(`${allFailed.length} packet(s) failed: ${allFailed.join(', ')}`));
-    fmt.log('done', fmt.success(`${allCompleted.length} packet(s) completed`));
+    if (allFailed.length > 0) {
+      fmt.log('done', fmt.error(`${allFailed.length} packet(s) failed: ${allFailed.join(', ')}`));
+    }
+    if (allSkipped.length > 0) {
+      fmt.log('done', fmt.warn(`${allSkipped.length} QA packet(s) skipped (dev not complete): ${allSkipped.join(', ')}`));
+    }
+    fmt.log('done', `${allCompleted.length} packet(s) completed`);
+    fmt.log('done', fmt.info('Fix the failures and re-run to continue.'));
   }
   process.stderr.write(fmt.divider() + '\n');
 
@@ -574,7 +703,7 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
     packets_completed: allCompleted,
     packets_failed: allFailed,
     success,
-    message: success ? `Feature '${feature.id}' completed` : `${allFailed.length} packet(s) failed`,
+    message: success ? `Feature '${feature.id}' completed` : `${allFailed.length} failed, ${allSkipped.length} skipped — re-run to continue`,
   };
 }
 
