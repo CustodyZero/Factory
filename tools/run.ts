@@ -107,7 +107,9 @@ function buildProviderArgs(provider: string, prompt: string, providerConfig: Pip
       break;
 
     case 'copilot':
-      args.push('-p', prompt, '--yolo', '--no-ask-user');
+      // Pass prompt via stdin rather than as a -p argument to avoid OS command-line
+      // length limits (Windows cmd.exe caps at ~8191 chars).
+      args.push('--yolo', '--no-ask-user');
       if (modelId) args.push('--model', modelId);
       break;
 
@@ -143,12 +145,16 @@ function invokeAgent(
   const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
   const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
 
+  // For copilot, pass the prompt via stdin to avoid OS command-line length limits.
+  const useStdin = provider === 'copilot';
+
   const result = spawnSync(command, args, {
     cwd: findProjectRoot(),
     encoding: 'utf-8',
     timeout: 600_000, // 10 min per agent
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: true,
+    ...(useStdin ? { input: prompt } : {}),
   });
 
   return {
@@ -178,17 +184,23 @@ function planPhase(
     return { feature_id: existing.id };
   }
 
-  // Build planner prompt
+  // Build planner prompt — reference spec_path so the agent reads the file itself.
+  // Do NOT inline spec contents here: it bloats the CLI invocation beyond OS limits
+  // and defeats the purpose of spec_path (the agent should read the authoritative
+  // source directly, not a snapshot embedded in the prompt).
   const plannerPersona = config.personas.planner;
   const constraints = (intent.constraints ?? []).map((c) => `- ${c}`).join('\n');
+  const rawIntent = readJson<RawIntentArtifact>(join(artifactRoot, 'intents', `${intent.id}.json`));
+  const specRef = rawIntent?.spec_path
+    ? `Read the full spec from: ${rawIntent.spec_path}`
+    : `## Spec\n${intent.spec}`;
   const prompt = [
     `You are a planner. Decompose this intent into a feature with dev/qa packet pairs.`,
     ``,
     `## Intent: ${intent.id}`,
     `Title: ${intent.title}`,
     ``,
-    `## Spec`,
-    intent.spec,
+    specRef,
     ``,
     constraints.length > 0 ? `## Constraints\n${constraints}\n` : '',
     `## Instructions`,
