@@ -50,6 +50,7 @@
     },
     "pipeline": {
       "type": "object",
+      "required": ["providers", "persona_providers", "completion_identities", "max_review_iterations"],
       "properties": {
         "providers": {
           "type": "object",
@@ -62,6 +63,7 @@
         },
         "persona_providers": {
           "type": "object",
+          "required": ["planner", "developer", "code_reviewer", "qa"],
           "properties": {
             "planner": { "$ref": "#/$defs/provider_name" },
             "developer": { "$ref": "#/$defs/provider_name" },
@@ -72,26 +74,15 @@
         },
         "completion_identities": {
           "type": "object",
+          "required": ["developer", "code_reviewer", "qa"],
           "properties": {
-            "codex": { "$ref": "#/$defs/provider" },
-            "claude": { "$ref": "#/$defs/provider" },
-            "copilot": { "$ref": "#/$defs/provider" }
+            "developer": { "type": "string", "minLength": 1 },
+            "code_reviewer": { "type": "string", "minLength": 1 },
+            "qa": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
-        "retries": {
-          "type": "object",
-          "required": ["max_supervisor_ticks", "planner", "developer", "code_reviewer", "qa"],
-          "properties": {
-            "max_supervisor_ticks": { "type": "integer", "minimum": 1 },
-            "max_transient_retries": { "type": "integer", "minimum": 0, "default": 2 },
-            "planner": { "$ref": "#/$defs/retry_steps" },
-            "developer": { "$ref": "#/$defs/retry_steps" },
-            "code_reviewer": { "$ref": "#/$defs/retry_steps" },
-            "qa": { "$ref": "#/$defs/retry_steps" }
-          },
-          "additionalProperties": false
-        }
+        "max_review_iterations": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     }
@@ -130,6 +121,15 @@
         "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
         "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] },
         "model_map": { "$ref": "#/$defs/model_map" }
+      },
+      "additionalProperties": false
+    },
+    "model_map": {
+      "type": "object",
+      "properties": {
+        "high": { "type": "string", "minLength": 1 },
+        "medium": { "type": "string", "minLength": 1 },
+        "low": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }
