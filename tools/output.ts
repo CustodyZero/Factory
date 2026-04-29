@@ -144,7 +144,7 @@ function elapsed(): string {
 
 /**
  * Write a timestamped progress line to stderr.
- * Used by the orchestrator runLoop for real-time feedback.
+ * Used by the pipeline runner (run.ts) for real-time feedback.
  *
  *   [00:04.2] planning    Feature created: customer-dashboard
  */

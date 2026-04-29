@@ -16,7 +16,6 @@
     "tools/",
     "hooks/",
     "templates/",
-    "supervisor/",
     ".github/",
     "package.json",
     "pnpm-lock.yaml",

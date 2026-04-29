@@ -19,7 +19,7 @@
  *   6. Increments review_iteration (on re-requests after changes_requested)
  *
  * This is the developer's tool for signaling "my code is ready for review".
- * The supervisor or orchestrator then dispatches a code_reviewer agent.
+ * The pipeline runner (run.ts) then invokes a code_reviewer agent.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
