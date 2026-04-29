@@ -67,14 +67,14 @@ Legacy packets with `null` status are grandfathered — their state is derived f
 
 The planner sits above execution:
 - Intent artifacts → `planner`
-- Dev packets → `developer` (implementation) and `code_reviewer` (review, Phase 3)
+- Dev packets → `developer` (implementation) and `code_reviewer` (review)
 - QA packets → `qa`
 
 Execute.ts returns each ready packet with a **persona** and a **model**:
 - Dev packets → `developer` persona
 - QA packets → `qa` persona
 
-The outer orchestrator or human spawns the planner, developer, code_reviewer, or qa agent
+The pipeline runner (`run.ts`) invokes the planner, developer, code_reviewer, or qa agent
 using the persona and model the factory specifies.
 **FI-7**: A QA packet must not be completed by the same identity that completed its dev counterpart.
 
@@ -83,24 +83,28 @@ using the persona and model the factory specifies.
 Execute.ts resolves the model tier for each packet using a fallback chain:
 1. **Packet-level `model`** — overrides everything (set in the packet JSON)
 2. **Persona-level `model`** — default for that persona (set in `factory.config.json`)
-3. **Hardcoded default** — `"opus"` if nothing is configured
+3. **Hardcoded default** — `"high"` if nothing is configured
 
 Default persona models:
-- `developer`: `"opus"`
-- `code_reviewer`: `"sonnet"`
-- `qa`: `"sonnet"`
+- `developer`: `"high"`
+- `code_reviewer`: `"medium"`
+- `qa`: `"medium"`
+
+Model tiers are provider-neutral (`high` / `medium` / `low`). Each provider
+maps tiers to its own concrete model IDs via `pipeline.providers.<name>.model_map`
+in `factory.config.json`.
 
 Suggested override convention by change class (not enforced in code):
 
 | Change class | Dev | QA |
 |---|---|---|
-| architectural | opus | opus |
-| cross-cutting | opus | sonnet |
-| local | sonnet | sonnet |
-| trivial | sonnet | haiku |
+| architectural | high | high |
+| cross-cutting | high | medium |
+| local | medium | medium |
+| trivial | medium | low |
 
 Use packet-level `model` to escalate or downgrade specific packets (e.g., escalate an
-architectural QA packet to opus, or downgrade a trivial dev packet to sonnet).
+architectural QA packet to `high`, or downgrade a trivial dev packet to `medium`).
 
 ### Artifacts
 
@@ -114,13 +118,13 @@ artifacts are never written inside the submodule.
 | `features/` | Planned execution units (multi-packet) |
 | `packets/` | Individual work units (dev and qa) |
 | `completions/` | Verification evidence (build/lint/test results) |
-| `acceptances/` | Human approval records |
 
 ### Commands
 
 | Command | When to Use |
 |---|---|
 | `npx tsx tools/status.ts` | Start of session, after context loss, when unsure what to do |
+| `npx tsx tools/run.ts <intent-id>` | Run the full pipeline (plan → develop → review → verify) for an intent |
 | `npx tsx tools/plan.ts <intent-id>` | Resolve planner work for an intent/spec and hand off to the planner persona |
 | `npx tsx tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
 | `npx tsx tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
@@ -128,15 +132,7 @@ artifacts are never written inside the submodule.
 | `npx tsx tools/review.ts <packet-id> --approve` | Code reviewer approves the code review |
 | `npx tsx tools/review.ts <packet-id> --request-changes` | Code reviewer requests changes |
 | `npx tsx tools/complete.ts <packet-id>` | After review approval (dev) or implementation (QA), before committing |
-| `npx tsx tools/accept.ts <packet-id>` | Accept a completed packet (human action — do not call autonomously) |
 | `npx tsx tools/validate.ts` | Verify factory integrity |
-| `npx tsx tools/supervise.ts` | Supervisor tick — next orchestration action |
-| `npx tsx tools/supervise.ts --init` | Initialize supervisor state |
-| `npx tsx tools/orchestrate.ts health` | Check native Codex/Claude orchestrator availability |
-| `npx tsx tools/orchestrate.ts plan <intent-id>` | Invoke the configured planner provider for a plan-ready intent |
-| `npx tsx tools/orchestrate.ts supervise` | Invoke the deterministic harness for supervisor-issued dispatches |
-| `npx tsx tools/orchestrate.ts run` | Run the native autonomous loop until idle or a human gate |
-| `npx tsx tools/orchestrate.ts run --intent <intent-id>` | Plan an intent and, if the intent is approved, continue directly into supervised execution |
 
 ---
 
@@ -212,117 +208,11 @@ QA packets skip the review cycle: `implementing -> completed`.
 - **FI-8:** Every dev packet in a feature must have a QA counterpart
 - **FI-9:** No cyclic packet dependencies
 
-1. Human creates `intents/<intent-id>.json`. The intent must declare exactly one
-   of `spec` (inline body for short intents) or `spec_path` (path relative to the
-   project root pointing at a Markdown file containing the authoritative spec —
-   use this for long, human-authored specs that already live alongside the code,
-   e.g. `docs/specs/016-platform-targets.md`). `spec_path` must be relative, must
-   not escape the project root, and must point at a non-empty file. `validate.ts`
-   enforces these rules; `plan.ts` reads the file at plan time and hands its full
-   contents to the planner.
-2. Run `npx tsx tools/plan.ts <intent-id>`
-3. If the action is `plan_feature`, spawn a planner agent using the returned planner assignment
-4. Planner writes:
-   - one feature artifact with `status: "planned"`
-   - dev/qa packet pairs
-   - dependencies
-   - change classes
-   - acceptance criteria
-5. If the intent/spec is already approved, the planned feature inherits execution authority automatically
-6. If the plan was created outside an approved intent, a human may still approve the feature directly
-7. Supervisor takes over once execution authority exists
-
-Planner invariants:
-- Do not approve or execute
-- Do not collapse dev and QA into one packet
-- Do not bypass the governing approval authority for the intent/spec or feature
-- Preserve the existing completion/acceptance model
-
-- **verification:** build, lint, test commands run during `complete.ts`
-- **personas:** planner, developer, code_reviewer, qa — each with
-  description, instructions, and model tier (high/medium/low)
-- **pipeline:** provider mappings (codex/claude/copilot), completion identities,
-  max review iterations, per-provider model_map
-
-## 8. Where to Find Things
-
-The factory includes a **supervisor actor** for automated orchestration. The supervisor
-is a stateless tick function that reads factory state and returns the next action.
-
-### When to Use
-
-Use the supervisor when you want automated orchestration of feature execution.
-The supervisor replaces the manual `execute.ts` loop with a higher-level actor
-that tracks feature phases, spawns agents, and escalates to humans.
-When supervisor mode is active, only packets returned in `ready_packets` may be started.
-
-### How It Works
-
-Manual supervisor loop:
-
-```
-1. Human approves the governing intent/spec, or directly approves a standalone planned feature
-2. Run: npx tsx tools/supervise.ts --init   (first time only)
-3. Run: npx tsx tools/supervise.ts --json
-4. Perform the returned action
-5. Repeat step 3 until idle
-```
-
-Native autonomous loop:
-
-```sh
-npx tsx tools/orchestrate.ts run
-npx tsx tools/orchestrate.ts run --intent <intent-id>
-```
-
-`orchestrate.ts run` will:
-- initialize supervisor state automatically when needed
-- re-tick after `update_state`
-- invoke planner/developer/code_reviewer/qa agents through the configured Codex/Claude shell contracts
-- retry failed planner and packet runs through the configured provider/model ladder
-- stop only at `idle` or an explicit human gate (`acceptance`, `blocked`, `failure`, or direct feature approval when no approved intent governs the plan`) after retries are exhausted
-
-The supervisor returns one action per tick:
-- `execute_feature` — spawn agents for ready packets using the returned dispatch records
-- `escalate_acceptance` — present to human for acceptance
-- `escalate_blocked` — present to human, something is stuck
-- `update_state` — state has been refreshed, re-tick
-- `idle` — nothing to do
-
-In `execute_feature`:
-- `dispatches` are the supervisor-issued authorization records
-- `ready_packets` describe the human-readable assignment details
-- agents must run the returned `start_command` before implementation
-- the outer orchestrator must not spawn any packet missing from `dispatches`
-- one `execute_feature` action may include packets from multiple independent features
-
-Native orchestrator support is restricted to `codex` and `claude`.
-`gemini` is not part of the deterministic harness.
-
-### State Files
-
-| File | Purpose |
-|---|---|
-| `supervisor/state.json` | Feature tracking, escalations, audit log |
-| `supervisor/orchestrator-state.json` | Bounded orchestrator cache, provider checks, and recent run history |
-| `supervisor/memory.md` | Cross-session context for any inference engine |
-| `supervisor/SUPERVISOR.md` | Behavioral contract (copy from `factory/templates/SUPERVISOR.md`) |
-
-### Supervisor Invariants (SI-1 through SI-7)
-
-| ID | Rule |
-|---|---|
-| SI-1 | State must be consistent with factory artifacts |
-| SI-2 | Supervisor never performs human-authority actions |
-| SI-3 | Actions are idempotent |
-| SI-4 | Audit log is append-only |
-| SI-5 | Reuses resolveExecuteAction — does not bypass factory contracts |
-| SI-6 | Pending escalations block feature progression |
-| SI-7 | One action per tick (an action may authorize work across multiple features) |
+The full FI-1 through FI-10 invariant set is documented in `README.md` § Factory Invariants.
 
 ---
 
-## 8. Configuration
+## 7. Configuration
 
 The factory reads its configuration from `factory.config.json` in the project root.
 This file defines:
@@ -330,13 +220,12 @@ This file defines:
 - Infrastructure file patterns (files that don't count as implementation)
 - Default completion identity
 - **Persona definitions** (instructions for planner, developer, code_reviewer, and qa agents)
-- **Orchestrator provider mappings** (Codex/Claude only)
+- **Pipeline provider mappings** (codex / claude / copilot)
 
 ### Personas and Instructions
 
 Personas are defined in `factory.config.json` under the `personas` key. Each persona
 has a `description` and an `instructions` array. Instructions are passed to agents
-when execute.ts assigns them packets.
 
 ```json
 {
@@ -344,22 +233,22 @@ when execute.ts assigns them packets.
     "planner": {
       "description": "Decomposes the intent into a planned feature and packet set",
       "instructions": ["Produce one feature artifact plus dev/qa packet pairs"],
-      "model": "opus"
+      "model": "high"
     },
     "developer": {
       "description": "Implements the change",
       "instructions": ["Use the cpp-guidelines MCP server for all C++ code"],
-      "model": "opus"
+      "model": "high"
     },
     "code_reviewer": {
       "description": "Reviews code changes for correctness, design, and contract adherence",
       "instructions": ["Verify contract invariants are preserved across boundaries"],
-      "model": "sonnet"
+      "model": "medium"
     },
     "qa": {
       "description": "Verifies acceptance criteria are met",
       "instructions": ["Check MISRA compliance in clang-tidy output"],
-      "model": "sonnet"
+      "model": "medium"
     }
   }
 }
@@ -373,28 +262,7 @@ constraints defined by the project owner.
 
 ---
 
-## 9. Migration
-
-When upgrading an existing factory installation, run:
-
-```sh
-npx tsx tools/migrate.ts        # apply migration
-npx tsx tools/migrate.ts --dry  # preview without writing
-```
-
-This adds required fields (`kind`, `acceptance_criteria`) to pre-existing packets and features.
-Migration placeholders (`[MIGRATION]`) must be replaced with real acceptance criteria
-before the next execution cycle.
-
-Planner migration guidance:
-- Existing features and packets remain valid without `intent_id`
-- `migrate.ts` now ensures the `intents/` directory exists
-- Downstream repos can adopt planner-native flow incrementally by creating new work under `intents/`
-- Existing approved features can continue through execution unchanged
-
----
-
-## 10. Where to Find Things
+## 8. Where to Find Things
 
 - **Factory docs:** `README.md`
 - **Integration guide:** `docs/integration.md`

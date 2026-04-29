@@ -175,14 +175,13 @@ Custom providers can be added — any CLI that accepts a prompt argument works.
 The pipeline is the single entry point for all factory work:
 
 1. Human creates an intent/spec artifact in `intents/`
-2. Planner agent runs `tools/plan.ts <intent-id>`
+2. Planner agent runs `tools/plan.ts <intent-id>` (or run the full pipeline with `tools/run.ts <intent-id>`)
 3. Planner writes one planned feature plus dev/qa packet pairs
-4. If the intent/spec is approved, the planned feature inherits execution authority automatically
-5. Supervisor executes authorized packet work
+4. The pipeline runner picks up the planned feature and drives execution to completion
 
-The planner and supervisor are intentionally separate:
+The planner and pipeline runner are intentionally separate:
 - planner decomposes work into artifacts
-- supervisor executes authorized artifacts deterministically
+- pipeline runner executes the artifacts deterministically
 
 1. **Plan** — Planner agent decomposes the spec/intent into a feature with dev/qa packet pairs
 2. **Develop** — For each dev packet (in dependency order):
@@ -663,37 +662,7 @@ npx tsx .factory/tools/plan.ts <intent-id> --json
 ```
 
 Planner handoff resolver. Reads an intent/spec artifact and tells the planner
-whether it needs to decompose work, wait for approval, or hand off to the supervisor.
-
-### Supervise
-
-```sh
-npx tsx .factory/tools/supervise.ts --init
-npx tsx .factory/tools/supervise.ts --json
-```
-
-Supervisor tick loop for automated orchestration. In supervisor mode,
-`execute_feature` returns stable dispatch records that act as the only legal
-authorization for packet start/agent spawn.
-
-### Orchestrate
-
-```sh
-npx tsx .factory/tools/orchestrate.ts health
-npx tsx .factory/tools/orchestrate.ts health --probe
-npx tsx .factory/tools/orchestrate.ts plan <intent-id>
-npx tsx .factory/tools/orchestrate.ts supervise
-npx tsx .factory/tools/orchestrate.ts run
-npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>
-```
-
-Deterministic shell harness for native orchestration. It consumes `plan.ts`
-and `supervise.ts`, invokes supported LLM CLIs, and stores bounded runtime
-state in `supervisor/orchestrator-state.json`.
-`run` is the autonomous mode: it initializes supervisor state when needed,
-re-ticks after `update_state`, retries planner and packet execution through
-the configured provider/model ladder, and stops only at `idle` or an explicit
-human gate (`approval`, `acceptance`, `blocked`, or `failure`).
+whether it needs to decompose work, wait for approval, or hand off to the pipeline.
 
 ### Validate
 
@@ -725,52 +694,34 @@ Execution protocol:
 4. QA agent: `start.ts` → verify → `complete.ts`
 5. Re-run execute
 6. Repeat until all_complete
-7. Natural flow per story: dev packet (developer ↔ code_reviewer loop) → QA packet (qa) → acceptance (human, if architectural)
+7. Natural flow per story: dev packet (developer ↔ code_reviewer loop) → QA packet (qa)
 
-If supervisor mode is enabled, packets must be returned by `supervise.ts` before they can be started.
-Supervisor `execute_feature` actions now include stable dispatch records so an outer orchestrator
-can treat them as the only legal packet authorizations for that tick.
+### End-to-End Pipeline Flow
 
-### End-to-End Supervisor Flow
+The full factory-native flow runs autonomously from intent to completed feature:
 
-This is the intended automated flow when a human wants the factory to drive a feature
-through developer and QA agents:
-
-1. Human creates the feature JSON and dev/QA packet JSON files.
-2. Human approves the feature (`status: "approved"`).
-3. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run`
-4. Manual option: initialize supervisor state once with `npx tsx .factory/tools/supervise.ts --init`, then run `npx tsx .factory/tools/supervise.ts --json`
-5. If the result is `execute_feature`, the orchestrator or external runner spawns one agent per dispatch in `dispatches`
-6. Each spawned agent runs the returned `start_command`, performs only that packet’s work, then runs `complete.ts`
-7. QA agents use a distinct qa identity and must satisfy any `environment_dependencies` evidence requirement
-8. The native orchestrator retries failed planner and packet runs using the configured Codex/Claude ladder before surfacing failure
-9. Supervisor re-runs `supervise.ts --json` after each state change
-10. If the result is `escalate_acceptance`, the human runs `accept.ts` for the listed architectural packet(s)
-11. Repeat until the supervisor returns `idle`
-
-The key rule is that the outer orchestrator must never invent its own packet assignments.
-It should only spawn agents from the current tick’s `dispatches`.
-A single `execute_feature` action may contain dispatches for multiple independent features.
-
-### End-to-End Planner + Supervisor Flow
-
-This is the full factory-native flow with planning and execution separated:
-
-1. Human writes `intents/<intent-id>.json`
-2. Planner agent runs `npx tsx .factory/tools/plan.ts <intent-id> --json`
-3. If the action is `plan_feature`, the planner writes:
+1. Human writes `intents/<intent-id>.json` (with `spec` or `spec_path`)
+2. Run `npx tsx .factory/tools/run.ts <intent-id>`
+3. **Plan phase** — planner agent writes:
    - one `features/<feature-id>.json` artifact with `status: "planned"`
    - dev/qa packet pairs in `packets/`
    - packet dependencies, change classes, and acceptance criteria
-   - `feature.intent_id` and `intent.feature_id` linkage
-4. Human approves the intent/spec when it is ready to govern downstream work
-5. Preferred native option: run `npx tsx .factory/tools/orchestrate.ts run --intent <intent-id>`
-6. The orchestrator invokes the planner if needed
-7. Planned features linked to an approved intent inherit execution authority automatically; standalone/manual planned features may still require direct feature approval
-8. Supervisor dispatches only authorized packet work, potentially across multiple independent features in the same tick
-9. Developer and qa agents execute packets exactly as assigned
-10. Human handles architectural acceptance when escalated
-11. Delivery occurs when the completed feature satisfies the approved intent
+   - `feature.intent_id` linkage
+4. **Develop phase** — for each dev packet (in dependency order):
+   - Developer agent implements and signals `request-review.ts`
+   - Code reviewer agent runs `review.ts --approve` or `--request-changes`
+   - On `--request-changes`, developer reworks; loop bounded by `max_review_iterations`
+   - On approval, completion is recorded with the developer's identity
+5. **Verify phase** — for each QA packet:
+   - QA agent verifies (distinct identity from dev — FI-7)
+   - Completion is recorded with the QA identity
+6. **Done** — feature marked complete, summary printed
+
+Pipeline properties:
+- **Idempotent** — re-running resumes from artifact state on disk
+- **Provider-agnostic** — codex, claude, copilot (configure via `pipeline.providers`)
+- **No human gates after intent approval** — completion IS acceptance
+- **Bounded review** — `max_review_iterations` (default 3) caps rework cycles
 
 ---
 
