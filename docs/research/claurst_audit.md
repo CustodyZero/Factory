@@ -212,7 +212,143 @@ Factory's pipeline config has `persona_providers` mapping personas to one provid
 
 It's a *living artifact* tracked in git. Phase checklists with `[ ]` items are checked off as work lands. This is essentially a richer version of factory's `intent` artifact — but written by a human as the plan, not by an agent during planning. Factory currently has no equivalent: the planner agent produces packets but doesn't produce a single readable plan document.
 
-## 9. What's *not* there
+## 9. Memory — three-layer subsystem
+
+This is the load-bearing pattern. Claurst implements memory as **three distinct subsystems**, each with a clear role.
+
+### 9.1 `memdir` — persistent file-based memory across sessions
+
+`core/memdir.rs`, 879 lines. The header comment:
+
+> Persistent, file-based memory across sessions. Mirrors the TypeScript modules under `src/memdir/`: memoryScan, memoryAge, memdir, paths.
+
+Architecture:
+
+```rust
+pub enum MemoryType {
+    User,       // user's role, goals, preferences
+    Feedback,   // guidance about how to approach work
+    Project,    // ongoing work, goals, incidents in the project
+    Reference,  // pointers to where information lives in external systems
+}
+
+pub struct MemoryFileMeta {
+    pub filename: String,        // "user_role.md"
+    pub path: PathBuf,
+    pub name: Option<String>,     // YAML frontmatter
+    pub description: Option<String>,
+    pub memory_type: Option<MemoryType>,
+    pub modified_secs: u64,
+}
+```
+
+Behavior:
+- Walks the memory directory recursively for `.md` files (excluding `MEMORY.md`)
+- Parses YAML frontmatter (first 30 lines max) for `name`, `description`, `type`
+- Sorts newest-first, capped at **200 files** (`MAX_MEMORY_FILES`)
+- Builds a memory manifest formatted into the system prompt at every session start
+- "Freshness notes" track per-file age and surface them to the model
+
+Compared to factory's just-set-up symlink:
+
+| | Factory (today) | Claurst memdir |
+|---|---|---|
+| Memory dir | `docs/decisions/` (via symlink) | `~/.claude/.../memory/` natively |
+| Read at session start | Yes (Claude Code auto-loads) | Yes (system prompt assembly) |
+| Typed taxonomy | None | `User | Feedback | Project | Reference` |
+| Frontmatter parsing | None | `name`, `description`, `type` per file |
+| Cap on file count | None | 200 |
+| Freshness annotation | None | Per-file age in days |
+| Manifest formatter | Manual (`MEMORY.md` is hand-curated) | Automatic from frontmatter |
+
+Factory has the *idea* of memdir; claurst has the *machinery*.
+
+### 9.2 `session_memory` — extract facts from conversations
+
+`query/session_memory.rs`, 659 lines. The header comment:
+
+> Runs a background task after a session to extract key facts worth remembering and persist them to AGENTS.md. Strategy: after sessions with 20+ messages (or on compact), call the API with a structured extraction prompt. Parse the response into typed ExtractedMemory entries. Append entries under "## Auto-extracted memories" in AGENTS.md. Track state so we don't re-extract from already-processed messages.
+
+Categories the extraction model produces:
+
+```rust
+pub enum MemoryCategory {
+    UserPreference,
+    ProjectFact,
+    CodePattern,
+    Decision,
+    Constraint,
+}
+```
+
+Triggers:
+- `MIN_MESSAGES_TO_EXTRACT = 20` — minimum conversation length
+- `MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS = 3` — debounce between extractions
+- Also fires on `/compact` command (user-initiated)
+
+Output destination: `AGENTS.md` itself, under a heading like `## Auto-extracted memories`. So the user-curated AGENTS.md and the auto-curated section coexist in one file. Re-extraction is gated by tracked state so the same conversation isn't mined twice.
+
+This is the **write-side** of memory. Factory has none — every pipeline run discards everything the agents learned.
+
+### 9.3 `AutoDream` — background consolidation daemon
+
+`query/auto_dream.rs`, 473 lines. The header comment:
+
+> Background memory consolidation. Fires a consolidation prompt as a forked subagent when the time gate passes AND enough sessions have accumulated. Gate order (cheapest first): (1) Time, (2) Sessions, (3) Lock.
+
+Architecture:
+
+```rust
+pub struct AutoDreamConfig {
+    pub min_hours: f64,        // default: 24
+    pub min_sessions: usize,   // default: 5
+}
+
+pub struct ConsolidationState {
+    pub last_consolidated_at: Option<u64>,   // unix timestamp
+    pub lock_etag: Option<String>,            // future distributed locking
+}
+
+pub struct ConsolidationTask {
+    pub prompt: String,
+    pub memory_dir: PathBuf,
+    pub state_file: PathBuf,    // .consolidation_state.json
+    pub lock_file: PathBuf,     // .consolidation_lock
+}
+```
+
+Three-gate cascade:
+1. **Time gate** — at least `min_hours` since `last_consolidated_at` (cheapest check, just one stat)
+2. **Session gate** — count of transcripts with `mtime > last_consolidated_at` ≥ `min_sessions`
+3. **Lock gate** — no other process is mid-consolidation (lock stale after 1 hour)
+
+When all three pass, AutoDream fires a *forked subagent* with a consolidation prompt. The consolidation agent reads accumulated session memories, identifies patterns, and **rewrites the memdir** — pruning duplicates, updating stale facts, promoting reinforced observations.
+
+This is the long-term-curation layer. session_memory is "what we just learned"; AutoDream is "what's worth keeping."
+
+`SESSION_SCAN_INTERVAL_SECS = 600` (10 minutes) — when the time gate passes but the session gate doesn't, AutoDream throttles itself so it isn't re-checking every prompt.
+
+### 9.4 The three-layer model
+
+| Layer | Subsystem | Frequency | Cost | Output |
+|---|---|---|---|---|
+| Read | `memdir` | Every session start | One disk scan + frontmatter parse | System prompt context |
+| Write | `session_memory` | After 20+ message sessions or on `/compact` | One LLM call | New entries appended to `AGENTS.md` |
+| Curate | `AutoDream` | Background, ≥24h + ≥5 sessions | One forked-subagent run | Rewritten memdir |
+
+These are *separable*. A user could disable AutoDream and still get session-level extraction. They could disable session_memory and still get the read-side benefits. They could disable both and rely entirely on hand-curated memory files.
+
+Factory currently has **only the read-side** (via the symlink), and even that is coarser than memdir (no taxonomy, no freshness, no cap).
+
+### 9.5 Why this matters
+
+The user-noted point: "Claude CLI / Code excels exactly because there is a learned memory progress of dealing with the codebase." Claurst is taking that pattern seriously enough to implement it as 2,000+ lines of dedicated memory infrastructure.
+
+Factory's pipeline has the worst case of this: **every packet is a fresh agent invocation**. The developer agent that finished packet `p1` knows nothing the developer agent for `p2` will know. Even within a single pipeline run, the dev → review → finalize chain restarts context. There is no "what we learned implementing this feature" continuity.
+
+---
+
+## 10. What's *not* there
 
 Things factory has that claurst lacks:
 
@@ -223,7 +359,7 @@ Things factory has that claurst lacks:
 
 This makes sense: claurst is a *pair programmer*, factory is a *governed work pipeline*. Different problems.
 
-## 10. Patterns of interest for factory
+## 11. Patterns of interest for factory
 
 Listed; no recommendations yet — synthesis comes after the claw-code report.
 
@@ -238,10 +374,13 @@ Listed; no recommendations yet — synthesis comes after the claw-code report.
 | Slash command framework with subcommand dispatch | `SlashCommand` trait | Probably no — factory tools are CLI entries, audience differs. |
 | Plan.md as a living implementation roadmap with phase checklists | `plan.md` | Yes — factory's intent artifact could grow toward this shape. |
 | Cost tracking shared across nested agent calls | `Arc<CostTracker>` | Yes — factory has none today. |
+| Memdir as a typed memory subsystem (not just a directory of markdown) | `core/memdir.rs` | Yes — factory has the directory, none of the typing/freshness/manifest. |
+| Session-memory extraction (write-side of memory) | `query/session_memory.rs` | Yes — factory has zero write-side. Every pipeline run discards what agents learned. |
+| AutoDream-style background consolidation | `query/auto_dream.rs` | Yes — separable from extraction; would compound the value over time. |
 
 ---
 
-## 11. Quick stats for reference
+## 12. Quick stats for reference
 
 - 12 workspace crates, all named for concerns (not lifecycle phases)
 - 100+ slash commands, 40+ tools, 30+ providers (per README)

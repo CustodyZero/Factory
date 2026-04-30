@@ -349,7 +349,106 @@ claw-code is the **harness** that the other two systems coordinate around. Facto
 
 This is a real insight. Factory currently writes progress to stderr inside the agent invocation; if that progress balloons, it eats context. Routing it elsewhere (a sidecar process, a webhook, a dashboard) is unimplemented.
 
-## 12. What's *not* there
+## 12. Memory — context loading, not learned memory
+
+Claw-code is the negative space of memory: **it consciously doesn't have any.** The contrast with claurst is what makes the pattern worth naming.
+
+### 12.1 What claw-code does have — static project context loading
+
+`runtime/src/prompt.rs` walks specific filenames and injects them into the system prompt at session start:
+
+```rust
+// In prompt.rs, the project context loader walks:
+dir.join("CLAUDE.md"),
+dir.join("CLAUDE.local.md"),
+dir.join(".claw").join("CLAUDE.md"),
+```
+
+The `ProjectContext` struct that gets injected:
+
+```rust
+pub struct ProjectContext {
+    pub cwd: PathBuf,
+    pub current_date: String,
+    pub git_status: Option<String>,
+    pub git_diff: Option<String>,
+    pub git_context: Option<GitContext>,
+    pub instruction_files: Vec<ContextFile>,  // CLAUDE.md, CLAUDE.local.md, etc.
+}
+```
+
+So every worker-boot loads:
+- The user-curated `CLAUDE.md` files (instruction)
+- Live git status and diff (current state)
+- Working directory and date (environment)
+
+This is **static context**. Nothing here is learned by the agent across sessions. Nothing is written back. The agent's knowledge of the project is exactly what's in the repo right now.
+
+### 12.2 What claw-code uses for context-window management — *not* memory
+
+`runtime/src/summary_compression.rs` is sometimes mistaken for a memory subsystem because of "summary" in the name. It isn't:
+
+```rust
+pub struct SummaryCompressionBudget {
+    pub max_chars: usize,    // default 1200
+    pub max_lines: usize,    // default 24
+    pub max_line_chars: usize,  // default 160
+}
+
+pub fn compress_summary(summary: &str, budget: SummaryCompressionBudget) -> SummaryCompressionResult {
+    // normalize lines, dedupe, truncate, omit
+}
+```
+
+This is a **truncation utility**. It takes a string summary and shrinks it under a character/line budget. It doesn't persist anything. It doesn't extract anything. It's the moral equivalent of `head -n 24` with deduplication.
+
+`conversation.rs` has an `AUTO_COMPACTION_THRESHOLD_ENV_VAR` for context-compaction triggers — same category. Compaction ≠ memory.
+
+### 12.3 What claw-code consciously omits
+
+There's no equivalent of:
+- `memdir` (typed memory taxonomy, frontmatter parsing, freshness annotation, scan-and-inject)
+- `session_memory` (post-session fact extraction with categorized output)
+- `AutoDream` (background consolidation across sessions)
+
+Search results for memory-pattern keywords across `runtime/src/` come up empty — no `memdir`, no `consolidat*`, no `extract_memor*`, no `learned_*`, no `auto_dream`. The closest hit is `session.rs` which manages session lifecycle (start/stop/resume) but holds no learned content.
+
+### 12.4 Why this is consistent
+
+Per `PHILOSOPHY.md`:
+
+> "The code is evidence. The coordination system is the product lesson."
+
+Claw-code's worker model is **stateless and replaceable**. A claw spawns from a Discord directive, reads `CLAUDE.md` + git context + the task packet, does its work, commits, exits. If the same directive is re-issued an hour later, a fresh claw spawns — and that's *desirable*. The repo is the source of truth; nothing learned outside the repo is supposed to persist.
+
+This works because:
+- Workers are short-lived
+- Recovery is scenario-based (recovery recipes), not memory-based
+- Multi-agent coordination is via clawhip events, not shared scratchpads
+- Discord is the long-lived state holder; the system stays out of it
+
+In this design, learned memory would be a **liability**: it would create state divergence between workers, hide failures behind "but this worker remembered X," and undermine the "every claw is replaceable" property.
+
+### 12.5 What this teaches us about when memory matters
+
+The two repos make a crisp tradeoff:
+
+| | Claurst | Claw-code |
+|---|---|---|
+| Worker model | Single long-lived TUI session | Many short-lived parallel workers |
+| Continuity expectation | High (single user, evolving understanding) | Low (each task fresh) |
+| Source of truth | memdir + repo | Repo only |
+| Failure model | Learn from failures via session_memory | Recover via scenario recipes |
+| Memory infrastructure | 2,000+ lines, three subsystems | None (intentional) |
+| Cost of being wrong | Lost continuity, slower over time | Slower per-task, but no drift |
+
+**Factory sits in the middle.** A factory pipeline is not a single long-lived session — packets are short-lived, like claw-code's lanes. But factory's *project* is long-lived; the intent → packets decomposition happens many times over the project's life, and each pipeline run *would* benefit from carrying forward what previous runs learned about the codebase.
+
+The right read is: factory's worker layer (per-packet) is claw-code-shaped, but factory's project layer (across runs) is claurst-shaped. **Both kinds of memory matter, but at different scopes.**
+
+---
+
+## 13. What's *not* there
 
 Things factory has that claw-code lacks:
 
@@ -359,7 +458,7 @@ Things factory has that claw-code lacks:
 
 These tradeoffs are deliberate. Claw-code is built for autonomous long-running work; factory is built for governed, reviewable, reproducible work.
 
-## 13. Patterns of interest for factory
+## 14. Patterns of interest for factory
 
 Listed; no recommendations yet — synthesis comes after.
 
@@ -379,10 +478,12 @@ Listed; no recommendations yet — synthesis comes after.
 | Hardened version next to basic version | `mcp_lifecycle_hardened.rs` | Probably no — factory tools are small enough not to need this. |
 | Notifications/status routed outside the agent context window | clawhip role | Yes — factory has a context-bloat risk here. |
 | Three-component decomposition (workflow / router / harness) | OmX + clawhip + OmO | Conceptually interesting, structurally unclear for factory. |
+| Static project-context loading (CLAUDE.md + CLAUDE.local.md + .claw/CLAUDE.md) | `prompt.rs` ProjectContext | Yes — factory loads fewer files. Useful pattern even without learned memory. |
+| Conscious *absence* of learned memory in short-lived-worker designs | (the negative case) | Yes — informs which scope deserves memory in factory (pipeline-level no, project-level yes). |
 
 ---
 
-## 14. Quick stats for reference
+## 15. Quick stats for reference
 
 - 10 Rust workspace crates; the `runtime` crate alone has 40+ files
 - `prd.json`: 24 stories, P0/P1/P2 priorities, sequential phase numbering (Phase 1.6 → Phase 5)
