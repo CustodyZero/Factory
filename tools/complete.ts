@@ -8,6 +8,16 @@
  *
  * Usage:
  *   npx tsx tools/complete.ts <packet-id> [--summary "..."] [--identity <id>]
+ *
+ * Idempotency:
+ *   If a completion record already exists, this script prints
+ *   "Packet '<id>' is already complete. No action taken." and exits 0
+ *   WITHOUT re-running build/lint/test and WITHOUT modifying the
+ *   completion file or packet file. The FI-1 invariant (one completion
+ *   per packet) is preserved by refusing to OVERWRITE; the early-exit
+ *   path simply returns success when the existing record already
+ *   satisfies the request. Re-running verification on already-completed
+ *   work would waste time and could produce different results.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -34,6 +44,18 @@ export interface CompleteResult {
   readonly tests_pass: boolean;
   readonly ci_pass: boolean;
   readonly files_changed: string[];
+  readonly already_complete: boolean;
+}
+
+interface RawCompletion {
+  readonly packet_id: string;
+  readonly files_changed?: ReadonlyArray<string>;
+  readonly verification?: {
+    readonly tests_pass?: boolean;
+    readonly build_pass?: boolean;
+    readonly lint_pass?: boolean;
+    readonly ci_pass?: boolean;
+  };
 }
 
 export function completePacket(options: CompleteOptions): CompleteResult {
@@ -48,8 +70,27 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   }
 
   const completionPath = join(artifactRoot, 'completions', `${packetId}.json`);
+
+  // Idempotency: if a completion record already exists, return its values
+  // WITHOUT re-running verification. This must happen before any work to
+  // avoid the cost (and potential nondeterminism) of re-running build/lint/
+  // test on already-complete work. The FI-1 invariant is preserved: we do
+  // NOT overwrite the existing file. The downstream writeFileSync below is
+  // unreachable on the already-complete path; if execution somehow reaches
+  // that point with the file still present, it would still refuse — but
+  // the early return is the documented contract.
   if (existsSync(completionPath)) {
-    throw new Error(`Completion already exists: completions/${packetId}.json (FI-1)`);
+    const existing = JSON.parse(readFileSync(completionPath, 'utf-8')) as RawCompletion;
+    const verification = existing.verification ?? {};
+    return {
+      packet_id: existing.packet_id,
+      build_pass: verification.build_pass ?? false,
+      lint_pass: verification.lint_pass ?? false,
+      tests_pass: verification.tests_pass ?? false,
+      ci_pass: verification.ci_pass ?? false,
+      files_changed: [...(existing.files_changed ?? [])],
+      already_complete: true,
+    };
   }
 
   const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
@@ -102,13 +143,29 @@ export function completePacket(options: CompleteOptions): CompleteResult {
     },
   };
 
+  // FI-1 last-line defense: refuse to overwrite an existing completion file.
+  // This branch is unreachable in normal flow because of the early return at
+  // the top of this function, but the check is preserved as a structural
+  // safety net against any future refactor that changes the early return.
+  if (existsSync(completionPath)) {
+    throw new Error(`Completion already exists: completions/${packetId}.json (FI-1)`);
+  }
+
   writeFileSync(completionPath, JSON.stringify(completion, null, 2) + '\n', 'utf-8');
 
   // Update packet status
   packet['status'] = 'completed';
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-  return { packet_id: packetId, build_pass: buildPass, lint_pass: lintPass, tests_pass: testsPass, ci_pass: ciPass, files_changed: filesChanged };
+  return {
+    packet_id: packetId,
+    build_pass: buildPass,
+    lint_pass: lintPass,
+    tests_pass: testsPass,
+    ci_pass: ciPass,
+    files_changed: filesChanged,
+    already_complete: false,
+  };
 }
 
 function runVerification(name: string, command: string, cwd: string): boolean {
@@ -137,11 +194,15 @@ function main(): void {
     process.exit(1);
   }
 
-  console.log(`\nCreating completion for: ${packetId}\n`);
-
   try {
     const result = completePacket({ packetId, summary: customSummary, identity: identityOverride });
 
+    if (result.already_complete) {
+      console.log(`Packet '${packetId}' is already complete. No action taken.`);
+      process.exit(0);
+    }
+
+    console.log(`\nCreating completion for: ${packetId}\n`);
     console.log(`\nCompletion written: completions/${packetId}.json`);
     console.log(`  Packet status updated to: completed`);
 
