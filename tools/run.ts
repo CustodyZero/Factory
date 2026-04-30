@@ -87,12 +87,24 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
-/** Best-effort JSON patch: mutates the file in place; swallows errors. */
-function patchJson(path: string, mutator: (data: Record<string, unknown>) => void): void {
+/**
+ * Best-effort JSON patch: applies mutator to the parsed file contents and
+ * writes the result back, but ONLY if the mutator returns `true` (dirty).
+ * If the mutator returns `false`, the file is left untouched (no rewrite,
+ * no mtime change). Errors are swallowed (best-effort).
+ *
+ * Exported for unit testing.
+ */
+export function patchJson(
+  path: string,
+  mutator: (data: Record<string, unknown>) => boolean,
+): void {
   try {
     const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    mutator(data);
-    writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    const dirty = mutator(data);
+    if (dirty) {
+      writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
   } catch { /* best-effort */ }
 }
 
@@ -143,14 +155,33 @@ function invokeAgent(
   };
 }
 
-/** Run a factory lifecycle CLI; returns whether it exited 0. */
-function runLifecycle(script: string, args: ReadonlyArray<string>, config: FactoryConfig, timeoutMs = 30_000): boolean {
+/**
+ * Run a factory lifecycle CLI. Returns `{ ok: true }` on exit-0, or
+ * `{ ok: false, error }` on failure with the underlying error message.
+ * Callers that don't care about the error text can ignore the `error` field.
+ *
+ * Exported for unit testing.
+ */
+export interface LifecycleResult {
+  readonly ok: boolean;
+  readonly error?: string;
+}
+
+export function runLifecycle(
+  script: string,
+  args: ReadonlyArray<string>,
+  config: FactoryConfig,
+  timeoutMs = 30_000,
+): LifecycleResult {
   try {
     execSync(buildToolCommand(script, [...args], undefined, config), {
       cwd: findProjectRoot(), encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
     });
-    return true;
-  } catch { return false; }
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +247,7 @@ function planPhase(
     d['status'] = 'planned';
     d['feature_id'] = created.id;
     d['planned_at'] = timestamp();
+    return true;
   });
 
   fmt.log('plan', `Feature created: ${fmt.bold(created.id)}`);
@@ -297,8 +329,10 @@ function devPhase(
         }
 
         case 'request_review': {
-          if (!runLifecycle('request-review.ts', [packet.id], config)) {
-            fmt.log('develop', `  ${fmt.sym.warn} Could not request review`);
+          const reviewSignal = runLifecycle('request-review.ts', [packet.id], config);
+          if (!reviewSignal.ok) {
+            const detail = reviewSignal.error ? `: ${reviewSignal.error}` : '';
+            fmt.log('develop', `  ${fmt.sym.warn} Could not request review${detail}`);
           }
           currentPoint = 'review'; // unconditional: best-effort execSync above
           break;
@@ -344,16 +378,16 @@ function devPhase(
 
         case 'finalize': {
           fmt.log('develop', `  Running verification...`);
-          const completionOk = runLifecycle(
+          const completion = runLifecycle(
             'complete.ts', [packet.id, '--identity', devIdentity], config, 300_000,
           );
-          if (completionOk) {
+          if (completion.ok) {
             fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
             completionIds.add(packet.id);
           } else {
             fmt.log('develop', `  ${fmt.sym.fail} Completion failed`);
           }
-          currentPoint = nextPointAfterFinalize(completionOk);
+          currentPoint = nextPointAfterFinalize(completion.ok);
           break;
         }
       }
@@ -431,7 +465,7 @@ function qaPhase(
     }
 
     fmt.log('verify', `  Running verification...`);
-    if (runLifecycle('complete.ts', [packet.id, '--identity', qaIdentity], config, 300_000)) {
+    if (runLifecycle('complete.ts', [packet.id, '--identity', qaIdentity], config, 300_000).ok) {
       fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
       completionIds.add(packet.id);
       completed.push(packet.id);
@@ -504,9 +538,15 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
     return { intent_id: intentId, feature_id: feature.id, packets_completed: [...feature.packets], packets_failed: [], success: true, message: msg };
   }
 
-  // Update feature status to executing (best-effort)
+  // Update feature status to executing (best-effort).
+  // Only writes the file if status was 'planned' — preserves the original
+  // pre-extraction semantics (don't rewrite files when there's nothing to change).
   patchJson(featurePath, (d) => {
-    if (d['status'] === 'planned') d['status'] = 'executing';
+    if (d['status'] === 'planned') {
+      d['status'] = 'executing';
+      return true;
+    }
+    return false;
   });
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -538,6 +578,7 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
     patchJson(featurePath, (d) => {
       d['status'] = 'completed';
       d['completed_at'] = timestamp();
+      return true;
     });
   }
 
