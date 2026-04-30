@@ -75,6 +75,21 @@ const DECISION_TO_STATUS: Record<ReviewDecision, 'review_approved' | 'changes_re
 };
 
 /**
+ * Structured error so the CLI can render the original multi-line output
+ * (`ERROR: <summary>` followed by indented detail lines) without losing
+ * any guidance, while library callers still get a normal Error with a
+ * single-line `.message` (the summary) for assertions.
+ */
+export class RecordReviewError extends Error {
+  readonly details: ReadonlyArray<string>;
+  constructor(summary: string, details: ReadonlyArray<string> = []) {
+    super(summary);
+    this.name = 'RecordReviewError';
+    this.details = details;
+  }
+}
+
+/**
  * Programmatic entry to record a code-review decision.
  *
  * Throws on precondition failures (missing packet, wrong kind, mismatched
@@ -89,14 +104,15 @@ export function recordReview(options: RecordReviewOptions): RecordReviewOutcome 
 
   const packetPath = join(artifactRoot, 'packets', `${packetId}.json`);
   if (!existsSync(packetPath)) {
-    throw new Error(`Packet not found: packets/${packetId}.json`);
+    throw new RecordReviewError(`Packet not found: packets/${packetId}.json`);
   }
 
   const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
 
   if (packet['kind'] !== 'dev') {
-    throw new Error(
-      `Only dev packets go through code review. Packet '${packetId}' has kind '${String(packet['kind'])}'.`,
+    throw new RecordReviewError(
+      'Only dev packets go through code review.',
+      [`Packet '${packetId}' has kind '${String(packet['kind'])}'.`],
     );
   }
 
@@ -118,21 +134,28 @@ export function recordReview(options: RecordReviewOptions): RecordReviewOutcome 
   // Mismatched re-decision is still an error. The reviewer must explicitly
   // reset the lifecycle (request-review again) before flipping the decision.
   if (status === 'review_approved' || status === 'changes_requested') {
-    throw new Error(
-      `Packet '${packetId}' already has decision '${status}'. Cannot change to '${targetStatus}' ` +
-        `without resetting state. Run: npx tsx tools/request-review.ts ${packetId} ` +
-        `to re-open review, then record the new decision.`,
+    throw new RecordReviewError(
+      `Packet '${packetId}' already has decision '${status}'.`,
+      [
+        `Cannot change to '${targetStatus}' without resetting state.`,
+        `Run: npx tsx tools/request-review.ts ${packetId} to re-open review, then record the new decision.`,
+      ],
     );
   }
 
   if (status !== 'review_requested') {
-    let detail = '';
-    if (status === 'implementing' || status === 'changes_requested') {
-      detail = ' The developer must call request-review.ts first.';
+    // Note: status === 'changes_requested' is handled by the earlier
+    // mismatched-re-decision branch, so it cannot reach this hint. Only
+    // 'implementing' produces the request-review hint here.
+    const details: string[] = [
+      `Only packets in 'review_requested' status can be reviewed.`,
+    ];
+    if (status === 'implementing') {
+      details.push('The developer must call request-review.ts first.');
     }
-    throw new Error(
-      `Packet '${packetId}' has status '${String(status)}'. ` +
-        `Only packets in 'review_requested' status can be reviewed.${detail}`,
+    throw new RecordReviewError(
+      `Packet '${packetId}' has status '${String(status)}'.`,
+      details,
     );
   }
 
@@ -204,7 +227,14 @@ function main(): void {
       );
     }
   } catch (e) {
-    console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    if (e instanceof RecordReviewError) {
+      console.error(`ERROR: ${e.message}`);
+      for (const detail of e.details) {
+        console.error(`  ${detail}`);
+      }
+    } else {
+      console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    }
     process.exit(1);
   }
 }

@@ -62,6 +62,24 @@ export type RequestReviewOutcome =
     };
 
 /**
+ * Structured error so the CLI can render the original multi-line output
+ * (`ERROR: <summary>` followed by indented detail lines) without losing
+ * any guidance, while library callers still get a normal Error with a
+ * single-line `.message` (the summary) for assertions.
+ *
+ * Library callers that want the structured detail can downcast and read
+ * `.details`; everyone else gets the same shape Error has always had.
+ */
+export class RequestReviewError extends Error {
+  readonly details: ReadonlyArray<string>;
+  constructor(summary: string, details: ReadonlyArray<string> = []) {
+    super(summary);
+    this.name = 'RequestReviewError';
+    this.details = details;
+  }
+}
+
+/**
  * Programmatic entry to record a review request.
  *
  * Throws on precondition failures (missing packet, wrong kind, wrong status,
@@ -76,14 +94,18 @@ export function requestReview(options: RequestReviewOptions): RequestReviewOutco
 
   const packetPath = join(artifactRoot, 'packets', `${packetId}.json`);
   if (!existsSync(packetPath)) {
-    throw new Error(`Packet not found: packets/${packetId}.json`);
+    throw new RequestReviewError(`Packet not found: packets/${packetId}.json`);
   }
 
   const packet = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
 
   if (packet['kind'] !== 'dev') {
-    throw new Error(
-      `Only dev packets can request code review. Packet '${packetId}' has kind '${String(packet['kind'])}'.`,
+    throw new RequestReviewError(
+      'Only dev packets can request code review.',
+      [
+        `Packet '${packetId}' has kind '${String(packet['kind'])}'.`,
+        'QA packets do not go through code review.',
+      ],
     );
   }
 
@@ -104,19 +126,22 @@ export function requestReview(options: RequestReviewOptions): RequestReviewOutco
 
   const validStatuses = ['implementing', 'changes_requested'];
   if (!validStatuses.includes(status as string)) {
-    let detail = '';
+    const details: string[] = [
+      `Only packets in 'implementing' or 'changes_requested' status can request review.`,
+    ];
     if (status === 'review_approved') {
-      detail = ' This packet is already approved. Run complete.ts to finalize.';
+      details.push('This packet is already approved. Run complete.ts to finalize.');
     }
-    throw new Error(
-      `Packet '${packetId}' has status '${String(status)}'. ` +
-        `Only packets in 'implementing' or 'changes_requested' status can request review.${detail}`,
+    throw new RequestReviewError(
+      `Packet '${packetId}' has status '${String(status)}'.`,
+      details,
     );
   }
 
   if (typeof packet['started_at'] !== 'string' || packet['started_at'].length === 0) {
-    throw new Error(
-      `Packet '${packetId}' has not been started. Run: npx tsx tools/start.ts ${packetId}`,
+    throw new RequestReviewError(
+      `Packet '${packetId}' has not been started.`,
+      [`Run: npx tsx tools/start.ts ${packetId}`],
     );
   }
 
@@ -132,15 +157,17 @@ export function requestReview(options: RequestReviewOptions): RequestReviewOutco
         timeout: 10_000,
       }).trim();
     } catch {
-      throw new Error(
-        'Could not determine current git branch. Use --branch <branch-name> to specify manually.',
+      throw new RequestReviewError(
+        'Could not determine current git branch.',
+        ['Use --branch <branch-name> to specify manually.'],
       );
     }
   }
 
   if (branch === 'HEAD') {
-    throw new Error(
-      'Detached HEAD state. Cannot determine branch name. Use --branch <branch-name> to specify manually.',
+    throw new RequestReviewError(
+      'Detached HEAD state. Cannot determine branch name.',
+      ['Use --branch <branch-name> to specify manually.'],
     );
   }
 
@@ -205,7 +232,14 @@ function main(): void {
       console.log(`  (re-request after changes — iteration incremented)`);
     }
   } catch (e) {
-    console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    if (e instanceof RequestReviewError) {
+      console.error(`ERROR: ${e.message}`);
+      for (const detail of e.details) {
+        console.error(`  ${detail}`);
+      }
+    } else {
+      console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    }
     process.exit(1);
   }
 }
