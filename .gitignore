@@ -25,3 +25,4 @@ coverage/
 
 # Claude Code — track project-wide settings, not per-developer local overrides
 .claude/settings.local.json
+.claude/worktrees/
