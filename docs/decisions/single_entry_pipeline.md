@@ -1,6 +1,6 @@
 ---
 name: factory-single-entry-pipeline
-description: Factory has exactly one human entry point — run.ts — accepting one or more spec IDs. The factory drives plan, develop, review, verify, recovery, and completion without further human interaction. Internal lifecycle scripts remain as the agent-facing protocol but are no longer documented as user-facing. Recovery is scenario-recipe based. Sequential dependency-aware execution first; parallel execution second.
+description: Factory has exactly one human entry point — run.ts — accepting one or more spec IDs. The factory drives plan, develop, review, verify, recovery, and completion without further human interaction. Internal lifecycle scripts remain as the agent-facing protocol. Recovery is scenario-recipe based with two-layer provider failover (cross-CLI and within-CLI for abstraction providers). LintFailed and TestFailed always escalate — auto-recovery would invite agents to disable rules or mutilate tests. Sequential dependency-aware first; parallel later.
 type: project
 ---
 
@@ -165,13 +165,68 @@ Failures during any phase are classified into **scenarios** and routed through *
 
 | Scenario | Trigger | Recipe |
 |---|---|---|
-| `ProviderTransient` | API 5xx, 429, network timeout, connection error | Wait `n` seconds (per provider config); retry the same agent invocation up to 2 times before escalating |
-| `BuildFailed` | `complete.ts` reports build failure | Re-invoke developer agent with build error appended to prompt; retry once |
-| `TestFailed` | `complete.ts` reports test failure | Re-invoke developer agent with failing test names appended to prompt; retry once |
-| `LintFailed` | `complete.ts` reports lint failure | Re-invoke developer agent with lint output appended to prompt; retry once |
+| `ProviderTransient` | Single API 5xx, 429, network timeout, connection error | Wait `n` seconds; retry the **same provider/model** once before reclassifying as `ProviderUnavailable` |
+| `ProviderUnavailable` | `ProviderTransient` exhausted, or repeated provider failures | Try the next entry in the within-CLI `model_failover` list (if configured) on the same CLI provider. If exhausted, fall through to the next CLI provider in the persona's `persona_providers` list. If all CLIs exhausted, escalate. |
+| `BuildFailed` | `complete.ts` reports build failure | Re-invoke developer agent with build error appended to prompt and explicit guardrail (*"Fix the implementation. Do not modify tests, build configuration, or lint configuration."*); retry once. On second failure, escalate. |
+| `LintFailed` | `complete.ts` reports lint failure | **Escalate.** Auto-recovery would invite the agent to disable lint rules rather than fix code violations. |
+| `TestFailed` | `complete.ts` reports test failure | **Escalate.** The agent has no mandate to decide whether tests are wrong or its implementation is wrong; "make the tests pass" is the failure mode where agents mutilate tests to clear errors. Humans decide. |
 | `StaleBranch` | Detected branch is behind main at request-review or complete | Run `git fetch && git rebase origin/main` from the worktree; abort rebase on conflict; retry once. If conflict, escalate. |
-| `AgentNonResponsive` | Agent exits non-zero with no output | Treat as ProviderTransient; retry once |
+| `AgentNonResponsive` | Agent exits non-zero with no output | Treat as `ProviderTransient` |
 | `CompletionGateBlocked` | Pre-commit hook FI-7 violation | Cannot auto-recover (intentional human gate). Escalate. |
+
+### Provider failover (the `ProviderUnavailable` recipe in detail)
+
+Factory recognizes two classes of provider:
+
+- **Direct providers** (codex, claude) — the CLI maps to a single upstream provider. A model failure at this layer typically means the CLI's primary model is down, and the right move is to fall through to the next CLI.
+- **Abstraction providers** (copilot) — the CLI routes to multiple underlying models. "Opus is down" does not mean "copilot is down" — copilot may still successfully serve a GPT-5 or Gemini call.
+
+To express this, the provider config gains an optional `model_failover` field:
+
+```json
+"copilot": {
+  "command": "gh copilot --",
+  "model_map": {
+    "high": "claude-opus-4-6",
+    "medium": "GPT-5.4",
+    "low": "claude-haiku-4-5"
+  },
+  "model_failover": ["claude-opus-4-6", "GPT-5.4", "claude-haiku-4-5"]
+}
+```
+
+Direct providers (codex, claude) do not set `model_failover`. The field is reserved for abstraction providers.
+
+The escalation cascade for `ProviderUnavailable`:
+
+1. Failure on `<CLI>` with `<model>` → if `<CLI>.model_failover` is configured, try the next entry on the same CLI
+2. Same-CLI failover exhausted (or not configured) → fall through to the next CLI in the persona's `persona_providers` list
+3. New CLI fails → recurse: same-CLI failover, then next-CLI failover
+4. All CLIs in `persona_providers` exhausted → escalate
+
+### Schema change: `persona_providers` becomes an ordered list
+
+Today:
+
+```json
+"persona_providers": {
+  "developer": "codex",
+  "code_reviewer": "claude",
+  ...
+}
+```
+
+After this decision:
+
+```json
+"persona_providers": {
+  "developer": ["codex", "claude", "copilot"],
+  "code_reviewer": ["claude", "copilot"],
+  ...
+}
+```
+
+A single string is still accepted (treated as a one-element list) for backward compatibility. The schema change is additive: existing configs with `"developer": "codex"` continue to work; new configs can opt into failover by switching to an array.
 
 ### Out of scope (deferred)
 
@@ -252,8 +307,9 @@ Specifically, **before this decision is implemented**:
 3. All lifecycle scripts become properly idempotent (the `start.ts` pattern extended).
 4. The pipeline is decomposed into four layers (driver / phases / lifecycle / recovery) plus prompt and agent-invocation modules.
 5. Multi-spec runs are sequential and dependency-aware in the first pass.
-6. Recovery is scenario-recipe based with a defined scope of seven scenarios, six of which are auto-recoverable.
-7. The new modules ship with unit tests; the imperative shells may remain untested in the first pass but the testable surface must grow substantially.
+6. Recovery is scenario-recipe based with a defined scope of eight scenarios. Auto-recoverable: `ProviderTransient`, `ProviderUnavailable` (via cross-CLI and within-CLI model failover), `BuildFailed` (with guardrail prompt), `StaleBranch`, `AgentNonResponsive`. Escalate-only: `LintFailed`, `TestFailed`, `CompletionGateBlocked`. The `LintFailed` and `TestFailed` scenarios are deliberately NOT auto-recoverable — auto-recovery invites agents to disable rules or mutilate tests rather than fix code.
+7. Provider failover operates at two layers: cross-CLI (`persona_providers` becomes an ordered list) and within-CLI (`model_failover` is an optional list of model IDs on abstraction providers like copilot).
+8. The new modules ship with unit tests; the imperative shells may remain untested in the first pass but the testable surface must grow substantially.
 
 ## What this does NOT decide
 
