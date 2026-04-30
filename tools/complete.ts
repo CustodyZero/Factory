@@ -81,6 +81,17 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   // the early return is the documented contract.
   if (existsSync(completionPath)) {
     const existing = JSON.parse(readFileSync(completionPath, 'utf-8')) as RawCompletion;
+    // FI-1 reinforcement: a completion file at completions/<packetId>.json
+    // must actually be the completion record for that packet. A mismatched
+    // packet_id means the file is corrupt or misnamed; refusing to short-
+    // circuit forces the operator to fix it rather than silently treating
+    // a foreign record as success for this packet.
+    if (existing.packet_id !== packetId) {
+      throw new Error(
+        `Completion record at completions/${packetId}.json has packet_id '${String(existing.packet_id)}', ` +
+          `expected '${packetId}'. The completion file may be corrupt or misnamed.`,
+      );
+    }
     const verification = existing.verification ?? {};
     return {
       packet_id: existing.packet_id,

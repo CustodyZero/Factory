@@ -189,6 +189,50 @@ describe('completePacket — idempotent on existing completion', () => {
   });
 });
 
+describe('completePacket — mismatched packet_id refuses to short-circuit', () => {
+  it('throws when an existing completion file has the wrong packet_id', () => {
+    // A completion file named completions/<packetId>.json whose internal
+    // packet_id does not match the requested packet is suspect: corrupt or
+    // misnamed. The early-return path must not silently treat it as
+    // success.
+    const f = makeFixture({
+      packet: {
+        id: 'pkt-asking',
+        kind: 'dev',
+        title: 'asks for completion',
+        status: 'review_approved',
+        started_at: '2024-01-01T00:00:00Z',
+      },
+      completion: {
+        packet_id: 'pkt-DIFFERENT',
+        completed_at: '2024-01-02T00:00:00Z',
+        completed_by: { kind: 'agent', id: 'old' },
+        summary: 'foreign record',
+        files_changed: [],
+        verification: {
+          tests_pass: true,
+          build_pass: true,
+          lint_pass: true,
+          ci_pass: true,
+          notes: 'All verification passed.',
+        },
+      },
+    });
+    fixtures.push(f);
+
+    const before = readFileSync(f.completionPath, 'utf-8');
+    const mtimeBefore = statSync(f.completionPath).mtimeMs;
+
+    expect(() =>
+      completePacket({ packetId: 'pkt-asking', projectRoot: f.root }),
+    ).toThrow(/has packet_id 'pkt-DIFFERENT', expected 'pkt-asking'/);
+
+    // The foreign completion file must NOT be touched by the failed call.
+    expect(statSync(f.completionPath).mtimeMs).toBe(mtimeBefore);
+    expect(readFileSync(f.completionPath, 'utf-8')).toBe(before);
+  });
+});
+
 describe('completePacket — happy path still works and is NOT idempotent on first run', () => {
   it('writes completion + updates packet status when no existing record', () => {
     const f = makeFixture({
