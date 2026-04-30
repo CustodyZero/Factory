@@ -1,0 +1,54 @@
+## Codex GPT-5.5 Review — Phase 2 (Round 1)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-ae428f4e0cbee8949 vs main
+**Date:** 2026-04-30
+
+### Verdict
+REQUEST-CHANGES
+
+### Idempotency correctness
+Mostly correct.
+
+- request-review.ts detects review_requested before mutation; returns already_requested; CLI prints no-op message; no packet write.
+- review.ts correctly implements all four required scenarios: matching decision is no-op, mismatched re-decision still errors.
+- complete.ts correctly short-circuits before verification and writes. Tests show no rewrite of packet/completion files and no rerun of failing verification commands.
+
+Concern: complete.ts treats any parseable completions/<packetId>.json as "already complete" without checking existing.packet_id === packetId or required verification booleans. That can return success for a corrupt or mismatched completion file.
+
+### FI-1 preservation
+PASS for the normal invariant path. The early return is before verification/write logic, and the last-line duplicate guard remains. The mismatched packet_id issue is not a duplicate-write issue but does weaken the "existing record satisfies this packet" assumption.
+
+### Happy-path behavior preservation
+Success-path behavior preserved.
+
+Blocking issue: several original non-idempotent error outputs DRIFTED because multi-line CLI errors were collapsed into thrown one-line messages. Examples:
+- request-review.ts wrong-kind: original printed three lines including "QA packets do not go through code review"; new version is a single line that drops the guidance.
+- request-review.ts invalid-status, not-started: same pattern of multi-line collapse.
+- review.ts wrong-kind, wrong-status: same pattern.
+
+The brief explicitly required no drift in original error messages.
+
+### CompleteResult interface change
+Acceptable but not strictly necessary. Could have been modeled as a union or inferred from CLI state, but already_complete: boolean is defensible for Phase 3 library calls. In-tree caller impact is contained.
+
+### Test quality
+Good library-level coverage. The review test covers all four required scenarios. complete.test.ts meaningfully proves no verification rerun by using failing commands and preserving recorded passing values.
+
+Missing: CLI-level tests for messages/exit codes. That gap allowed the legacy error-output drift to slip through library tests.
+
+npm test passes: 14 files, 166 tests.
+
+### Other observations
+- npm test emits noisy "git diff" usage from the fresh complete fixture because it is not a git repo. Suite still passes.
+- review.ts has a dead status === 'changes_requested' branch inside the later wrong-status handler (changes_requested is handled earlier as either idempotent or mismatched).
+
+### Required changes
+1. Restore legacy CLI error output for non-idempotent failures in request-review.ts. Specifically the wrong-kind, invalid-status, and not-started paths should emit the original multi-line CLI output. Keep the new idempotent output only for the new rerun success path.
+2. Restore legacy CLI error output for non-idempotent failures in review.ts. Specifically the wrong-kind and wrong-status paths.
+3. In complete.ts, validate that the existing completion record actually belongs to packetId before returning already_complete: true. At minimum reject existing.packet_id !== packetId with a clear error.
+
+### Suggested improvements (optional)
+1. Add CLI smoke tests for idempotent messages and legacy error messages — would have caught the drift.
+2. Suppress or avoid the noisy git-diff output in temp fixtures.
+3. Remove the dead changes_requested branch in review.ts wrong-status handler.
