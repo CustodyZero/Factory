@@ -14,6 +14,11 @@
  *
  * No human gates after intent approval. Progress streams to terminal.
  * If something fails, the pipeline stops and reports what failed.
+ *
+ * Phase 1 of specs/single-entry-pipeline.md extracted the pure logic
+ * out of this file into tools/pipeline/. What remains here is the
+ * imperative orchestration (filesystem, spawnSync, lifecycle execSync)
+ * that stitches those pure decisions together.
  */
 
 import { execSync, spawnSync } from 'node:child_process';
@@ -25,12 +30,28 @@ import {
   loadConfig,
   resolveArtifactRoot,
 } from './config.js';
-import type { FactoryConfig, ModelTier, PipelineProvider, PipelineProviderConfig } from './config.js';
-import { hydrateIntent, resolvePlanAction } from './plan.js';
-import type { RawIntentArtifact, IntentArtifact, PlannerAssignment } from './plan.js';
-import { resolveExecuteAction } from './execute.js';
-import type { Feature, RawPacket, PacketAssignment } from './execute.js';
+import type { FactoryConfig, ModelTier, PipelineProvider } from './config.js';
+import { hydrateIntent } from './plan.js';
+import type { RawIntentArtifact, IntentArtifact } from './plan.js';
+import type { Feature, RawPacket } from './execute.js';
 import * as fmt from './output.js';
+import { topoSort } from './pipeline/topo.js';
+import {
+  buildDevPrompt,
+  buildReviewPrompt,
+  buildReworkPrompt,
+  buildQaPrompt,
+  buildPlannerPrompt,
+} from './pipeline/prompts.js';
+import {
+  deriveDevResumePoint,
+  nextPointAfterImplement,
+  nextPointAfterReview,
+  nextPointAfterRework,
+  nextPointAfterFinalize,
+} from './pipeline/develop_phase.js';
+import type { DevResumePoint } from './pipeline/develop_phase.js';
+import { resolveModelId, buildProviderArgs } from './pipeline/agent_invoke.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,61 +87,23 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
+/** Best-effort JSON patch: mutates the file in place; swallows errors. */
+function patchJson(path: string, mutator: (data: Record<string, unknown>) => void): void {
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    mutator(data);
+    writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  } catch { /* best-effort */ }
+}
+
 // ---------------------------------------------------------------------------
-// Agent invocation
+// Agent invocation (I/O leaf — pure helpers live in pipeline/agent_invoke.ts)
 // ---------------------------------------------------------------------------
 
 interface InvokeResult {
   readonly exit_code: number;
   readonly stdout: string;
   readonly stderr: string;
-}
-
-/**
- * Resolve the concrete model ID for a given provider and tier.
- * If the provider has a model_map, use it. Otherwise return undefined
- * (the provider CLI will use its own default).
- */
-function resolveModelId(providerConfig: PipelineProviderConfig, tier: ModelTier): string | undefined {
-  return providerConfig.model_map?.[tier];
-}
-
-/**
- * Build CLI arguments for a provider invocation.
- * Each provider has its own conventions for autonomous mode and model selection.
- */
-function buildProviderArgs(provider: string, prompt: string, providerConfig: PipelineProviderConfig, modelId: string | undefined): { command: string; args: string[] } {
-  const command = providerConfig.command;
-  const args: string[] = [];
-
-  switch (provider) {
-    case 'claude':
-      args.push('--print', '--dangerously-skip-permissions');
-      if (modelId) args.push('--model', modelId);
-      args.push(prompt);
-      break;
-
-    case 'codex':
-      args.push('--quiet', '--full-auto');
-      if (modelId) args.push('--model', modelId);
-      args.push(prompt);
-      break;
-
-    case 'copilot':
-      // Pass prompt via stdin rather than as a -p argument to avoid OS command-line
-      // length limits (Windows cmd.exe caps at ~8191 chars).
-      args.push('--yolo', '--no-ask-user');
-      if (modelId) args.push('--model', modelId);
-      break;
-
-    default:
-      // Generic provider: pass prompt as positional, model via --model
-      if (modelId) args.push('--model', modelId);
-      args.push(prompt);
-      break;
-  }
-
-  return { command, args };
 }
 
 function invokeAgent(
@@ -133,7 +116,6 @@ function invokeAgent(
   if (pipelineConfig === undefined) {
     return { exit_code: 1, stdout: '', stderr: 'Pipeline config not found' };
   }
-
   const providerConfig = pipelineConfig.providers[provider];
   if (providerConfig === undefined) {
     return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' not configured` };
@@ -144,10 +126,8 @@ function invokeAgent(
 
   const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
   const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
-
-  // For copilot, pass the prompt via stdin to avoid OS command-line length limits.
+  // Copilot: prompt via stdin to avoid OS command-line length limits.
   const useStdin = provider === 'copilot';
-
   const result = spawnSync(command, args, {
     cwd: findProjectRoot(),
     encoding: 'utf-8',
@@ -156,12 +136,21 @@ function invokeAgent(
     shell: true,
     ...(useStdin ? { input: prompt } : {}),
   });
-
   return {
     exit_code: result.status ?? 1,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+/** Run a factory lifecycle CLI; returns whether it exited 0. */
+function runLifecycle(script: string, args: ReadonlyArray<string>, config: FactoryConfig, timeoutMs = 30_000): boolean {
+  try {
+    execSync(buildToolCommand(script, [...args], undefined, config), {
+      cwd: findProjectRoot(), encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,35 +177,13 @@ function planPhase(
   // Do NOT inline spec contents here: it bloats the CLI invocation beyond OS limits
   // and defeats the purpose of spec_path (the agent should read the authoritative
   // source directly, not a snapshot embedded in the prompt).
-  const plannerPersona = config.personas.planner;
-  const constraints = (intent.constraints ?? []).map((c) => `- ${c}`).join('\n');
   const rawIntent = readJson<RawIntentArtifact>(join(artifactRoot, 'intents', `${intent.id}.json`));
-  const specRef = rawIntent?.spec_path
-    ? `Read the full spec from: ${rawIntent.spec_path}`
-    : `## Spec\n${intent.spec}`;
-  const prompt = [
-    `You are a planner. Decompose this intent into a feature with dev/qa packet pairs.`,
-    ``,
-    `## Intent: ${intent.id}`,
-    `Title: ${intent.title}`,
-    ``,
-    specRef,
-    ``,
-    constraints.length > 0 ? `## Constraints\n${constraints}\n` : '',
-    `## Instructions`,
-    ...plannerPersona.instructions,
-    ``,
-    `## Output`,
-    `Create the following files under the factory artifact directory (${config.artifact_dir}):`,
-    `1. features/${intent.id}.json — feature artifact with status "planned"`,
-    `   - Set intent_id to "${intent.id}"`,
-    `   - Set packets array with all dev and qa packet IDs`,
-    `2. packets/<packet-id>.json — one dev packet per logical work unit`,
-    `3. packets/<packet-id>-qa.json — one qa packet per dev packet (kind: "qa", verifies: "<dev-packet-id>")`,
-    ``,
-    `Every dev packet must have a QA counterpart. Set dependencies between packets where needed.`,
-    `Set feature_id on each packet. Use kebab-case IDs.`,
-  ].filter(Boolean).join('\n');
+  const prompt = buildPlannerPrompt({
+    intent,
+    plannerInstructions: config.personas.planner.instructions,
+    artifactDir: config.artifact_dir,
+    specPath: rawIntent?.spec_path ?? null,
+  });
 
   if (dryRun) {
     fmt.log('plan', `[dry-run] Would invoke planner with ${prompt.length} char prompt`);
@@ -244,68 +211,15 @@ function planPhase(
     return null;
   }
 
-  // Update intent status
-  const intentPath = join(artifactRoot, 'intents', `${intent.id}.json`);
-  try {
-    const intentData = JSON.parse(readFileSync(intentPath, 'utf-8')) as Record<string, unknown>;
-    intentData['status'] = 'planned';
-    intentData['feature_id'] = created.id;
-    intentData['planned_at'] = timestamp();
-    writeFileSync(intentPath, JSON.stringify(intentData, null, 2) + '\n', 'utf-8');
-  } catch { /* best-effort */ }
+  // Update intent status (best-effort)
+  patchJson(join(artifactRoot, 'intents', `${intent.id}.json`), (d) => {
+    d['status'] = 'planned';
+    d['feature_id'] = created.id;
+    d['planned_at'] = timestamp();
+  });
 
   fmt.log('plan', `Feature created: ${fmt.bold(created.id)}`);
   return { feature_id: created.id };
-}
-
-/**
- * Derive the current lifecycle phase of a dev packet from its artifact state.
- * Returns the entry point for resumption.
- */
-type DevResumePoint =
-  | 'completed'      // has completion record — skip entirely
-  | 'implement'      // not started, or implementing — (re)invoke developer
-  | 'request_review' // implementing done, needs review request
-  | 'review'         // review_requested — invoke reviewer
-  | 'rework'         // changes_requested — invoke developer for rework
-  | 'finalize'       // review_approved — run completion
-  ;
-
-function deriveDevResumePoint(packet: RawPacket, hasCompletion: boolean): DevResumePoint {
-  if (hasCompletion) return 'completed';
-  const status = packet.status ?? null;
-  switch (status) {
-    case 'review_requested': return 'review';
-    case 'changes_requested': return 'rework';
-    case 'review_approved': return 'finalize';
-    default: return 'implement'; // null, 'draft', 'ready', 'implementing'
-  }
-}
-
-/**
- * Topological sort of packets by dependencies.
- * Returns packets in dependency order (leaves first).
- * Packets whose dependencies are not in the input set are placed last.
- */
-function topoSort(packets: ReadonlyArray<RawPacket>): RawPacket[] {
-  const idSet = new Set(packets.map((p) => p.id));
-  const visited = new Set<string>();
-  const result: RawPacket[] = [];
-  const packetMap = new Map(packets.map((p) => [p.id, p]));
-
-  function visit(id: string): void {
-    if (visited.has(id)) return;
-    visited.add(id);
-    const p = packetMap.get(id);
-    if (p === undefined) return;
-    for (const dep of p.dependencies ?? []) {
-      if (idSet.has(dep)) visit(dep);
-    }
-    result.push(p);
-  }
-
-  for (const p of packets) visit(p.id);
-  return result;
 }
 
 function devPhase(
@@ -319,7 +233,7 @@ function devPhase(
   const completionIds = new Set(completions.map((c) => c.packet_id));
 
   const devPackets = packets.filter((p) => p.kind === 'dev' && feature.packets.includes(p.id));
-  const sorted = topoSort(devPackets);
+  const sorted = topoSort<RawPacket>(devPackets, (p) => p.id, (p) => p.dependencies ?? []);
   const completed: string[] = [];
   const failed: string[] = [];
 
@@ -364,113 +278,82 @@ function devPhase(
       continue;
     }
 
-    // -- State machine: enter at the derived resume point and fall through --
+    // State machine: I/O per step, then a pure transition function from
+    // pipeline/develop_phase.ts decides where to go next. `null` = failed.
+    let currentPoint: DevResumePoint | null = resumePoint;
 
-    let currentPoint: DevResumePoint = resumePoint;
-    let ok = true;
-
-    while (currentPoint !== 'completed' && ok) {
+    while (currentPoint !== null && currentPoint !== 'completed') {
       switch (currentPoint) {
         case 'implement': {
-          // Start packet (idempotent)
-          try {
-            execSync(buildToolCommand('start.ts', [packet.id], undefined, config), {
-              cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-            });
-          } catch { /* already started is fine */ }
-
+          runLifecycle('start.ts', [packet.id], config); // idempotent
           fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
           const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
-          if (devResult.exit_code !== 0) {
-            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
-            ok = false;
-            break;
-          }
-          fmt.log('develop', `  ${fmt.sym.ok} Implementation done`);
-          currentPoint = 'request_review';
+          const devOk = devResult.exit_code === 0;
+          fmt.log('develop', devOk
+            ? `  ${fmt.sym.ok} Implementation done`
+            : `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
+          currentPoint = nextPointAfterImplement(devOk);
           break;
         }
 
         case 'request_review': {
-          try {
-            execSync(buildToolCommand('request-review.ts', [packet.id], undefined, config), {
-              cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-            });
-          } catch (e) {
-            fmt.log('develop', `  ${fmt.sym.warn} Could not request review: ${e instanceof Error ? e.message : String(e)}`);
+          if (!runLifecycle('request-review.ts', [packet.id], config)) {
+            fmt.log('develop', `  ${fmt.sym.warn} Could not request review`);
           }
-          currentPoint = 'review';
+          currentPoint = 'review'; // unconditional: best-effort execSync above
           break;
         }
 
         case 'review': {
           const iterationPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? freshPacket;
           const reviewIteration = iterationPacket.review_iteration ?? 0;
-
           if (reviewIteration >= maxReviewIterations) {
             fmt.log('develop', `  ${fmt.sym.fail} Review not approved after ${maxReviewIterations} iterations`);
-            ok = false;
+            currentPoint = null;
             break;
           }
-
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
           if (reviewResult.exit_code !== 0) {
             fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
-            ok = false;
+            currentPoint = nextPointAfterReview(false, null);
             break;
           }
-
-          // Re-read packet status after review agent ran
           const afterReview = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
           const afterStatus = afterReview?.status ?? null;
-
           if (afterStatus === 'review_approved') {
             fmt.log('review', `  ${fmt.sym.ok} Review approved`);
-            currentPoint = 'finalize';
           } else if (afterStatus === 'changes_requested') {
             fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
-            currentPoint = 'rework';
           } else {
-            // Review didn't transition status — force approve
-            try {
-              execSync(buildToolCommand('review.ts', [packet.id, '--approve'], undefined, config), {
-                cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-              });
-            } catch { /* best-effort */ }
+            // Reviewer didn't transition status — force approve.
+            runLifecycle('review.ts', [packet.id, '--approve'], config);
             fmt.log('review', `  ${fmt.sym.ok} Review complete`);
-            currentPoint = 'finalize';
           }
+          currentPoint = nextPointAfterReview(true, afterStatus);
           break;
         }
 
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
           const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config, devTier);
-          if (reworkResult.exit_code !== 0) {
-            fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
-            ok = false;
-            break;
-          }
-          // Re-request review
-          currentPoint = 'request_review';
+          if (reworkResult.exit_code !== 0) fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
+          currentPoint = nextPointAfterRework(reworkResult.exit_code === 0);
           break;
         }
 
         case 'finalize': {
           fmt.log('develop', `  Running verification...`);
-          try {
-            execSync(
-              buildToolCommand('complete.ts', [packet.id, '--identity', devIdentity], undefined, config),
-              { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] },
-            );
+          const completionOk = runLifecycle(
+            'complete.ts', [packet.id, '--identity', devIdentity], config, 300_000,
+          );
+          if (completionOk) {
             fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
             completionIds.add(packet.id);
-            currentPoint = 'completed';
-          } catch {
+          } else {
             fmt.log('develop', `  ${fmt.sym.fail} Completion failed`);
-            ok = false;
           }
+          currentPoint = nextPointAfterFinalize(completionOk);
           break;
         }
       }
@@ -537,35 +420,22 @@ function qaPhase(
       continue;
     }
 
-    // Start (idempotent)
-    try {
-      execSync(buildToolCommand('start.ts', [packet.id], undefined, config), {
-        cwd: findProjectRoot(), encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch { /* already started is fine */ }
-
-    // Invoke QA
-    const qaPrompt = buildQaPrompt(packet, config);
+    runLifecycle('start.ts', [packet.id], config); // idempotent
 
     fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
-    const qaResult = invokeAgent(qaProvider, qaPrompt, config, qaTier);
+    const qaResult = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
     if (qaResult.exit_code !== 0) {
       fmt.log('verify', `  ${fmt.sym.fail} QA agent failed`);
       failed.push(packet.id);
       continue;
     }
 
-    // Complete
     fmt.log('verify', `  Running verification...`);
-    try {
-      execSync(
-        buildToolCommand('complete.ts', [packet.id, '--identity', qaIdentity], undefined, config),
-        { cwd: findProjectRoot(), encoding: 'utf-8', timeout: 300_000, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
+    if (runLifecycle('complete.ts', [packet.id, '--identity', qaIdentity], config, 300_000)) {
       fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
       completionIds.add(packet.id);
       completed.push(packet.id);
-    } catch {
+    } else {
       fmt.log('verify', `  ${fmt.sym.fail} Completion failed`);
       failed.push(packet.id);
     }
@@ -575,68 +445,12 @@ function qaPhase(
 }
 
 // ---------------------------------------------------------------------------
-// Prompt builders
-// ---------------------------------------------------------------------------
-
-function buildDevPrompt(packet: RawPacket, config: FactoryConfig): string {
-  const personaInstructions = config.personas.developer.instructions;
-  const packetInstructions = packet.instructions ?? [];
-  const criteria = packet.acceptance_criteria ?? [];
-  return [
-    `You are a developer implementing a work packet.`,
-    ``,
-    `## Packet: ${packet.id}`,
-    `Title: ${packet.title}`,
-    `Intent: ${(packet as Record<string, unknown>)['intent'] ?? 'See packet for details'}`,
-    ``,
-    criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
-    personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
-    packetInstructions.length > 0 ? `## Packet Instructions\n${packetInstructions.join('\n')}\n` : '',
-    `After implementing, the pipeline will request a code review automatically.`,
-    `Do not call request-review.ts or complete.ts yourself.`,
-  ].filter(Boolean).join('\n');
-}
-
-function buildReviewPrompt(packet: RawPacket, config: FactoryConfig): string {
-  const personaInstructions = config.personas.code_reviewer.instructions;
-  const criteria = packet.acceptance_criteria ?? [];
-  return [
-    `You are a code reviewer. Review the implementation for packet "${packet.id}".`,
-    ``,
-    `Title: ${packet.title}`,
-    criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
-    personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
-    `Review the code changes. If acceptable, run: npx tsx ${config.factory_dir}/tools/review.ts ${packet.id} --approve`,
-    `If changes needed, run: npx tsx ${config.factory_dir}/tools/review.ts ${packet.id} --request-changes`,
-  ].filter(Boolean).join('\n');
-}
-
-function buildReworkPrompt(packet: RawPacket, config: FactoryConfig): string {
-  return [
-    `You are a developer. Your code review for packet "${packet.id}" requested changes.`,
-    `Address the review feedback and fix the issues.`,
-    `Do not call request-review.ts or complete.ts yourself.`,
-  ].join('\n');
-}
-
-function buildQaPrompt(packet: RawPacket, config: FactoryConfig): string {
-  const personaInstructions = config.personas.qa.instructions;
-  const criteria = packet.acceptance_criteria ?? [];
-  return [
-    `You are a QA engineer verifying packet "${packet.id}".`,
-    ``,
-    `Title: ${packet.title}`,
-    `Verifies: ${packet.verifies ?? 'unknown'}`,
-    criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
-    personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
-    `Verify the acceptance criteria are met. Run tests. Check the implementation.`,
-    `Do not call complete.ts yourself — the pipeline handles that.`,
-  ].filter(Boolean).join('\n');
-}
-
-// ---------------------------------------------------------------------------
 // Main pipeline
 // ---------------------------------------------------------------------------
+
+function failResult(intentId: string, featureId: string | null, message: string, success = false): RunResult {
+  return { intent_id: intentId, feature_id: featureId, packets_completed: [], packets_failed: [], success, message };
+}
 
 function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   const config = loadConfig();
@@ -651,20 +465,18 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   if (!existsSync(intentPath)) {
     const msg = `Intent not found: ${intentId}`;
     fmt.log('error', fmt.error(msg));
-    return { intent_id: intentId, feature_id: null, packets_completed: [], packets_failed: [], success: false, message: msg };
+    return failResult(intentId, null, msg);
   }
-
   const rawIntent = readJson<RawIntentArtifact>(intentPath);
   if (rawIntent === null) {
     const msg = `Failed to parse intent: ${intentId}`;
     fmt.log('error', fmt.error(msg));
-    return { intent_id: intentId, feature_id: null, packets_completed: [], packets_failed: [], success: false, message: msg };
+    return failResult(intentId, null, msg);
   }
-
   const hydrated = hydrateIntent(rawIntent, projectRoot, (p) => readFileSync(p, 'utf-8'));
   if (!hydrated.ok) {
     fmt.log('error', fmt.error(hydrated.error));
-    return { intent_id: intentId, feature_id: null, packets_completed: [], packets_failed: [], success: false, message: hydrated.error };
+    return failResult(intentId, null, hydrated.error);
   }
 
   // Phase 1: Plan
@@ -673,7 +485,7 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   const planResult = planPhase(hydrated.intent, config, artifactRoot, dryRun);
   if (planResult === null) {
     const msg = dryRun ? 'Dry run — planning would be invoked' : 'Planning failed';
-    return { intent_id: intentId, feature_id: null, packets_completed: [], packets_failed: [], success: dryRun, message: msg };
+    return failResult(intentId, null, msg, dryRun);
   }
 
   // Load feature
@@ -682,7 +494,7 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   if (feature === null) {
     const msg = `Failed to load feature: ${planResult.feature_id}`;
     fmt.log('error', fmt.error(msg));
-    return { intent_id: intentId, feature_id: planResult.feature_id, packets_completed: [], packets_failed: [], success: false, message: msg };
+    return failResult(intentId, planResult.feature_id, msg);
   }
 
   // Early exit: feature already fully done
@@ -692,14 +504,10 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
     return { intent_id: intentId, feature_id: feature.id, packets_completed: [...feature.packets], packets_failed: [], success: true, message: msg };
   }
 
-  // Update feature status to executing
-  try {
-    const featureData = JSON.parse(readFileSync(featurePath, 'utf-8')) as Record<string, unknown>;
-    if (featureData['status'] === 'planned') {
-      featureData['status'] = 'executing';
-      writeFileSync(featurePath, JSON.stringify(featureData, null, 2) + '\n', 'utf-8');
-    }
-  } catch { /* best-effort */ }
+  // Update feature status to executing (best-effort)
+  patchJson(featurePath, (d) => {
+    if (d['status'] === 'planned') d['status'] = 'executing';
+  });
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
   const featurePackets = packets.filter((p) => feature.packets.includes(p.id));
@@ -726,14 +534,11 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   const allCompleted = [...devResult.completed, ...qaResult.completed];
   const allFailed = [...devResult.failed, ...qaResult.failed];
   const allSkipped = qaResult.skipped;
-  const totalProcessed = allCompleted.length + allFailed.length + allSkipped.length;
   if (allFailed.length === 0 && allSkipped.length === 0 && !dryRun && allCompleted.length === feature.packets.length) {
-    try {
-      const featureData = JSON.parse(readFileSync(featurePath, 'utf-8')) as Record<string, unknown>;
-      featureData['status'] = 'completed';
-      featureData['completed_at'] = timestamp();
-      writeFileSync(featurePath, JSON.stringify(featureData, null, 2) + '\n', 'utf-8');
-    } catch { /* best-effort */ }
+    patchJson(featurePath, (d) => {
+      d['status'] = 'completed';
+      d['completed_at'] = timestamp();
+    });
   }
 
   // Summary
