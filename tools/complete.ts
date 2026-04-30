@@ -116,11 +116,17 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   const testsPass = runVerification('tests', config.verification.test, projectRoot);
   const ciPass = buildPass && lintPass && testsPass;
 
-  // Collect changed files
+  // Collect changed files. Best-effort: when the project root is not a git
+  // repo (e.g. test fixtures) git emits a usage banner on stderr; we silence
+  // it by piping stderr to a buffer we then discard. The catch swallows the
+  // non-zero exit so the absence of git history never blocks completion.
   let filesChanged: string[] = [];
   try {
     const diffOutput = execSync('git diff --name-only HEAD~1', {
-      cwd: projectRoot, encoding: 'utf-8', timeout: 10_000,
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
     if (diffOutput.length > 0) {
       filesChanged = diffOutput.split('\n');
