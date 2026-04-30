@@ -52,3 +52,35 @@ ALL-PASS — every required criterion (1-10) and both spot-checks (11-12) verifi
 ### Independent observations
 - patchJson's outer try/catch swallows JSON parse errors; matches pre-extraction semantics
 - tools/test/run.test.ts pins the round-2-fixed contracts directly — gives independent regression coverage
+
+---
+
+## Orchestrator Approval — Phase 1
+
+**Orchestrator:** this session
+**Date:** 2026-04-30
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- Codex GPT-5.5 (round 1: REQUEST-CHANGES with two specific behavior drifts; round 2: APPROVED, both fixes verified)
+- Independent Opus QA (separate identity per FI-7): ALL-PASS on all 10 acceptance criteria + 2 behavioral spot-checks
+- All three reviewers (codex, QA, orchestrator) verified the work against the worktree state, not against the developer's claims
+- The two issues codex caught in round 1 (patchJson always-writes, runLifecycle drops error detail) were real behavior changes that would have broken in subtle ways post-merge; the bounded-iteration model worked as designed
+- The brief's "no behavior change" load-bearing claim is now defensible: prompt builders pinned by snapshot tests; the two behavioral drifts are fixed and pinned by new contract tests
+
+### Iteration record
+- Round 1 (5 commits, +53 tests): REQUEST-CHANGES
+- Round 2 (1 commit, +5 tests): APPROVED
+- Total: 6 commits, +58 tests (98 → 156), +1241/-301 line delta, run.ts 798 → 644
+
+### What lands
+- 4 new pure-logic modules under tools/pipeline/ (topo, prompts, develop_phase, agent_invoke)
+- 5 new test files (topo, prompts, develop_phase, agent_invoke, run)
+- run.ts shrunk from 798 to 644 lines, delegates to the pipeline modules
+
+### What's deliberately deferred
+- The <400-line target on run.ts (would require I/O in pipeline/, violating the architecture invariant — out of scope)
+- Full-body string assertions on populated prompts (codex flagged as nit; developer judged out of scope; orchestrator concurs)
+- Phases 2-8 of specs/single-entry-pipeline.md (this work is Phase 1 only)
