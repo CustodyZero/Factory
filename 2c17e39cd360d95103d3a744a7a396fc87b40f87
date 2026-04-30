@@ -25,3 +25,30 @@ Good. The 5 new tests in tools/test/run.test.ts pin the important contracts: dir
 
 ### Required changes
 None — APPROVED.
+
+---
+
+## QA Verification — Phase 1
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-04-30
+
+### Verification verdict
+ALL-PASS — every required criterion (1-10) and both spot-checks (11-12) verified independently against the worktree state.
+
+### Highlights
+- npm test: 156 tests passing across 11 test files (target was ≥128; +30 minimum from 98 baseline)
+- tools/run.ts: 644 lines (under 700; rationale for not hitting <400 verified consistent with the no-I/O-in-pipeline architecture invariant)
+- No I/O in tools/pipeline/* (verified — only type imports from ../config.js, ../execute.js, ../plan.js; the only matches for I/O symbols are JSDoc comments)
+- No package.json changes vs main (git diff confirmed empty)
+- validate.ts PASS
+- All 5 prompt builders exercised by snapshot tests in prompts.test.ts
+- Round-1 commit boundaries correct: one per module (topo, prompts, develop_phase, agent_invoke) + final wiring
+- Round-2 fixes verified independently:
+  * patchJson now writes only when mutator returns true; feature-status site preserves original semantics
+  * runLifecycle returns { ok, error? }; request-review use site logs error detail
+- Behavioral spot-checks (status.ts, run.ts --help) pass
+
+### Independent observations
+- patchJson's outer try/catch swallows JSON parse errors; matches pre-extraction semantics
+- tools/test/run.test.ts pins the round-2-fixed contracts directly — gives independent regression coverage
