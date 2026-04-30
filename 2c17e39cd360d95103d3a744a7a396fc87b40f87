@@ -1,0 +1,27 @@
+## Codex GPT-5.5 Review — Phase 1 (Round 2)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed commit:** 2c17e39 (round-2 fixes on top of 5 round-1 commits)
+**Date:** 2026-04-30
+
+### Verdict
+APPROVED
+
+### Issue 1 (patchJson) — fixed
+patchJson now only writes when the mutator returns true (tools/run.ts ~line 98). The feature-status use site only returns true when d['status'] === 'planned', otherwise false; non-planned features are not rewritten (tools/run.ts ~line 541). Matches the pre-refactor behavior.
+
+### Issue 2 (runLifecycle) — fixed
+runLifecycle now returns { ok: boolean; error?: string } (tools/run.ts ~line 165). The request-review call site captures the result and logs error detail when present (tools/run.ts ~line 331). Other call sites either intentionally ignore best-effort lifecycle results or check .ok where behavior depends on success.
+
+### New issues introduced
+None found.
+
+### Test quality of new tests
+Good. The 5 new tests in tools/test/run.test.ts pin the important contracts: dirty write behavior, no-write/no-mtime behavior, best-effort swallowed errors, invalid JSON preservation, and diagnosable runLifecycle failure detail. Reviewer ran the focused test file and confirmed 5 tests pass.
+
+### Other observations
+- `git diff --check` passed cleanly on the round-2 commit.
+- Codex sandbox could not run `tsx tools/validate.ts` (EPERM on IPC pipe) — environmental, not caused by the patch. Local validation confirmed PASS.
+
+### Required changes
+None — APPROVED.
