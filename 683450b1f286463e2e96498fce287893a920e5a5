@@ -1,0 +1,36 @@
+## Codex GPT-5.5 Review — Phase 2 (Round 2)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed range:** 4402e81..HEAD (4 round-2 commits)
+**Date:** 2026-04-30
+
+### Verdict
+APPROVED
+
+### Issue 1 (CLI error output) — fixed
+Compared against main:tools/request-review.ts and main:tools/review.ts. The restored RequestReviewError and RecordReviewError rendering prints the same stderr shape: "ERROR: <summary>" followed by each detail with two-space indent.
+
+- request-review.ts wrong-kind, invalid-status, and not-started paths match main's multi-line blocks.
+- review.ts wrong-kind and wrong-status 'implementing' paths match main's multi-line blocks.
+
+### Issue 2 (packet_id validation) — fixed
+tools/complete.ts now checks existing.packet_id !== packetId before returning already_complete: true and throws a clear corrupt/misnamed completion error.
+
+Unit coverage exists in tools/test/complete.test.ts (mismatched packet_id case), including assertions that the foreign completion file is not touched.
+
+### Issue 3 (CLI smoke tests) — added
+tools/test/lifecycle_cli.test.ts uses spawnSync, covers idempotent success stdout paths for all three scripts, and asserts legacy multi-line stderr content for request-review.ts and review.ts.
+
+### Issue 4 (dead branch) — removed
+tools/review.ts no longer checks status === 'changes_requested' in the wrong-status hint branch; that status is handled earlier as an idempotent same-decision or mismatched re-decision.
+
+### New issues introduced
+None found.
+
+### Other observations
+The git diff stderr suppression in complete.ts is clean: stderr is captured/discarded, stdout parsing remains unchanged, and the existing best-effort catch still handles non-git fixtures.
+
+Reviewer could not reproduce the full CLI smoke test run in the sandbox because tsx child processes hit local IPC restrictions; pure complete.test.ts cases passed and direct loader-based CLI checks confirmed the relevant stderr output. (This is a sandbox-environment issue, not a defect in the work.)
+
+### Required changes
+None — APPROVED.
