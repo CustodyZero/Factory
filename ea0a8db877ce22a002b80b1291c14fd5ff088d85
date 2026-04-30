@@ -1,0 +1,50 @@
+### Module boundaries
+APPROVED. I found no I/O in `tools/pipeline/`; only pure functions and type imports. `DevResumePoint` is exported cleanly from `develop_phase.ts` and consumed as a type by `run.ts`.
+
+### Wiring correctness
+REQUEST-CHANGES. Most wiring is correct: provider arg construction, model resolution, topo sort delegation, planner prompt delegation, and dev transition delegation preserve the old structure. The two issues above are wiring-level behavior changes caused by the new helpers.
+
+### Other concerns
+- `runLifecycle` is convenient, but because it only returns `boolean`, it is too lossy for call sites that previously surfaced error text.
+- The prompt tests call themselves exhaustive, but only some cases are full-body assertions.
+
+### Required changes
+1. Fix `patchJson` usage so [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:507) does not rewrite the feature artifact unless `status === 'planned'`, matching the old behavior.
+2. Preserve the old request-review warning detail at [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:299). Either return error text from `runLifecycle` or keep that call site as a local `try/catch`.
+
+### Suggested improvements
+1. Add one fully populated full-string prompt test for dev/review/QA/planner, not just `toContain`.
+2. Add a small wiring/regression test around conditional feature-status patching if `run.ts` becomes testable in a later phase.
+2026-04-30T22:53:47.343765Z ERROR codex_core::session: failed to record rollout items: thread 019de097-7ff7-7c62-bf82-3f0aa819a976 not found
+tokens used
+65,656
+### Verdict
+REQUEST-CHANGES
+
+### Behavior preservation
+REQUEST-CHANGES. The extracted prompt builders match the deleted `run.ts` builders byte-for-byte, and the dev state-machine transitions preserve the original loop outcomes. However, I found two behavior/output drifts:
+
+1. [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:90) `patchJson` always writes the file after calling the mutator. At [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:507), this changes behavior for a feature whose status is already non-`planned`: the old code did not write the file; the new code rewrites/reformats it anyway.
+
+2. [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:299) drops the request-review failure detail. The old catch logged `Could not request review: ${error message}`; the new `runLifecycle` boolean only logs `Could not request review`.
+
+### Test quality
+APPROVED-WITH-NITS. The new pure-module tests are meaningful and `npm test` passes: 151 tests. The prompt tests pin minimal full strings, but the populated prompt cases mostly use `toContain`, so they would not catch section reordering or some formatting regressions. That is acceptable for this phase, but not as strong as the comments imply.
+
+### Module boundaries
+APPROVED. I found no I/O in `tools/pipeline/`; only pure functions and type imports. `DevResumePoint` is exported cleanly from `develop_phase.ts` and consumed as a type by `run.ts`.
+
+### Wiring correctness
+REQUEST-CHANGES. Most wiring is correct: provider arg construction, model resolution, topo sort delegation, planner prompt delegation, and dev transition delegation preserve the old structure. The two issues above are wiring-level behavior changes caused by the new helpers.
+
+### Other concerns
+- `runLifecycle` is convenient, but because it only returns `boolean`, it is too lossy for call sites that previously surfaced error text.
+- The prompt tests call themselves exhaustive, but only some cases are full-body assertions.
+
+### Required changes
+1. Fix `patchJson` usage so [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:507) does not rewrite the feature artifact unless `status === 'planned'`, matching the old behavior.
+2. Preserve the old request-review warning detail at [tools/run.ts](/Users/andyhunter/repositories/custodyzero/factory/.claude/worktrees/agent-aed9f82013cd28980/tools/run.ts:299). Either return error text from `runLifecycle` or keep that call site as a local `try/catch`.
+
+### Suggested improvements
+1. Add one fully populated full-string prompt test for dev/review/QA/planner, not just `toContain`.
+2. Add a small wiring/regression test around conditional feature-status patching if `run.ts` becomes testable in a later phase.
