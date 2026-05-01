@@ -33,3 +33,77 @@ Reviewer ran tools/test/spec_parse.test.ts: 34/34 passed. status.ts and validate
 
 ### Required changes
 None — APPROVED.
+
+---
+
+## QA Verification — Phase 4
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-04-30
+
+### Verification verdict
+ALL-PASS — every required criterion (1-16) and both behavioral spot-checks (17-18) verified independently with real fixtures.
+
+### Highlights
+- npm test: 253 passing (Phase 3 baseline 187 + 66 new tests)
+- tools/pipeline/spec_parse.ts is pure (zero I/O symbol matches)
+- tools/specs.ts exports loadSpec, ensureIntentForSpec, SpecLoadError
+- Schema additive: intent.depends_on is optional with default []; new schemas/spec.schema.json present
+- End-to-end spec→intent fixture: specs/foo.md (with depends_on: [other]) generates intents/foo.json with all expected fields (id, spec_path, status: proposed, depends_on copied)
+- Idempotent: second call returns created: false; mtime AND sha256 unchanged
+- Mismatch detection: spec_path mismatch raises SpecLoadError with clear message; no overwrite
+- Backward compat verified: legacy intent-only fixture (no specs/) runs through to planning phase normally
+- Decision-doc literal example parsed cleanly with the inline comment
+- Quoted scalar handling: `title: "A title"` → "A title" (quotes stripped); `depends_on: ["a", "b"]` → ["a","b"]
+- validate.ts: detects missing id, cyclic deps; works in no-specs mode; PASSes in worktree (1 specs)
+- No new dependencies (package.json diff empty)
+- run.ts: 666 → 773 (+107 — within expected 700-800 range)
+
+### Behavioral spot-check
+- run.ts with no args prints usage explaining spec→intent precedence
+- Phase 5 warning emitted correctly: "Spec 'dep' declares depends_on [other]; dependency-aware sequencing is not yet implemented (Phase 5). Proceeding without it."
+
+### Independent observations
+- Phase 5 warning emits before the boxed phase header (different render order than steady-state planning logs) — cosmetic only
+- loadSpec rejects empty specId early with a clear error — defensive but not specified
+- Intent file written with trailing newline — POSIX-friendly
+- parseSpec rejects unknown frontmatter keys (e.g., typo'd "depnds_on") — matches documented "no silent drops" stance
+- Mismatch error correctly distinguishes id vs spec_path failure modes
+
+---
+
+## Orchestrator Approval — Phase 4
+
+**Orchestrator:** this session
+**Date:** 2026-04-30
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- Codex GPT-5.5 round 1: REQUEST-CHANGES — two real parser-format defects (comment handling per the decision doc's documented format; quoted scalar inconsistency)
+- Codex GPT-5.5 round 2: APPROVED — both fixes correct, no new issues, edge cases verified
+- Independent Opus QA (FI-7 separate identity): ALL-PASS on 16 acceptance criteria + 2 spot-checks, with live fixture verification (not just trusting tests)
+- Bounded iteration model paid off again: round-1's parser would have rejected the parser's own documented format. The decision-doc regression test now pins parser-vs-decision-doc consistency.
+
+### Iteration record
+- Round 1 (5 commits, +51 tests): REQUEST-CHANGES — comment handling, quoted scalar inconsistency
+- Round 2 (2 commits, +15 tests): APPROVED — both fixes plus decision-doc regression test plus validate.ts compat fixtures
+- Total: 7 commits, +66 tests (187 → 253), run.ts 666 → 773 (+107), package.json unchanged
+
+### What lands
+- New artifact type: spec at specs/<id>.md with YAML-style frontmatter (id, title, depends_on)
+- Pure parser at tools/pipeline/spec_parse.ts (handles comments, quoted scalars, mixed bare/quoted lists)
+- I/O wrapper at tools/specs.ts (loadSpec, ensureIntentForSpec — idempotent intent generation)
+- Schema additions: schemas/spec.schema.json new, schemas/intent.schema.json gains optional depends_on
+- run.ts spec-first arg disambiguation with legacy intent fallback (backward compat preserved)
+- validate.ts integration: spec frontmatter validation, cyclic dependency detection, filename/id mismatch detection, no-specs-mode compatibility
+- Phase 5 warning when a spec has depends_on (single-spec case)
+
+### What's deliberately deferred
+- Multi-spec arg parsing and dependency-aware execution (Phase 5)
+- Memory write-side (deferred per memory_scope_split.md)
+- Phases 5-8
+
+### Practical implication for the architecture
+After Phase 4, factory has a clean human-authoring surface (specs as markdown with frontmatter). The intent JSON schema becomes derived state — generated from specs at run time. Existing intent-only flows continue to work, so this is fully additive for host projects that haven't adopted the spec convention yet.
