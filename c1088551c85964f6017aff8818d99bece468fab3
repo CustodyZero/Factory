@@ -32,3 +32,66 @@ Acceptable. The helper is small, local to the two phase loops, and mirrors the e
 
 ### Required changes
 None — APPROVED.
+
+---
+
+## QA Verification — Phase 3
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-04-30
+
+### Verification verdict
+ALL-PASS — every required criterion (1-11) and all three behavioral spot-checks (12-14) verified independently.
+
+### Highlights
+- npm test: 187 passing across 16 test files (Phase 2 baseline 173 + 14 new)
+- All 4 lifecycle library modules exist at tools/lifecycle/ with typed exports
+- run.ts has 4 direct imports from ./lifecycle/*.js; no execSync or runLifecycle in executable code (only JSDoc comments documenting Phase 3 history)
+- LifecycleResult type deleted entirely
+- All four idempotent rerun paths verified: startPacket.already_started, requestReview.already_requested, recordReview.already_decided, completePacket.already_complete (true/false assertions in tests)
+- Staleness fix verified: refreshCompletionId called at top of each iteration in devPhase (line 305) and qaPhase (line 453), after packet re-read, before resume/early-exit checks
+- 5 helper-contract tests pin the staleness fix (happy-path, staleness, idempotent, missing-file, missing-dir)
+- I/O purity in lifecycle/: only allowed shell-outs (git rev-parse for branch detection, git diff for changed files, configured CI command in complete) — no lifecycle-script invocations
+- run.ts: 666 lines (up from 626 round-1, accepted by codex; helper + comments)
+- validate.ts PASS; package.json unchanged
+
+### Independent observations
+- request_review uses a discriminated union (kind: 'requested' | 'already_requested') plus parallel already_requested: boolean alias; tests assert they stay in agreement — more rigorous than the spec required
+- complete.ts JSDoc mentions execSync describing CI behavior; documentation, not a violation
+
+---
+
+## Orchestrator Approval — Phase 3
+
+**Orchestrator:** this session
+**Date:** 2026-04-30
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- Codex GPT-5.5 round 1: REQUEST-CHANGES with one specific issue (asymmetric defensive logic — packet re-reads kept, completion-file refresh removed; staleness window real)
+- Codex GPT-5.5 round 2: APPROVED (fix correct, helper-contract tests meaningful, no new issues)
+- Independent Opus QA (FI-7 separate identity): ALL-PASS on 11 acceptance criteria + 3 behavioral spot-checks; QA verified the staleness fix's actual behavior, not just its presence
+- Bounded iteration model paid off again: round-1's staleness bug would have shipped; codex's symmetry argument (if external mutation justifies retaining packet re-reads, it justifies retaining completion-file refresh) is precisely the kind of reasoning the review process is meant to surface
+
+### Iteration record
+- Round 1 (5 commits, +9 tests): REQUEST-CHANGES — 1 staleness issue
+- Round 2 (2 commits, +5 tests): APPROVED — fix + alias-contract pinning
+- Total: 7 commits, +14 tests (173 → 187), run.ts 644 → 666
+
+### What lands
+- 4 new lifecycle library modules: tools/lifecycle/{start,request_review,review,complete}.ts with typed exports (startPacket, requestReview, recordReview, completePacket)
+- Each library function returns a typed result with already_*: boolean for the idempotent rerun signal
+- run.ts now imports lifecycle libraries directly; no execSync to lifecycle scripts
+- runLifecycle helper and LifecycleResult type deleted
+- refreshCompletionId helper introduced and called in both devPhase and qaPhase loops to address staleness
+- 5 helper-contract tests + 5 alias-pinning tests + 4 lifecycle-library tests
+
+### What's deliberately deferred
+- The <550-line target on run.ts (architecturally tradeoff against the staleness helper; codex accepted)
+- lifecycle_cli.test.ts npx-tsx hardening (cosmetic, sandbox-only issue)
+- Phases 4-8
+
+### Practical implication for the architecture
+After Phase 3, the orchestrator no longer shells out to its own lifecycle scripts. Agents still invoke them as the agent-protocol per the architecture decision. The CLI-as-protocol contract is now cleanly split: agents (external) use CLIs, the orchestrator (internal) uses libraries.
