@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { resolveModelId, buildProviderArgs } from '../pipeline/agent_invoke.js';
-import type { PipelineProviderConfig } from '../config.js';
+import { resolveModelId, buildProviderArgs, invokeAgent } from '../pipeline/agent_invoke.js';
+import type { FactoryConfig, PipelineProviderConfig } from '../config.js';
 
 function makeProviderConfig(overrides: Partial<PipelineProviderConfig> = {}): PipelineProviderConfig {
   return {
@@ -111,5 +111,78 @@ describe('buildProviderArgs', () => {
   it('passes through providerConfig.command unchanged', () => {
     expect(buildProviderArgs('claude', 'p', makeProviderConfig({ command: 'custom-claude' }), undefined).command)
       .toBe('custom-claude');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invokeAgent (configuration-error paths only — the spawn path is exercised
+// via the pipeline integration tests since it would launch a real provider
+// CLI; here we pin only the deterministic early-return branches that don't
+// touch spawnSync at all).
+// ---------------------------------------------------------------------------
+
+function makeMinimalConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
+  return {
+    project_name: 'test',
+    factory_dir: '.',
+    artifact_dir: '.',
+    verification: { build: 'true', lint: 'true', test: 'true' },
+    validation: { command: 'true' },
+    infrastructure_patterns: [],
+    completed_by_default: { kind: 'agent', id: 'test' },
+    personas: {
+      planner: { description: '', instructions: [] },
+      developer: { description: '', instructions: [] },
+      code_reviewer: { description: '', instructions: [] },
+      qa: { description: '', instructions: [] },
+    },
+    ...overrides,
+  } as FactoryConfig;
+}
+
+describe('invokeAgent — configuration-error early returns', () => {
+  it('returns exit_code 1 with a clear stderr when pipeline config is missing', () => {
+    const cfg = makeMinimalConfig({ pipeline: undefined });
+    const result = invokeAgent('claude', 'hello', cfg);
+    expect(result.exit_code).toBe(1);
+    expect(result.stderr).toMatch(/pipeline config/i);
+  });
+
+  it('returns exit_code 1 with a clear stderr when the requested provider is not configured', () => {
+    const cfg = makeMinimalConfig({
+      pipeline: {
+        providers: {},
+        persona_providers: {
+          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        completion_identities: {
+          developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        max_review_iterations: 3,
+      },
+    } as Partial<FactoryConfig>);
+    const result = invokeAgent('claude', 'hello', cfg);
+    expect(result.exit_code).toBe(1);
+    expect(result.stderr).toMatch(/not configured/i);
+  });
+
+  it('returns exit_code 1 with a clear stderr when the provider is configured but disabled', () => {
+    const cfg = makeMinimalConfig({
+      pipeline: {
+        providers: {
+          claude: { enabled: false, command: 'claude' },
+        },
+        persona_providers: {
+          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        completion_identities: {
+          developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        max_review_iterations: 3,
+      },
+    } as Partial<FactoryConfig>);
+    const result = invokeAgent('claude', 'hello', cfg);
+    expect(result.exit_code).toBe(1);
+    expect(result.stderr).toMatch(/disabled/i);
   });
 });
