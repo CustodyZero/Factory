@@ -217,19 +217,30 @@ describe('refreshCompletionId', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 3 structural test: run.ts must NOT call lifecycle CLIs via execSync.
+// Phase 3 structural invariants — held by run.ts and the phase modules.
 //
-// The whole point of Phase 3 was to replace execSync('npx tsx tools/start.ts
-// ...') with direct imports of startPacket()/requestReview()/etc. Future
-// refactors that re-introduce that pattern would silently undo the work.
+// The Phase 3 invariant is "no execSync to lifecycle CLIs anywhere in the
+// orchestration code path" — replaced by direct library imports of
+// startPacket()/requestReview()/recordReview()/completePacket().
 //
-// We verify by reading the file's source: if a lifecycle script name
-// appears inside a child_process call, the test fails. This is more
-// reliable than a behavioral test (which would require a fixture
-// pipeline run) and catches regressions on the very next CI run.
+// Phase 4.5 moved the imperative phase loops out of run.ts and into
+// dedicated phase modules under tools/pipeline/. After that move, run.ts
+// no longer imports the lifecycle libraries directly — the phase modules
+// do. The Phase 3 invariant therefore now applies at the pipeline-module
+// scope.
+//
+// This block pins both halves:
+//   1. run.ts itself is execSync-free and references no lifecycle filename.
+//   2. The pipeline modules that took over the phase work (develop_phase,
+//      verify_phase) DO import the lifecycle libraries directly, are
+//      themselves execSync-free, and never reference a lifecycle script
+//      filename.
 // ---------------------------------------------------------------------------
 
-const RUN_TS_PATH = resolve(fileURLToPath(import.meta.url), '..', '..', 'run.ts');
+const TOOLS_DIR = resolve(fileURLToPath(import.meta.url), '..', '..');
+const RUN_TS_PATH = join(TOOLS_DIR, 'run.ts');
+const DEVELOP_PHASE_PATH = join(TOOLS_DIR, 'pipeline', 'develop_phase.ts');
+const VERIFY_PHASE_PATH = join(TOOLS_DIR, 'pipeline', 'verify_phase.ts');
 
 /**
  * Strip block comments and line comments from TypeScript source so the
@@ -243,29 +254,20 @@ function stripComments(source: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
-describe('run.ts — Phase 3 structural invariants', () => {
-  const source = readFileSync(RUN_TS_PATH, 'utf-8');
-  const code = stripComments(source);
+describe('run.ts — Phase 3 + 4.5 structural invariants', () => {
+  const code = stripComments(readFileSync(RUN_TS_PATH, 'utf-8'));
 
   it('does not import or call execSync', () => {
-    // execSync is the smoking gun. The previous runLifecycle() helper
-    // was the only consumer; now that it is gone, no import or call
-    // should remain in the actual code. spawnSync is still used (for
-    // provider CLIs) — that is expected and orthogonal.
+    // execSync is the smoking gun. After Phase 3 removed runLifecycle(),
+    // no import or call should remain. spawnSync is still allowed for
+    // provider CLIs, but that pathway lives in the phase modules now.
     expect(code).not.toMatch(/\bexecSync\b/);
   });
 
-  it('imports the four lifecycle library functions', () => {
-    expect(code).toMatch(/from\s+['"]\.\/lifecycle\/start\.js['"]/);
-    expect(code).toMatch(/from\s+['"]\.\/lifecycle\/request_review\.js['"]/);
-    expect(code).toMatch(/from\s+['"]\.\/lifecycle\/review\.js['"]/);
-    expect(code).toMatch(/from\s+['"]\.\/lifecycle\/complete\.js['"]/);
-  });
-
   it('does not invoke any lifecycle script by filename', () => {
-    // Belt-and-suspenders: even if execSync were re-introduced, the
-    // string literals 'start.ts', 'complete.ts' etc. should not
-    // appear anywhere in code. (Comments are stripped above.)
+    // Belt-and-suspenders against an execSync regression — even if it
+    // came back, the lifecycle script names should never appear inside
+    // run.ts code (comments are stripped above).
     expect(code).not.toMatch(/['"]start\.ts['"]/);
     expect(code).not.toMatch(/['"]request-review\.ts['"]/);
     expect(code).not.toMatch(/['"]review\.ts['"]/);
@@ -275,6 +277,55 @@ describe('run.ts — Phase 3 structural invariants', () => {
   it('does not export runLifecycle (deleted in Phase 3)', () => {
     expect(code).not.toMatch(/export\s+function\s+runLifecycle/);
     expect(code).not.toMatch(/export\s+interface\s+LifecycleResult/);
+  });
+
+  it('imports the three phase functions (Phase 4.5: phase-loop extraction)', () => {
+    // After Phase 4.5 the coordinator delegates to runPlanPhase /
+    // runDevelopPhase / runVerifyPhase rather than walking the loops
+    // inline. A regression that re-inlined any of these would either
+    // drop the import or duplicate the loop body — the import check
+    // catches the first failure mode.
+    expect(code).toMatch(/from\s+['"]\.\/pipeline\/plan_phase\.js['"]/);
+    expect(code).toMatch(/from\s+['"]\.\/pipeline\/develop_phase\.js['"]/);
+    expect(code).toMatch(/from\s+['"]\.\/pipeline\/verify_phase\.js['"]/);
+  });
+});
+
+describe('pipeline phase modules — Phase 3 invariants (post-Phase-4.5 scope)', () => {
+  // The lifecycle-library imports moved with the phase loops. Pin them
+  // at their new home so a future refactor that re-introduces execSync
+  // here is caught by the same kind of structural test that protected
+  // run.ts before.
+  const developCode = stripComments(readFileSync(DEVELOP_PHASE_PATH, 'utf-8'));
+  const verifyCode = stripComments(readFileSync(VERIFY_PHASE_PATH, 'utf-8'));
+
+  it('develop_phase.ts imports the lifecycle libraries it actually uses', () => {
+    // Develop touches all four lifecycle steps: start, request_review,
+    // review (force-approve fallback), complete.
+    expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/start\.js['"]/);
+    expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/request_review\.js['"]/);
+    expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/review\.js['"]/);
+    expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/complete\.js['"]/);
+  });
+
+  it('verify_phase.ts imports only the lifecycle libraries it uses (start + complete)', () => {
+    // Verify only invokes start and complete — there's no review step
+    // for QA packets. A regression that pulls in extra lifecycle
+    // libraries here would point at a logic mistake.
+    expect(verifyCode).toMatch(/from\s+['"]\.\.\/lifecycle\/start\.js['"]/);
+    expect(verifyCode).toMatch(/from\s+['"]\.\.\/lifecycle\/complete\.js['"]/);
+    expect(verifyCode).not.toMatch(/from\s+['"]\.\.\/lifecycle\/request_review\.js['"]/);
+    expect(verifyCode).not.toMatch(/from\s+['"]\.\.\/lifecycle\/review\.js['"]/);
+  });
+
+  it('phase modules are free of execSync and lifecycle-filename strings', () => {
+    for (const code of [developCode, verifyCode]) {
+      expect(code).not.toMatch(/\bexecSync\b/);
+      expect(code).not.toMatch(/['"]start\.ts['"]/);
+      expect(code).not.toMatch(/['"]request-review\.ts['"]/);
+      expect(code).not.toMatch(/['"]review\.ts['"]/);
+      expect(code).not.toMatch(/['"]complete\.ts['"]/);
+    }
   });
 });
 
