@@ -16,16 +16,17 @@
  * If something fails, the pipeline stops and reports what failed.
  *
  * Phase 1 of specs/single-entry-pipeline.md extracted the pure logic
- * out of this file into tools/pipeline/. What remains here is the
- * imperative orchestration (filesystem, spawnSync, lifecycle execSync)
- * that stitches those pure decisions together.
+ * out of this file into tools/pipeline/. Phase 3 then library-ized the
+ * lifecycle scripts into tools/lifecycle/, replacing the old
+ * runLifecycle() execSync helper with direct imports. What remains
+ * here is the imperative orchestration (filesystem, spawnSync) that
+ * stitches those pure decisions and library calls together.
  */
 
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  buildToolCommand,
   findProjectRoot,
   loadConfig,
   resolveArtifactRoot,
@@ -52,6 +53,10 @@ import {
 } from './pipeline/develop_phase.js';
 import type { DevResumePoint } from './pipeline/develop_phase.js';
 import { resolveModelId, buildProviderArgs } from './pipeline/agent_invoke.js';
+import { startPacket } from './lifecycle/start.js';
+import { requestReview } from './lifecycle/request_review.js';
+import { recordReview } from './lifecycle/review.js';
+import { completePacket } from './lifecycle/complete.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,6 +113,45 @@ export function patchJson(
   } catch { /* best-effort */ }
 }
 
+// Phase 3 replaced runLifecycle()'s execSync shell-out with direct imports
+// from tools/lifecycle/. `safeCall` adapts the throws-on-error library
+// shape into the orchestrator's "log + return ok" shape so the per-step
+// state machine stays linear (matches what the old helper did).
+function safeCall(fn: () => unknown): { ok: boolean; error?: string } {
+  try { fn(); return { ok: true }; }
+  catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+}
+
+/**
+ * Per-iteration staleness refresh for the in-memory `completionIds` set.
+ *
+ * Both phase loops build `completionIds` once at phase start. During the
+ * loop, an external agent may invoke `complete.ts` directly on a previous
+ * packet (the same external-mutation model that justifies the per-iteration
+ * packet re-reads in devPhase / qaPhase). Without this refresh, the next
+ * iteration's resume-point derivation or already-complete check would use
+ * a stale view of disk and reprocess an already-complete packet.
+ *
+ * Contract:
+ *   - If `set` already contains `packetId`, no I/O, no mutation.
+ *   - Else, if `<artifactRoot>/completions/<packetId>.json` exists on
+ *     disk, add `packetId` to `set`.
+ *   - Else, leave `set` unchanged.
+ *   - Never throws (existsSync does not throw on missing parents).
+ *
+ * Exported for unit testing.
+ */
+export function refreshCompletionId(
+  set: Set<string>,
+  packetId: string,
+  artifactRoot: string,
+): void {
+  if (set.has(packetId)) return;
+  if (existsSync(join(artifactRoot, 'completions', `${packetId}.json`))) {
+    set.add(packetId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Agent invocation (I/O leaf — pure helpers live in pipeline/agent_invoke.ts)
 // ---------------------------------------------------------------------------
@@ -153,35 +197,6 @@ function invokeAgent(
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
-}
-
-/**
- * Run a factory lifecycle CLI. Returns `{ ok: true }` on exit-0, or
- * `{ ok: false, error }` on failure with the underlying error message.
- * Callers that don't care about the error text can ignore the `error` field.
- *
- * Exported for unit testing.
- */
-export interface LifecycleResult {
-  readonly ok: boolean;
-  readonly error?: string;
-}
-
-export function runLifecycle(
-  script: string,
-  args: ReadonlyArray<string>,
-  config: FactoryConfig,
-  timeoutMs = 30_000,
-): LifecycleResult {
-  try {
-    execSync(buildToolCommand(script, [...args], undefined, config), {
-      cwd: findProjectRoot(), encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    return { ok: true };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: message };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +273,7 @@ function devPhase(
   feature: Feature,
   config: FactoryConfig,
   artifactRoot: string,
+  projectRoot: string,
   dryRun: boolean,
 ): { completed: string[]; failed: string[] } {
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -279,12 +295,14 @@ function devPhase(
   const reviewTier: ModelTier = config.personas.code_reviewer.model ?? 'medium';
 
   for (const packet of sorted) {
-    // Re-read packet from disk each iteration (previous agent may have changed it)
+    // Re-read packet from disk each iteration (a previous packet's agent
+    // run may have invoked a lifecycle CLI that mutated this file).
     const freshPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? packet;
-    // Re-read completions (previous packet may have just completed)
-    if (!completionIds.has(packet.id) && existsSync(join(artifactRoot, 'completions', `${packet.id}.json`))) {
-      completionIds.add(packet.id);
-    }
+
+    // Same external-mutation model applies to completions: a previous
+    // packet's developer agent may have invoked complete.ts directly,
+    // creating a completion file that wasn't in the phase-start scan.
+    refreshCompletionId(completionIds, packet.id, artifactRoot);
 
     const resumePoint = deriveDevResumePoint(freshPacket, completionIds.has(packet.id));
 
@@ -317,7 +335,7 @@ function devPhase(
     while (currentPoint !== null && currentPoint !== 'completed') {
       switch (currentPoint) {
         case 'implement': {
-          runLifecycle('start.ts', [packet.id], config); // idempotent
+          safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
           fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
           const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
           const devOk = devResult.exit_code === 0;
@@ -329,16 +347,19 @@ function devPhase(
         }
 
         case 'request_review': {
-          const reviewSignal = runLifecycle('request-review.ts', [packet.id], config);
+          const reviewSignal = safeCall(() => requestReview({ packetId: packet.id, projectRoot }));
           if (!reviewSignal.ok) {
             const detail = reviewSignal.error ? `: ${reviewSignal.error}` : '';
             fmt.log('develop', `  ${fmt.sym.warn} Could not request review${detail}`);
           }
-          currentPoint = 'review'; // unconditional: best-effort execSync above
+          currentPoint = 'review'; // unconditional: best-effort above
           break;
         }
 
         case 'review': {
+          // Re-read packet: the previous step (request_review) may have
+          // bumped review_iteration, and the developer agent may have
+          // changed status during implementation.
           const iterationPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? freshPacket;
           const reviewIteration = iterationPacket.review_iteration ?? 0;
           if (reviewIteration >= maxReviewIterations) {
@@ -353,6 +374,8 @@ function devPhase(
             currentPoint = nextPointAfterReview(false, null);
             break;
           }
+          // The reviewer agent may have set status itself (via the review.ts
+          // CLI). Re-read to find out.
           const afterReview = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
           const afterStatus = afterReview?.status ?? null;
           if (afterStatus === 'review_approved') {
@@ -361,7 +384,7 @@ function devPhase(
             fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
           } else {
             // Reviewer didn't transition status — force approve.
-            runLifecycle('review.ts', [packet.id, '--approve'], config);
+            safeCall(() => recordReview({ packetId: packet.id, decision: 'approve', projectRoot }));
             fmt.log('review', `  ${fmt.sym.ok} Review complete`);
           }
           currentPoint = nextPointAfterReview(true, afterStatus);
@@ -378,9 +401,7 @@ function devPhase(
 
         case 'finalize': {
           fmt.log('develop', `  Running verification...`);
-          const completion = runLifecycle(
-            'complete.ts', [packet.id, '--identity', devIdentity], config, 300_000,
-          );
+          const completion = safeCall(() => completePacket({ packetId: packet.id, identity: devIdentity, projectRoot }));
           if (completion.ok) {
             fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
             completionIds.add(packet.id);
@@ -407,6 +428,7 @@ function qaPhase(
   feature: Feature,
   config: FactoryConfig,
   artifactRoot: string,
+  projectRoot: string,
   dryRun: boolean,
 ): { completed: string[]; failed: string[]; skipped: string[] } {
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -425,10 +447,10 @@ function qaPhase(
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
 
   for (const packet of qaPackets) {
-    // Re-check completion on disk (previous QA may have just completed)
-    if (!completionIds.has(packet.id) && existsSync(join(artifactRoot, 'completions', `${packet.id}.json`))) {
-      completionIds.add(packet.id);
-    }
+    // Same external-mutation model as devPhase: an external agent may
+    // have invoked complete.ts directly on this packet since the
+    // phase-start scan. Refresh before the early-exit check below.
+    refreshCompletionId(completionIds, packet.id, artifactRoot);
 
     if (completionIds.has(packet.id)) {
       fmt.log('verify', `${fmt.sym.ok} ${packet.id} — already complete`);
@@ -454,7 +476,7 @@ function qaPhase(
       continue;
     }
 
-    runLifecycle('start.ts', [packet.id], config); // idempotent
+    safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
 
     fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
     const qaResult = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
@@ -465,7 +487,7 @@ function qaPhase(
     }
 
     fmt.log('verify', `  Running verification...`);
-    if (runLifecycle('complete.ts', [packet.id, '--identity', qaIdentity], config, 300_000).ok) {
+    if (safeCall(() => completePacket({ packetId: packet.id, identity: qaIdentity, projectRoot })).ok) {
       fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
       completionIds.add(packet.id);
       completed.push(packet.id);
@@ -563,12 +585,12 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   // Phase 2: Development
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('DEVELOPMENT'));
-  const devResult = devPhase(feature, config, artifactRoot, dryRun);
+  const devResult = devPhase(feature, config, artifactRoot, projectRoot, dryRun);
 
   // Phase 3: QA
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('VERIFICATION'));
-  const qaResult = qaPhase(feature, config, artifactRoot, dryRun);
+  const qaResult = qaPhase(feature, config, artifactRoot, projectRoot, dryRun);
 
   // Update feature status
   const allCompleted = [...devResult.completed, ...qaResult.completed];

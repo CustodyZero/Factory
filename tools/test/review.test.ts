@@ -93,6 +93,9 @@ describe('recordReview — idempotent on matching decision', () => {
     });
 
     expect(outcome.kind).toBe('already_recorded');
+    // Pin the dual-form contract: the kind discriminator and the
+    // already_decided boolean alias must agree on the same outcome.
+    expect(outcome.already_decided).toBe(true);
     if (outcome.kind === 'already_recorded') {
       expect(outcome.status).toBe('review_approved');
       expect(outcome.review_iteration).toBe(1);
@@ -124,6 +127,7 @@ describe('recordReview — idempotent on matching decision', () => {
     });
 
     expect(outcome.kind).toBe('already_recorded');
+    expect(outcome.already_decided).toBe(true);
     if (outcome.kind === 'already_recorded') {
       expect(outcome.status).toBe('changes_requested');
     }
@@ -203,6 +207,8 @@ describe('recordReview — happy path still works', () => {
     });
 
     expect(outcome.kind).toBe('recorded');
+    // Happy path: the alias must report false to match the kind.
+    expect(outcome.already_decided).toBe(false);
     if (outcome.kind === 'recorded') {
       expect(outcome.status).toBe('review_approved');
     }

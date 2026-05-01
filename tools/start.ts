@@ -1,62 +1,69 @@
 #!/usr/bin/env tsx
 /**
- * Factory — Packet Start / Claim
+ * Factory — Packet Start / Claim (CLI)
  *
  * Marks a packet as started before implementation begins.
  *
  * Usage:
  *   npx tsx tools/start.ts <packet-id>
+ *
+ * Phase 3 of specs/single-entry-pipeline.md moved the implementation to
+ * tools/lifecycle/start.ts so run.ts can call it via import. This file
+ * remains as the agent-facing CLI: argument parsing, output rendering,
+ * exit codes. The library function stays I/O-pure-ish (it has to write
+ * the packet JSON) but no longer mixes presentation with logic.
+ *
+ * Re-exports startPacket and StartPacketError for backward compat with
+ * any caller that imported them from this path before Phase 3.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { loadConfig, findProjectRoot, resolveArtifactRoot } from './config.js';
+import { startPacket, StartPacketError } from './lifecycle/start.js';
+import type { StartPacketOptions, StartPacketResult } from './lifecycle/start.js';
 import * as fmt from './output.js';
 
-const config = loadConfig();
-const PROJECT_ROOT = findProjectRoot();
-const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT, config);
+export { startPacket, StartPacketError };
+export type { StartPacketOptions, StartPacketResult };
 
-const args = process.argv.slice(2);
-const packetId = args[0];
+// ---------------------------------------------------------------------------
+// CLI entry point
+// ---------------------------------------------------------------------------
 
-if (packetId == null || packetId === '' || packetId.startsWith('--')) {
-  console.error('Usage: npx tsx tools/start.ts <packet-id>');
-  process.exit(1);
+function main(): void {
+  const args = process.argv.slice(2);
+  const packetId = args[0];
+
+  if (packetId == null || packetId === '' || packetId.startsWith('--')) {
+    console.error('Usage: npx tsx tools/start.ts <packet-id>');
+    process.exit(1);
+  }
+
+  try {
+    const result = startPacket({ packetId });
+
+    if (result.already_started) {
+      console.log(`Packet already started: ${packetId}`);
+      console.log(`  started_at: ${result.started_at}`);
+      process.exit(0);
+    }
+
+    console.log(`${fmt.sym.ok} ${fmt.success('Packet started:')} ${fmt.bold(result.packet_id)}`);
+    console.log(`  started_at: ${fmt.muted(result.started_at)}`);
+    console.log(`  status: ${fmt.info(result.status)}`);
+  } catch (e) {
+    if (e instanceof StartPacketError) {
+      console.error(`ERROR: ${e.message}`);
+      for (const detail of e.details) {
+        console.error(`  ${detail}`);
+      }
+    } else {
+      console.error(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    process.exit(1);
+  }
 }
 
-const packetPath = join(ARTIFACT_ROOT, 'packets', `${packetId}.json`);
-if (!existsSync(packetPath)) {
-  console.error(`ERROR: Packet not found: packets/${packetId}.json`);
-  process.exit(1);
+const isDirectExecution =
+  process.argv[1]?.endsWith('start.ts') || process.argv[1]?.endsWith('start.js');
+if (isDirectExecution) {
+  main();
 }
-
-const completionPath = join(ARTIFACT_ROOT, 'completions', `${packetId}.json`);
-if (existsSync(completionPath)) {
-  console.error(`ERROR: Packet '${packetId}' already has a completion record.`);
-  process.exit(1);
-}
-
-const raw = readFileSync(packetPath, 'utf-8');
-const packet = JSON.parse(raw) as Record<string, unknown>;
-const status = typeof packet['status'] === 'string' ? packet['status'] : null;
-
-if (status === 'abandoned' || status === 'deferred') {
-  console.error(`ERROR: Packet '${packetId}' is marked '${status}' and cannot be started.`);
-  process.exit(1);
-}
-
-if (typeof packet['started_at'] === 'string' && packet['started_at'].length > 0) {
-  console.log(`Packet already started: ${packetId}`);
-  console.log(`  started_at: ${packet['started_at']}`);
-  process.exit(0);
-}
-
-const now = new Date().toISOString();
-packet['started_at'] = now;
-packet['status'] = 'implementing';
-writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
-
-console.log(`${fmt.sym.ok} ${fmt.success('Packet started:')} ${fmt.bold(packetId)}`);
-console.log(`  started_at: ${fmt.muted(now)}`);
-console.log(`  status: ${fmt.info('implementing')}`);
