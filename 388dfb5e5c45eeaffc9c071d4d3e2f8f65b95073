@@ -1,0 +1,45 @@
+## Codex GPT-5.5 Review — Phase 4.6 (revised)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-a03cc92816df83f88 vs main
+**Date:** 2026-05-01
+
+**Context:** A previous Phase 4.6 attempt tried migrating to ajv. After 3 rounds of review, codex recommended REVERT. The previous branch was force-deleted. This is a fresh attempt that does ONLY what was recommended: extract integrity layer + add compatibility tests. NO ajv. NO new dependencies. NO schema changes.
+
+### Verdict
+APPROVED-WITH-NITS
+
+### No-behavior-change verification — PASS
+The extraction preserves the original call order in validate.ts:383 — parse failures, per-artifact validators, spec-file validation, then buildIndex, validateIntegrity, validateSpecCycles, then the unchanged report block.
+
+Compared against git show main:tools/validate.ts. validateIntegrity and validateSpecCycles retain the original result order, messages, severity, and error types. buildIndex is semantically identical but not literally byte-identical (now builds named snapshot arrays and returns them instead of mutating an index object). Projected fields/defaults are the same.
+
+CLI output formatting unchanged: summary string, PASS/FAIL messages, error loop, exit-code logic preserved.
+
+### Extraction completeness — PASS
+All listed checks moved to integrity.ts and called from validate.ts. Extracted: orphaned completions, feature-to-packet refs, packet-to-feature refs, intent linkage/status rules, QA structural referential checks, FI-1, FI-7, FI-8, FI-9, feature completion consistency, duplicate intent linkage block, spec missing-target/cycle checks.
+
+### Per-artifact validators preserved — PASS
+validatePacketSchema, validateCompletionSchema, validateFeatureSchema, validateIntentSchema, readSpecFiles, validateSpecFile remain in validate.ts with no semantic changes.
+
+### Compatibility test quality — PASS (one nit)
+29 new tests. Spot-checked:
+- Unknown packet fields accepted (test:378)
+- Missing change_class accepted (test:396)
+- QA without verifies rejected (test:407)
+- Dev with verifies rejected (test:433)
+- Feature acceptance_criteria: [42] accepted (test:463)
+
+Nit: unknown extra fields pinned for packet and feature, but not intent.
+
+### Dependencies and schemas unchanged — PASS
+git diff main..HEAD -- package.json package-lock.json schemas/ is empty.
+
+### New issues introduced
+None requiring changes.
+
+### Suggested improvements (nits, optional)
+- buildIndex is not literally byte-identical, though behavior appears preserved.
+- Add one future compat test for unknown extra fields on intents if you want full coverage of that stated case.
+
+Reviewer note: status.ts and validate CLI tests could not be executed cleanly in the sandbox (tsx IPC issues / npx tsx temp-fixture timeouts). Static diff review found no behavior drift. Local invocation in worktree confirms 311/311 passing.
