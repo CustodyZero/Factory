@@ -1,0 +1,23 @@
+# Phase 5 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-01
+**Branch:** worktree-agent-aa5dfb690e720b31c (round-2 commit 9d70eea)
+**Verdict:** APPROVE
+
+## Summary
+
+Both round-1 regressions are fixed:
+
+1. `--dry-run` planning-preview stop now maps to `status: 'completed'` with `feature_id: null`, so CLI exits 0 and the legacy non-failing-preview contract is preserved.
+2. Single-arg `--json` emits the legacy flat shape (`intent_id`, `feature_id`, `packets_completed`, `packets_failed`, `success`, `message`) with no `specs` envelope key. Multi-arg keeps the Phase 5 envelope.
+
+## Notes from review
+
+- The multi-spec `--dry-run` semantic change (planning-stop is now a successful preview, not a synthetic failure) is acceptable. Multi-spec previews now show what would run for every reachable spec instead of failing the upstream and blocking dependents.
+- Blocked-propagation tests correctly moved off the `dryRun: true` failure simulator onto malformed-intent fixtures. Real failure vehicle, real propagation pinned.
+- Subprocess tests in `run.test.ts` / `run_spec_arg.test.ts` pin the actual JSON shape and exit code at the CLI boundary — durable against future renderer changes.
+
+## Round budget remaining
+
+1 round. None expected — this is APPROVE.
