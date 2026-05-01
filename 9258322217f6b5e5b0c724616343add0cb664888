@@ -1,0 +1,72 @@
+# Phase 5 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only, single round)
+**Date:** 2026-05-01
+**Branch:** worktree-agent-aa5dfb690e720b31c (commits 52b287d, 213c945, 9258322)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. `--dry-run` single-arg regressed from exit-0 to exit-1
+
+**File:** `tools/pipeline/orchestrator.ts:340-348`
+
+Pre-Phase-5 `tools/run.ts:183` returned `success = dryRun`, i.e. dry-run that stopped before agent invocation produced `success=true` and `process.exit(0)` — the documented "preview, no error" behavior.
+
+Phase 5's `runSingleSpec` returns `status: 'failed'` regardless of `dryRun`, so the per-spec outcome aggregates to `success=false` and `process.exit(1)`.
+
+**Why it matters:** breaks the no-behavior-change constraint for legacy single-arg intents. Any caller using `--dry-run` as a non-failing preview now exits non-zero.
+
+**Fix:**
+```ts
+// runSingleSpec, after planResult.feature_id === null
+if (planResult.feature_id === null) {
+  if (dryRun) {
+    return { status: 'completed', feature_id: null, packets_completed: [], packets_failed: [] };
+  }
+  return { status: 'failed', feature_id: null, packets_completed: [], packets_failed: [], reason: 'Planning failed' };
+}
+```
+
+Some orchestrator tests currently use `--dry-run` as a failure simulator to test `blocked` propagation. Those tests need a different vehicle — e.g. a malformed intent fixture or a missing-intent-file fixture.
+
+### 2. `--json` shape changed from legacy flat result to multi-spec envelope
+
+**Files:** `tools/run.ts:159` (json emit), `tools/pipeline/orchestrator.ts:86` (`OrchestratorResult` envelope)
+
+Pre-Phase-5 `--json` emitted `{ intent_id, feature_id, packets_completed, packets_failed, success, message }` (the `RunResult` interface).
+
+Phase 5 `--json` now emits `{ specs: [...], success, message }` even for single-arg runs. This is an undocumented API break.
+
+No tests pin the legacy shape, so the regression is silent.
+
+**Fix:** for `jsonMode && positional.length === 1`, adapt the sole `SpecOutcome` back to the legacy flat shape; preserve the new envelope for multi-spec runs.
+
+```ts
+if (jsonMode) {
+  if (positional.length === 1) {
+    const o = result.specs[0];
+    process.stdout.write(JSON.stringify({
+      intent_id: positional[0],
+      feature_id: o && o.status !== 'blocked' ? o.feature_id : null,
+      packets_completed: o && o.status !== 'blocked' ? o.packets_completed : [],
+      packets_failed: o && o.status !== 'blocked' ? o.packets_failed : [],
+      success: result.success,
+      message: result.message,
+    }, null, 2) + '\n');
+  } else {
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  }
+}
+```
+
+Add a test that pins the legacy single-arg JSON shape end-to-end.
+
+## What this change does well
+
+- Gate ordering is structurally right: resolve → missing-deps → cycles → topo → execute. Cycles do not double-report missing-target deps because `_detectCycles` skips edges to ids outside the resolved set.
+- Test coverage of the graph shapes (cycles, parallel cycles, self-loops, mixed independent + dependent specs, transitive blocked propagation) is genuinely thorough.
+
+## Round budget remaining
+
+2 rounds. Up to 2 more iterations before merge/revert decision.
