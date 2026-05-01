@@ -14,10 +14,12 @@
  *   1 — errors found
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { findProjectRoot, resolveArtifactRoot } from './config.js';
 import { resolveSpecPath } from './plan.js';
+import { parseSpec, SpecParseError } from './pipeline/spec_parse.js';
+import type { ParsedSpec } from './pipeline/spec_parse.js';
 import * as fmt from './output.js';
 
 // ---------------------------------------------------------------------------
@@ -256,6 +258,20 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
     e("'constraints' must be an array of strings");
   }
 
+  // depends_on (Phase 4 of single-entry-pipeline): additive optional field
+  // copied through from the source spec's frontmatter. Default empty.
+  if (data['depends_on'] != null) {
+    if (!isStringArray(data['depends_on'])) {
+      e("'depends_on' must be an array of strings");
+    } else {
+      for (const dep of data['depends_on']) {
+        if (!KEBAB_CASE_RE.test(dep)) {
+          e(`'depends_on' entry '${dep}' is not a kebab-case id`);
+        }
+      }
+    }
+  }
+
   const createdByCheck = isValidIdentity(data['created_by'], VALID_IDENTITY_KINDS as unknown as string[]);
   if (!createdByCheck.valid) e(`'created_by': ${createdByCheck.reason}`);
 
@@ -263,6 +279,166 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
 
   if (data['approved_at'] != null && data['approved_at'] !== null && !isValidISO8601(data['approved_at'])) {
     e("'approved_at' must be a valid ISO 8601 timestamp or null");
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Spec validation (Phase 4 of single-entry-pipeline)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry per `.md` file under `specs/` at the project root.
+ * `parsed` is null when the parser threw; the error is captured separately
+ * so cycle detection and other downstream checks can still run on the
+ * specs that DID parse.
+ */
+interface DiscoveredSpec {
+  readonly filename: string;     // e.g. 'foo.md'
+  readonly stem: string;         // e.g. 'foo'
+  readonly filepath: string;     // e.g. 'specs/foo.md' (relative for reporting)
+  readonly parsed: ParsedSpec | null;
+}
+
+function readSpecFiles(): DiscoveredSpec[] {
+  const dir = join(PROJECT_ROOT, 'specs');
+  if (!existsSync(dir)) return [];
+  // Only look at .md files at the top level. Subdirectories are not
+  // factory specs (the spec_artifact_model decision pins the location
+  // as specs/<id>.md, not specs/<group>/<id>.md).
+  const entries = readdirSync(dir).filter((f) => {
+    if (!f.endsWith('.md')) return false;
+    try {
+      return statSync(join(dir, f)).isFile();
+    } catch {
+      return false;
+    }
+  }).sort();
+  const out: DiscoveredSpec[] = [];
+  for (const filename of entries) {
+    const filepath = `specs/${filename}`;
+    const stem = filename.slice(0, -3);
+    let parsed: ParsedSpec | null = null;
+    try {
+      parsed = parseSpec(readFileSync(join(dir, filename), 'utf-8'));
+    } catch {
+      // Captured; the per-spec validator below will re-run parseSpec
+      // and surface the SpecParseError message verbatim.
+      parsed = null;
+    }
+    out.push({ filename, stem, filepath, parsed });
+  }
+  return out;
+}
+
+function validateSpecFile(s: DiscoveredSpec): ValidationResult[] {
+  const results: ValidationResult[] = [];
+  const e = (msg: string) => results.push({
+    file: s.filepath,
+    severity: 'error',
+    error_type: 'schema',
+    message: msg,
+  });
+
+  // Re-parse so the parser's error message reaches the user as-is.
+  let parsed: ParsedSpec;
+  try {
+    parsed = parseSpec(readFileSync(join(PROJECT_ROOT, s.filepath), 'utf-8'));
+  } catch (err) {
+    if (err instanceof SpecParseError) {
+      e(err.message);
+    } else {
+      e(`Failed to read spec: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return results;
+  }
+
+  if (!KEBAB_CASE_RE.test(parsed.frontmatter.id)) {
+    e(`'id' must be a kebab-case string: '${parsed.frontmatter.id}'`);
+  }
+  if (parsed.frontmatter.id !== s.stem) {
+    e(`filename must match id: file is '${s.filename}' but id is '${parsed.frontmatter.id}'`);
+  }
+  if (parsed.frontmatter.depends_on !== undefined) {
+    for (const dep of parsed.frontmatter.depends_on) {
+      if (!KEBAB_CASE_RE.test(dep)) {
+        e(`'depends_on' entry '${dep}' is not a kebab-case id`);
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Detect cycles in the spec dependency graph.
+ *
+ * Specs that failed to parse are skipped (their errors were already
+ * reported by validateSpecFile). Each cycle is reported once: we walk
+ * the graph from each unvisited node, and on detecting a back-edge we
+ * record the cycle members.
+ */
+function validateSpecCycles(specs: DiscoveredSpec[]): ValidationResult[] {
+  const results: ValidationResult[] = [];
+  const graph = new Map<string, ReadonlyArray<string>>();
+  const fileById = new Map<string, string>();
+  for (const s of specs) {
+    if (s.parsed === null) continue;
+    graph.set(s.parsed.frontmatter.id, s.parsed.frontmatter.depends_on ?? []);
+    fileById.set(s.parsed.frontmatter.id, s.filepath);
+  }
+
+  // Detect missing-target dependencies as a separate (referential) error.
+  for (const [id, deps] of graph) {
+    for (const dep of deps) {
+      if (!graph.has(dep)) {
+        results.push({
+          file: fileById.get(id) ?? `specs/${id}.md`,
+          severity: 'error',
+          error_type: 'referential',
+          message: `Spec '${id}' depends_on '${dep}' but no spec with that id exists`,
+        });
+      }
+    }
+  }
+
+  // Tarjan-style DFS for cycle detection. Reports each strongly-connected
+  // member the first time we find a back-edge that includes it.
+  const visited = new Set<string>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const reported = new Set<string>();
+
+  function dfs(node: string): void {
+    visited.add(node);
+    onStack.add(node);
+    stack.push(node);
+    for (const dep of graph.get(node) ?? []) {
+      if (!graph.has(dep)) continue; // missing target, already reported
+      if (!visited.has(dep)) {
+        dfs(dep);
+      } else if (onStack.has(dep)) {
+        const cycleStart = stack.indexOf(dep);
+        const cycleMembers = stack.slice(cycleStart);
+        const cycleStr = [...cycleMembers, dep].join(' -> ');
+        for (const m of cycleMembers) {
+          if (reported.has(m)) continue;
+          reported.add(m);
+          results.push({
+            file: fileById.get(m) ?? `specs/${m}.md`,
+            severity: 'error',
+            error_type: 'invariant',
+            message: `Cyclic spec dependency: ${cycleStr}`,
+          });
+        }
+      }
+    }
+    onStack.delete(node);
+    stack.pop();
+  }
+
+  for (const id of graph.keys()) {
+    if (!visited.has(id)) dfs(id);
   }
 
   return results;
@@ -550,6 +726,7 @@ function main(): void {
   const completions = readJsonFiles('completions');
   const features = readJsonFiles('features');
   const intents = readJsonFiles('intents');
+  const specs = readSpecFiles();
 
   // Parse failures
   for (const collection of [
@@ -570,15 +747,17 @@ function main(): void {
   for (const c of completions) { if (c.data != null) allResults.push(...validateCompletionSchema(c.filepath, c.data)); }
   for (const f of features) { if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data)); }
   for (const i of intents) { if (i.data != null) allResults.push(...validateIntentSchema(i.filepath, i.data)); }
+  for (const s of specs) { allResults.push(...validateSpecFile(s)); }
 
   // Integrity + invariants
   const index = buildIndex(packets, completions, features, intents);
   allResults.push(...validateIntegrity(index));
+  allResults.push(...validateSpecCycles(specs));
 
   // Report
   const errors = allResults.filter((r) => r.severity === 'error');
   const warnings = allResults.filter((r) => r.severity === 'warning');
-  const summary = `${packets.length} packets, ${completions.length} completions, ${features.length} features, ${intents.length} intents`;
+  const summary = `${packets.length} packets, ${completions.length} completions, ${features.length} features, ${intents.length} intents, ${specs.length} specs`;
 
   if (allResults.length === 0) {
     console.log(`${fmt.sym.ok} ${fmt.success('Factory validation: PASS')}`);
