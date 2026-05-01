@@ -57,6 +57,8 @@ import { startPacket } from './lifecycle/start.js';
 import { requestReview } from './lifecycle/request_review.js';
 import { recordReview } from './lifecycle/review.js';
 import { completePacket } from './lifecycle/complete.js';
+import { loadSpec, ensureIntentForSpec, SpecLoadError } from './specs.js';
+import { SpecParseError } from './pipeline/spec_parse.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -508,6 +510,87 @@ function failResult(intentId: string, featureId: string | null, message: string,
   return { intent_id: intentId, feature_id: featureId, packets_completed: [], packets_failed: [], success, message };
 }
 
+/**
+ * Resolve the CLI argument to an intent on disk.
+ *
+ * Phase 4 of specs/single-entry-pipeline.md teaches run.ts that specs are
+ * the canonical input. The disambiguation rule (spec-first):
+ *
+ *   1. If `specs/<arg>.md` exists, treat <arg> as a spec id. Load it,
+ *      ensure the intent file exists (generate from the spec if not),
+ *      and continue with the existing pipeline.
+ *   2. Else if `intents/<arg>.json` exists, fall back to legacy
+ *      compatibility mode: the arg is an intent id and we use the
+ *      intent file directly. This keeps existing intent-only flows
+ *      working with no behavior change.
+ *   3. Else: error with a message that names both paths checked.
+ *
+ * Returns either { ok: true, intentPath, dependsOn } or { ok: false, error }.
+ * `dependsOn` is the spec's depends_on list when the path was via specs,
+ * or null in legacy mode (so the caller can warn about unimplemented
+ * sequencing without conflating the two cases).
+ */
+type ResolveArgResult =
+  | {
+      readonly ok: true;
+      readonly intentPath: string;
+      readonly dependsOn: ReadonlyArray<string> | null;
+      readonly source: 'spec' | 'intent';
+    }
+  | { readonly ok: false; readonly error: string };
+
+function resolveRunArg(
+  arg: string,
+  artifactRoot: string,
+  projectRoot: string,
+): ResolveArgResult {
+  const specPath = join(projectRoot, 'specs', `${arg}.md`);
+  const intentPath = join(artifactRoot, 'intents', `${arg}.json`);
+
+  if (existsSync(specPath)) {
+    let loaded;
+    try {
+      loaded = loadSpec(arg, projectRoot);
+    } catch (err) {
+      if (err instanceof SpecParseError || err instanceof SpecLoadError) {
+        return { ok: false, error: `Spec error: ${err.message}` };
+      }
+      throw err;
+    }
+    let ensure;
+    try {
+      ensure = ensureIntentForSpec({
+        spec: loaded,
+        artifactRoot,
+        creatorId: 'factory-run',
+      });
+    } catch (err) {
+      if (err instanceof SpecLoadError) {
+        return { ok: false, error: err.message };
+      }
+      throw err;
+    }
+    if (ensure.created) {
+      fmt.log('plan', `Generated intent from spec: ${fmt.bold(ensure.intentPath)}`);
+    }
+    return {
+      ok: true,
+      intentPath: ensure.intentPath,
+      dependsOn: loaded.spec.frontmatter.depends_on ?? [],
+      source: 'spec',
+    };
+  }
+
+  if (existsSync(intentPath)) {
+    return { ok: true, intentPath, dependsOn: null, source: 'intent' };
+  }
+
+  return {
+    ok: false,
+    error: `No spec or intent found for '${arg}' (checked: specs/${arg}.md and intents/${arg}.json)`,
+  };
+}
+
 function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   const config = loadConfig();
   const projectRoot = findProjectRoot();
@@ -516,8 +599,28 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   fmt.resetTimer();
   process.stderr.write(fmt.header('RUN', `[${config.project_name}]`) + '\n\n');
 
+  // Resolve the CLI argument: spec first, then intent (legacy).
+  const resolved = resolveRunArg(intentId, artifactRoot, projectRoot);
+  if (!resolved.ok) {
+    fmt.log('error', fmt.error(resolved.error));
+    return failResult(intentId, null, resolved.error);
+  }
+
+  // Spec-level dependency-aware execution arrives in Phase 5. If the
+  // resolved spec already declares depends_on, surface it as a warning
+  // so the operator knows it is not yet acted on.
+  if (resolved.source === 'spec' && resolved.dependsOn !== null && resolved.dependsOn.length > 0) {
+    fmt.log(
+      'plan',
+      fmt.warn(
+        `Spec '${intentId}' declares depends_on [${resolved.dependsOn.join(', ')}]; ` +
+        `dependency-aware sequencing is not yet implemented (Phase 5). Proceeding without it.`,
+      ),
+    );
+  }
+
   // Load intent
-  const intentPath = join(artifactRoot, 'intents', `${intentId}.json`);
+  const intentPath = resolved.intentPath;
   if (!existsSync(intentPath)) {
     const msg = `Intent not found: ${intentId}`;
     fmt.log('error', fmt.error(msg));
@@ -644,10 +747,14 @@ function main(): void {
   const jsonMode = args.includes('--json');
 
   if (intentId === undefined) {
-    console.error('Usage: npx tsx tools/run.ts <intent-id> [--dry-run] [--json]');
+    console.error('Usage: npx tsx tools/run.ts <spec-or-intent-id> [--dry-run] [--json]');
     console.error('');
-    console.error('Runs the full factory pipeline for an intent:');
+    console.error('Runs the full factory pipeline for a spec or intent:');
     console.error('  plan -> develop -> review -> verify -> done');
+    console.error('');
+    console.error('If specs/<id>.md exists it is loaded and translated into an');
+    console.error('intent (generated on first run, reused on subsequent runs).');
+    console.error('If only intents/<id>.json exists, that is used directly.');
     process.exit(1);
   }
 

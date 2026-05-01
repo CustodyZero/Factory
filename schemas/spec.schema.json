@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spec.schema.json",
+  "title": "Factory Spec Frontmatter",
+  "description": "Frontmatter schema for human-authored specs at specs/<id>.md (per the spec_artifact_model decision). Specs are the sole human authoring surface; factory translates each spec 1:1 into an intent at run time. The body of the markdown file is the authoritative content read by the planner; this schema covers only the metadata in the frontmatter block.",
+  "type": "object",
+  "required": ["id", "title"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case unique identifier. Must match the filename (without .md)."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-line summary. Surfaced in status output and audit logs."
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "default": [],
+      "description": "Other spec ids that must complete before this spec runs. Optional; defaults to []. Cycles are rejected at validation time."
+    }
+  },
+  "additionalProperties": false
+}
