@@ -1,0 +1,56 @@
+## Codex GPT-5.5 Review — Phase 4.6 (Round 1)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-aa2a30d634d859b5c vs main
+**Date:** 2026-05-01
+
+### Verdict
+REQUEST-CHANGES
+
+### No-behavior-change verification — FAILED
+The integrity layer and date-time semantics look preserved, but the per-artifact validator behavior is NOT equivalent.
+
+validateAgainstSchema() now applies the FULL JSON schemas (schema_validate.ts:199), including constraints the old hand validators did not enforce. Examples:
+- Packet extras and optional fields now fail via additionalProperties: false and optional field schemas
+- Completion files_changed, verification.notes, and unknown fields now fail
+- Feature created_at, planned_by, planned_at, and unknown fields now fail
+- Spec unknown frontmatter now fails, AND the new test at schema_validate.test.ts:178 explicitly locks in this behavior
+
+These are "previously passed, now fails" behavior changes, not just message-text differences. The brief contemplated text differences, not validation-rule differences. The schemas were set up assuming they'd be enforced, but the old validators didn't enforce them.
+
+### Integrity extraction — ACCEPTABLE as forced move
+tools/validate.ts is 384 lines; without extracting the 333-line integrity block the 400-line target was not credible. Diffed the old integrity block against tools/pipeline/integrity.ts; differences are exports/types/local helper relocation/comments. The validation logic and emitted messages match.
+
+### Schema unchanged — PASS
+git diff main..HEAD -- schemas/ is empty.
+
+### checkPacketReviewStatus preservation — PASS
+Schema gap handled as a narrow hand-rolled stop-gap in validate.ts:108. Preserves the old message and classification.
+
+### Custom date-time format — PASS
+schema_validate.ts:51 uses !Number.isNaN(new Date(s).getTime()), matching the old validator's !isNaN(new Date(s).getTime()) for string inputs. Behavior-preserving.
+
+### schema_validate.ts design — MOSTLY SOUND
+Cache-by-schema-path is reasonable. Strict mode with a custom date-time format is a good choice. The keyword formatters cover the common cases and preserve error_type: 'schema'.
+
+Blocking concern remains: the helper enforces ENTIRE schema semantics, not the old validator contract.
+
+### Test quality — PARTIAL
+The 11 new tests cover shape mapping and basic known-bad cases. They do NOT test no-behavior-change compatibility. The unknown spec frontmatter test at schema_validate.test.ts:178 asserts a behavior EXPANSION that the old validator did not perform.
+
+### ajv configuration — PASS
+allErrors: true, strict: true, strictRequired: false are reasonable. The local date-time format avoids adding ajv-formats and preserves prior permissive timestamp behavior.
+
+### New issues introduced
+- BLOCKING: validation is stricter than before; ajv enforces schema rules the hand validators ignored
+- Test gap: no compatibility tests prove old-pass/new-pass behavior for optional fields, unknown fields, or permissive date-time inputs
+- Nit: schema_validate.ts:12 docblock says integrity validations stay hand-rolled "in validate.ts", but most now live in pipeline/integrity.ts
+
+### Required changes
+1. Restore the old validator behavior, OR explicitly amend the Phase 4.6 contract. Under the current "pure refactor / no behavior change" claim, validateAgainstSchema() cannot blindly enforce additionalProperties and optional-field constraints the old validators ignored.
+2. Add compatibility tests showing representative old-pass inputs still pass: unknown fields on each artifact type, optional metadata fields with relaxed shapes, permissive date-time strings.
+3. Remove or rewrite the unknown-frontmatter rejection test at schema_validate.test.ts:178 unless the brief is amended to allow that behavior change.
+
+### Suggested improvements (nits, optional)
+- Update the stale design note in schema_validate.ts to say integrity remains hand-rolled but is split between validate.ts and pipeline/integrity.ts.
+- Add a focused test for the custom date-time format using a value accepted by new Date() but not strict RFC 3339.
