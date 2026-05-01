@@ -52,6 +52,7 @@ import {
 } from './pipeline/develop_phase.js';
 import type { DevResumePoint } from './pipeline/develop_phase.js';
 import { invokeAgent } from './pipeline/agent_invoke.js';
+import { refreshCompletionId, safeCall } from './pipeline/lifecycle_helpers.js';
 import { startPacket } from './lifecycle/start.js';
 import { requestReview } from './lifecycle/request_review.js';
 import { recordReview } from './lifecycle/review.js';
@@ -112,45 +113,6 @@ export function patchJson(
       writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     }
   } catch { /* best-effort */ }
-}
-
-// Phase 3 replaced runLifecycle()'s execSync shell-out with direct imports
-// from tools/lifecycle/. `safeCall` adapts the throws-on-error library
-// shape into the orchestrator's "log + return ok" shape so the per-step
-// state machine stays linear (matches what the old helper did).
-function safeCall(fn: () => unknown): { ok: boolean; error?: string } {
-  try { fn(); return { ok: true }; }
-  catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
-}
-
-/**
- * Per-iteration staleness refresh for the in-memory `completionIds` set.
- *
- * Both phase loops build `completionIds` once at phase start. During the
- * loop, an external agent may invoke `complete.ts` directly on a previous
- * packet (the same external-mutation model that justifies the per-iteration
- * packet re-reads in devPhase / qaPhase). Without this refresh, the next
- * iteration's resume-point derivation or already-complete check would use
- * a stale view of disk and reprocess an already-complete packet.
- *
- * Contract:
- *   - If `set` already contains `packetId`, no I/O, no mutation.
- *   - Else, if `<artifactRoot>/completions/<packetId>.json` exists on
- *     disk, add `packetId` to `set`.
- *   - Else, leave `set` unchanged.
- *   - Never throws (existsSync does not throw on missing parents).
- *
- * Exported for unit testing.
- */
-export function refreshCompletionId(
-  set: Set<string>,
-  packetId: string,
-  artifactRoot: string,
-): void {
-  if (set.has(packetId)) return;
-  if (existsSync(join(artifactRoot, 'completions', `${packetId}.json`))) {
-    set.add(packetId);
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -30,7 +30,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchJson, refreshCompletionId } from '../run.js';
+import { patchJson } from '../run.js';
+import { refreshCompletionId } from '../pipeline/lifecycle_helpers.js';
 
 function makeTempJson(initial: Record<string, unknown>): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), 'patchjson-'));
