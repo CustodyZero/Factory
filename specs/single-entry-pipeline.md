@@ -177,37 +177,41 @@ The phases below are listed in the order they should land. Each phase is a candi
 
 **Risk:** Behavior leaks during refactor. Mitigation: same playbook as Phase 1 — run a known-good intent through end-to-end before and after, snapshot the output, compare.
 
-### Phase 4.6 — Replace hand-rolled validators with ajv (pure refactor)
+### Phase 4.6 — Extract integrity layer (pure refactor) ✓ SHIPPED
 
-**Goal:** Replace `tools/validate.ts`'s hand-rolled per-artifact validators with `ajv` consuming the existing JSON schemas in `schemas/`. Pure refactor; no behavior change. Target: `tools/validate.ts` under **400 lines** (down from 785).
+**Originally proposed scope (rejected):** migrate hand-rolled validators to ajv. After 3 rounds of codex review on the original attempt, the migration premise was determined to be wrong: hand-rolled validators were not schema-driven validation waiting for ajv; they were custom semantic checks with schemas nearby. The migration would have added complexity (785 → 1,396 lines + new dependency + custom drop-rules mini-DSL) rather than removing it. See [`research/ajv_migration_attempt.md`](../docs/research/ajv_migration_attempt.md) for the full lesson.
 
-**Why this is its own phase:** the post-Phase-4.5 architecture audit identified `validate.ts` as the largest single source file in `tools/` (785 lines, 2.5× run.ts). Growth has been organic (new artifact types → new hand-rolled validator), and the previously-deferred recommendation to migrate to `ajv` is now overdue. Same playbook as Phase 4.5: extract before piling on more.
+**Actual scope (shipped):** extract the cross-cutting integrity layer to a dedicated module; add compatibility tests pinning current hand-rolled validator behavior. No ajv. No new dependencies. No schema changes.
 
-**Specifically:**
+**What shipped:**
 
-- Add `ajv` as a direct devDependency in `package.json`. Justification: replaces ~400 lines of hand-rolled validation logic with a well-established JSON-schema validator that operates against the already-existing `schemas/*.schema.json` files. Risk surface: behavioral (different error message format) and security (a new transitive dependency tree). Behavioral risk is mitigated by tests pinning the format; security risk is acceptable for a 12.5M-weekly-download library that is already in the npx history of this session for ad-hoc validation.
-- Replace these hand-rolled validator functions with ajv-driven validation:
-  - `validatePacketSchema` → ajv against `schemas/packet.schema.json`
-  - `validateCompletionSchema` → ajv against `schemas/completion.schema.json`
-  - `validateFeatureSchema` → ajv against `schemas/feature.schema.json`
-  - `validateIntentSchema` → ajv against `schemas/intent.schema.json`
-  - The spec frontmatter validator (added in Phase 4) → ajv against `schemas/spec.schema.json`
-- **Preserve unchanged**: cross-cutting integrity validations (FI-1 unique completions, FI-7 distinct identities, FI-9 no cyclic packet dependencies, spec dependency cycles, filename/id matching). These are relational, not per-artifact, and stay as hand-rolled logic.
-- **Preserve unchanged**: error-message shape and ordering. The pre-existing `ValidationResult` type with `severity`/`error_type`/`message` fields stays. ajv error messages are normalized into this shape so downstream consumers (and `validate.test.ts` assertions) don't break.
-- **Schema file shapes**: the existing schemas may need minor adjustments for ajv strict-mode compliance (e.g., explicit `additionalProperties`, ensuring all referenced `$defs` exist). Make these adjustments AS NEEDED but do not redesign the schemas.
+- New module `tools/pipeline/integrity.ts` (467 lines) owns:
+  - FI-1 (unique completion per packet)
+  - FI-7 (distinct dev/QA identities)
+  - FI-8 (every dev packet has a QA counterpart)
+  - FI-9 (no cyclic packet dependencies)
+  - Orphaned completions detection
+  - Feature ↔ packet referential integrity
+  - Intent → feature linkage status rules
+  - Spec dependency cycles + missing-target deps
+  - Typed snapshot types (PacketSnapshot, CompletionSnapshot, FeatureSnapshot, IntentSnapshot, ArtifactIndex, DiscoveredSpec, ValidationResult)
+- `tools/validate.ts` shrunk from 785 to 423 lines. Per-artifact validators (validatePacketSchema, validateCompletionSchema, validateFeatureSchema, validateIntentSchema, readSpecFiles, validateSpecFile) remain hand-rolled. CLI rendering and error reporting unchanged.
+- 29 new compatibility tests in `tools/test/validate.test.ts` pin the EXISTING hand-rolled validator behavior. These tests are the safety net for any future change to validate.ts (including a possible future re-attempt at schema-driven validation with a different approach).
 
-**Acceptance:**
+**Acceptance (what was verified):**
 
-- All existing tests pass (≥282 baseline from Phase 4.5)
-- `tools/validate.ts` line count under **400** (down from 785)
-- `npm run factory:validate` produces the same exit code on the same inputs as before (PASS on this repo's current state; clearly-bad fixtures produce errors with the same `error_type` classifications)
-- `validate.test.ts` assertions for spec validation continue to pass; assertions for packet/completion/feature/intent validation continue to pass
-- New unit tests for the ajv adaptation: at least 2 tests verifying that ajv errors are correctly mapped to the `ValidationResult` shape; at least 1 test per artifact type confirming a known-bad fixture produces the right error
-- Existing schema files in `schemas/*.schema.json` remain authoritative; any modifications are surface-level (additionalProperties, $defs cleanup), not redesigns
+- 311 tests pass (282 baseline + 29 new)
+- `tools/validate.ts` at 423 lines (down from 785)
+- `npx tsx tools/validate.ts` reports PASS on this repo
+- Per-artifact validators preserved with no semantic changes
+- Cross-cutting integrity validations moved cleanly to integrity.ts
+- CLI output format preserved
+- Zero new dependencies (no ajv)
+- Zero schema changes
 
-**Risk:** ajv error message text differs from the hand-rolled messages. Mitigation: tests assert on `error_type` and structural fields, not on free-form message text where possible. Where free-form message comparison is unavoidable, update test fixtures to match the new wording, but only after manually verifying the new wording is at least as informative as the old.
+**What this does NOT include:**
 
-**Constraint:** Do NOT change the JSON schema *semantics* — required fields, types, constraints. The schemas are factory's contract with host projects; changing them would propagate through every host installation. Schema *form* tweaks (adding `additionalProperties: false` where missing, fixing `$defs` references) are fine; semantic changes are not.
+- Schema-driven validation via ajv or any other engine. Deferred indefinitely; the existing hand-rolled validators stay authoritative. If a future need surfaces, the compatibility tests added here will pin the behavior and a different migration approach can be considered.
 
 ### Phase 5 — Multi-spec dependency-aware orchestrator
 
