@@ -157,10 +157,44 @@ function main(): void {
   renderSummary(result);
 
   if (jsonMode) {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    process.stdout.write(formatJsonOutput(positional, result) + '\n');
   }
 
   process.exit(result.success ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
+// JSON output shaping
+//
+// Pre-Phase-5 emitted a flat `RunResult` shape:
+//   { intent_id, feature_id, packets_completed, packets_failed, success, message }
+//
+// Phase 5 introduced the `OrchestratorResult` envelope:
+//   { specs: [...], success, message }
+//
+// To preserve the legacy single-arg contract while enabling the new
+// multi-spec shape, we emit the legacy flat shape iff exactly one
+// positional arg was passed AND we have a per-spec outcome to derive
+// it from (or no outcome at all, in which case empty arrays). For
+// multi-arg runs we emit the new envelope unchanged.
+//
+// Exported for unit testing.
+// ---------------------------------------------------------------------------
+
+export function formatJsonOutput(positional: ReadonlyArray<string>, result: OrchestratorResult): string {
+  if (positional.length === 1) {
+    const o = result.specs[0];
+    const legacy = {
+      intent_id: positional[0],
+      feature_id: o && o.status !== 'blocked' ? o.feature_id : null,
+      packets_completed: o && o.status !== 'blocked' ? o.packets_completed : [],
+      packets_failed: o && o.status !== 'blocked' ? o.packets_failed : [],
+      success: result.success,
+      message: result.message,
+    };
+    return JSON.stringify(legacy, null, 2);
+  }
+  return JSON.stringify(result, null, 2);
 }
 
 const isDirectExecution = process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js');

@@ -338,13 +338,25 @@ function runSingleSpec(
     dryRun,
   });
   if (planResult.feature_id === null) {
-    const msg = dryRun ? 'Dry run — planning would be invoked' : 'Planning failed';
+    // Pre-Phase-5 contract: --dry-run that stops at planning is a
+    // non-failing preview (exit 0). Pre-Phase-5 tools/run.ts:183 set
+    // success = dryRun for exactly this branch. We preserve that by
+    // mapping dry-run-stops-at-planning to a `completed` outcome with
+    // a null feature_id; non-dry-run is the real planning failure.
+    if (dryRun) {
+      return {
+        status: 'completed',
+        feature_id: null,
+        packets_completed: [],
+        packets_failed: [],
+      };
+    }
     return {
       status: 'failed',
       feature_id: null,
       packets_completed: [],
       packets_failed: [],
-      reason: msg,
+      reason: 'Planning failed',
     };
   }
 

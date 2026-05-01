@@ -38,7 +38,6 @@ import {
   _detectCycles,
   _findMissingDeps,
   type ResolvedSpec,
-  type SpecOutcome,
 } from '../pipeline/orchestrator.js';
 import type { FactoryConfig } from '../config.js';
 
@@ -119,6 +118,22 @@ function writeIntent(
     created_at: '2026-04-29T00:00:00.000Z',
   };
   writeFileSync(join(root, 'intents', `${id}.json`), JSON.stringify(intent, null, 2), 'utf-8');
+}
+
+/**
+ * Write a legacy intent file whose contents are malformed JSON. The
+ * file exists, so `resolveRunArg` succeeds (its only check is
+ * `existsSync` on the legacy path). `runSingleSpec` then fails at the
+ * `readJson<RawIntentArtifact>` step and returns a `failed` outcome
+ * regardless of dryRun. This is the failure vehicle the propagation
+ * tests below use: it lets us pin "dependent specs are blocked when
+ * an upstream fails" without coupling the test to dry-run semantics
+ * (Phase 5 round 2 made dry-run-stops-at-planning a `completed`
+ * outcome to preserve the legacy single-arg --dry-run exit-0 contract).
+ */
+function writeMalformedIntent(root: string, id: string): void {
+  if (!existsSync(join(root, 'intents'))) mkdirSync(join(root, 'intents'), { recursive: true });
+  writeFileSync(join(root, 'intents', `${id}.json`), '{not valid json', 'utf-8');
 }
 
 function makeResolved(
@@ -326,17 +341,18 @@ describe('runOrchestrator — single-arg legacy intent', () => {
       artifactRoot: f.root,
       dryRun: true,
     });
-    // Dry-run can't complete (no agents invoked) but the spec was
-    // attempted: we get one outcome and it is `failed` with the dry-
-    // run reason. Critical: success === false but the spec WAS
-    // resolved and reached PLANNING — not blocked or rejected up-
-    // front.
+    // Dry-run that stops at planning is a non-failing PREVIEW per the
+    // pre-Phase-5 single-arg contract: success === true, the spec is
+    // recorded as `completed` with feature_id null. Critical: the spec
+    // WAS resolved and reached PLANNING — not blocked or rejected
+    // up-front.
     expect(result.specs).toHaveLength(1);
     expect(result.specs[0]!.id).toBe('legacy');
-    expect(result.specs[0]!.status).toBe('failed');
-    if (result.specs[0]!.status === 'failed') {
-      expect(result.specs[0]!.reason).toContain('Dry run');
+    expect(result.specs[0]!.status).toBe('completed');
+    if (result.specs[0]!.status === 'completed') {
+      expect(result.specs[0]!.feature_id).toBeNull();
     }
+    expect(result.success).toBe(true);
   });
 });
 
@@ -355,10 +371,14 @@ describe('runOrchestrator — single-arg spec without depends_on', () => {
       artifactRoot: f.root,
       dryRun: true,
     });
+    // intents/<id>.json is materialized as a side effect of resolving
+    // the spec arg; dry-run stops at planning and records `completed`
+    // (legacy single-arg contract — see legacy-intent test above).
     expect(existsSync(join(f.root, 'intents', 'foo.json'))).toBe(true);
     expect(result.specs).toHaveLength(1);
     expect(result.specs[0]!.id).toBe('foo');
-    expect(result.specs[0]!.status).toBe('failed');
+    expect(result.specs[0]!.status).toBe('completed');
+    expect(result.success).toBe(true);
   });
 });
 
@@ -540,17 +560,21 @@ describe('runOrchestrator — multi-spec sequencing', () => {
 // ---------------------------------------------------------------------------
 // runOrchestrator — failure propagation
 //
-// Dry-run mode causes every spec to come out as `failed` (no real
-// planner runs to produce a feature). That gives us a deterministic
-// "first spec fails" signal, which is exactly what we need to verify
-// that downstream blocked propagation happens correctly.
+// Failure vehicle: a malformed legacy intent file. `_resolveAll` only
+// existsSync-checks the legacy path so resolution succeeds; then
+// runSingleSpec parses the file, fails, and returns `failed`. This is
+// independent of dryRun (dryRun-stops-at-planning is `completed` per
+// the legacy single-arg --dry-run preview contract). Using a parse
+// failure as the vehicle keeps these tests focused on the propagation
+// invariant: when an upstream spec fails, its dependents are blocked
+// (transitively); independent specs continue to be attempted.
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — failure propagation', () => {
   it('marks a dependent spec as blocked when its upstream failed', () => {
     const f = makeFixture();
-    writeSpec(f.root, 'a');
-    writeSpec(f.root, 'b', { dependsOn: ['a'] });
+    writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
+    writeSpec(f.root, 'b', { dependsOn: ['a'] }); // 'b' depends on 'a'
     const result = runOrchestrator({
       args: ['a', 'b'],
       config: f.config,
@@ -569,9 +593,11 @@ describe('runOrchestrator — failure propagation', () => {
   });
 
   it('lets independent specs run even when another spec fails', () => {
-    // a fails (dry-run). c has no deps, so it must still be attempted.
+    // 'a' fails (malformed intent). 'c' has no deps, so it must still
+    // be attempted. Under dry-run it short-circuits at planning and
+    // is recorded as `completed` (legacy preview contract).
     const f = makeFixture();
-    writeSpec(f.root, 'a');
+    writeMalformedIntent(f.root, 'a');
     writeSpec(f.root, 'c');
     const result = runOrchestrator({
       args: ['a', 'c'],
@@ -584,18 +610,18 @@ describe('runOrchestrator — failure propagation', () => {
     const a = result.specs.find((s) => s.id === 'a')!;
     const c = result.specs.find((s) => s.id === 'c')!;
     expect(a.status).toBe('failed');
-    expect(c.status).toBe('failed'); // attempted, failed in dry-run; NOT blocked
-    if (c.status === 'failed') {
-      // c was not blocked — it was attempted on its own merits.
-      expect((c as Extract<SpecOutcome, { status: 'failed' }>).reason).toContain('Dry run');
-    }
+    // The critical assertion: c was NOT blocked. It was attempted on
+    // its own merits. In dry-run that means `completed` (legacy
+    // single-arg preview contract); the test stays robust to the
+    // dry-run outcome shape by asserting `!== 'blocked'` directly.
+    expect(c.status).not.toBe('blocked');
   });
 
   it('mixed independent + dependent: a fails, b runs (independent), c blocked (depends on a)', () => {
     const f = makeFixture();
-    writeSpec(f.root, 'a');
-    writeSpec(f.root, 'b');
-    writeSpec(f.root, 'c', { dependsOn: ['a'] });
+    writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
+    writeSpec(f.root, 'b');                       // 'b' independent
+    writeSpec(f.root, 'c', { dependsOn: ['a'] }); // 'c' depends on 'a'
     const result = runOrchestrator({
       args: ['a', 'b', 'c'],
       config: f.config,
@@ -607,7 +633,10 @@ describe('runOrchestrator — failure propagation', () => {
     const b = result.specs.find((s) => s.id === 'b')!;
     const c = result.specs.find((s) => s.id === 'c')!;
     expect(a.status).toBe('failed');
-    expect(b.status).toBe('failed'); // independent, attempted in dry-run
+    // b independent: attempted on its own; under dry-run that is
+    // `completed`. The propagation invariant we care about is
+    // "not blocked".
+    expect(b.status).not.toBe('blocked');
     expect(c.status).toBe('blocked');
     if (c.status === 'blocked') {
       expect(c.blocked_by).toContain('a');
@@ -616,7 +645,7 @@ describe('runOrchestrator — failure propagation', () => {
 
   it('propagates blockage transitively: a fails, b depends on a, c depends on b', () => {
     const f = makeFixture();
-    writeSpec(f.root, 'a');
+    writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
     writeSpec(f.root, 'b', { dependsOn: ['a'] });
     writeSpec(f.root, 'c', { dependsOn: ['b'] });
     const result = runOrchestrator({
@@ -641,8 +670,8 @@ describe('runOrchestrator — failure propagation', () => {
 
   it("aggregates message correctly: 'completed', 'failed', 'blocked' counts all add up", () => {
     const f = makeFixture();
-    writeSpec(f.root, 'a');
-    writeSpec(f.root, 'b', { dependsOn: ['a'] });
+    writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
+    writeSpec(f.root, 'b', { dependsOn: ['a'] }); // 'b' blocked by 'a'
     const result = runOrchestrator({
       args: ['a', 'b'],
       config: f.config,
@@ -754,10 +783,11 @@ describe('runOrchestrator — pre-completed features', () => {
     const up = result.specs.find((s) => s.id === 'up')!;
     const down = result.specs.find((s) => s.id === 'down')!;
     expect(up.status).toBe('completed');
-    // 'up' completed, so 'down' is NOT blocked. Dry-run still fails
-    // it at the planning step, but that's failed-on-its-own-merits,
-    // not blocked-by-upstream.
-    expect(down.status).toBe('failed');
+    // 'up' completed, so 'down' is NOT blocked. Under dry-run 'down'
+    // short-circuits at planning to `completed` (legacy single-arg
+    // preview contract). The invariant we pin is "not blocked":
+    // 'down' was attempted on its own merits.
+    expect(down.status).not.toBe('blocked');
   });
 });
 
@@ -807,5 +837,56 @@ describe('runOrchestrator — spec→intent materialization', () => {
     expect(existsSync(join(f.root, 'intents', 'two.json'))).toBe(true);
     const oneJson = JSON.parse(readFileSync(join(f.root, 'intents', 'one.json'), 'utf-8'));
     expect(oneJson.id).toBe('one');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runOrchestrator — legacy single-arg --dry-run preview contract (round 2)
+//
+// Pre-Phase-5 tools/run.ts:183 mapped the dry-run-stops-at-planning
+// branch to success=true (process.exit(0)). Phase 5 round 1 broke
+// that: every dry-run aggregated to success=false. Round 2 restores
+// the legacy contract by mapping dry-run-stops-at-planning to a
+// `completed` outcome with feature_id=null inside runSingleSpec.
+// These tests pin that contract explicitly so it cannot regress.
+// ---------------------------------------------------------------------------
+
+describe('runOrchestrator — legacy --dry-run preview contract', () => {
+  it('single-arg dry-run that stops at planning aggregates to success=true', () => {
+    const f = makeFixture();
+    writeSpec(f.root, 'preview');
+    const result = runOrchestrator({
+      args: ['preview'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    // Aggregate-success === true is what tools/run.ts uses to choose
+    // process.exit(0); the legacy --dry-run preview contract.
+    expect(result.success).toBe(true);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.status).toBe('completed');
+    if (result.specs[0]!.status === 'completed') {
+      // No feature_id when planning was previewed-only; this is the
+      // signal to downstream code that the run was a dry-run preview.
+      expect(result.specs[0]!.feature_id).toBeNull();
+      expect(result.specs[0]!.packets_completed).toEqual([]);
+      expect(result.specs[0]!.packets_failed).toEqual([]);
+    }
+  });
+
+  it('legacy intent dry-run stops at planning and aggregates to success=true', () => {
+    const f = makeFixture();
+    writeIntent(f.root, 'legacy-preview');
+    const result = runOrchestrator({
+      args: ['legacy-preview'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.specs[0]!.status).toBe('completed');
   });
 });

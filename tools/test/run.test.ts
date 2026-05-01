@@ -30,7 +30,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchJson } from '../run.js';
+import { patchJson, formatJsonOutput } from '../run.js';
+import type { OrchestratorResult } from '../pipeline/orchestrator.js';
 import { refreshCompletionId } from '../pipeline/lifecycle_helpers.js';
 
 function makeTempJson(initial: Record<string, unknown>): { dir: string; path: string } {
@@ -395,5 +396,148 @@ describe('lifecycle libraries — projectRoot injection from a fixture', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatJsonOutput — Phase 5 round 2 backward-compat shim.
+//
+// Pre-Phase-5 `tools/run.ts --json` emitted a flat RunResult shape
+// keyed by `intent_id`. Phase 5 round 1 silently switched to the
+// new `OrchestratorResult` envelope (`{ specs, success, message }`)
+// for ALL runs, breaking single-arg consumers. Round 2 keeps the
+// new envelope for multi-arg runs but adapts back to the legacy
+// flat shape when exactly one positional arg was passed.
+//
+// These tests pin the contract end-to-end (the helper is a pure
+// function over an already-constructed OrchestratorResult, so a
+// subprocess test is unnecessary).
+// ---------------------------------------------------------------------------
+
+describe('formatJsonOutput', () => {
+  it('emits the legacy flat RunResult shape for single-arg success', () => {
+    const result: OrchestratorResult = {
+      specs: [{
+        id: 'foo',
+        status: 'completed',
+        feature_id: 'feat-foo',
+        packets_completed: ['pkt-1', 'pkt-2'],
+        packets_failed: [],
+      }],
+      success: true,
+      message: 'All 1 spec(s) completed',
+    };
+    const out = formatJsonOutput(['foo'], result);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    // Legacy keys present.
+    expect(parsed['intent_id']).toBe('foo');
+    expect(parsed['feature_id']).toBe('feat-foo');
+    expect(parsed['packets_completed']).toEqual(['pkt-1', 'pkt-2']);
+    expect(parsed['packets_failed']).toEqual([]);
+    expect(parsed['success']).toBe(true);
+    expect(parsed['message']).toBe('All 1 spec(s) completed');
+    // New envelope keys absent.
+    expect(parsed['specs']).toBeUndefined();
+  });
+
+  it('emits the legacy flat shape for single-arg failure', () => {
+    const result: OrchestratorResult = {
+      specs: [{
+        id: 'bar',
+        status: 'failed',
+        feature_id: 'feat-bar',
+        packets_completed: ['pkt-1'],
+        packets_failed: ['pkt-2'],
+        reason: '1 packet(s) failed: pkt-2',
+      }],
+      success: false,
+      message: '0 completed, 1 failed, 0 blocked',
+    };
+    const out = formatJsonOutput(['bar'], result);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(parsed['intent_id']).toBe('bar');
+    expect(parsed['feature_id']).toBe('feat-bar');
+    expect(parsed['packets_completed']).toEqual(['pkt-1']);
+    expect(parsed['packets_failed']).toEqual(['pkt-2']);
+    expect(parsed['success']).toBe(false);
+    expect(parsed['specs']).toBeUndefined();
+  });
+
+  it('emits empty-array fallback for single-arg with NO per-spec outcome (resolution failed)', () => {
+    // Top-level failure (resolution / cycle / missing-dep) produces a
+    // result with `specs: []`. The legacy single-arg shape must still
+    // be preserved with sensible defaults.
+    const result: OrchestratorResult = {
+      specs: [],
+      success: false,
+      message: "No spec or intent found for 'ghost'",
+    };
+    const out = formatJsonOutput(['ghost'], result);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(parsed['intent_id']).toBe('ghost');
+    expect(parsed['feature_id']).toBeNull();
+    expect(parsed['packets_completed']).toEqual([]);
+    expect(parsed['packets_failed']).toEqual([]);
+    expect(parsed['success']).toBe(false);
+    expect(parsed['message']).toBe("No spec or intent found for 'ghost'");
+    expect(parsed['specs']).toBeUndefined();
+  });
+
+  it('emits empty-array fallback for single-arg whose outcome is `blocked`', () => {
+    // A blocked outcome has no feature_id / packets_* fields — the
+    // SpecOutcome variant for `blocked` only carries blocked_by and
+    // reason. The legacy shape uses null + [] sentinels in this case.
+    const result: OrchestratorResult = {
+      specs: [{
+        id: 'blocked-spec',
+        status: 'blocked',
+        blocked_by: ['upstream'],
+        reason: 'Blocked by upstream spec(s) that did not complete: upstream',
+      }],
+      success: false,
+      message: '0 completed, 0 failed, 1 blocked',
+    };
+    const out = formatJsonOutput(['blocked-spec'], result);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(parsed['intent_id']).toBe('blocked-spec');
+    expect(parsed['feature_id']).toBeNull();
+    expect(parsed['packets_completed']).toEqual([]);
+    expect(parsed['packets_failed']).toEqual([]);
+    expect(parsed['specs']).toBeUndefined();
+  });
+
+  it('emits the new envelope shape (specs, success, message) for multi-arg runs', () => {
+    const result: OrchestratorResult = {
+      specs: [
+        {
+          id: 'a',
+          status: 'completed',
+          feature_id: 'feat-a',
+          packets_completed: [],
+          packets_failed: [],
+        },
+        {
+          id: 'b',
+          status: 'completed',
+          feature_id: 'feat-b',
+          packets_completed: [],
+          packets_failed: [],
+        },
+      ],
+      success: true,
+      message: 'All 2 spec(s) completed',
+    };
+    const out = formatJsonOutput(['a', 'b'], result);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    // New envelope keys present.
+    expect(Array.isArray(parsed['specs'])).toBe(true);
+    expect((parsed['specs'] as unknown[])).toHaveLength(2);
+    expect(parsed['success']).toBe(true);
+    expect(parsed['message']).toBe('All 2 spec(s) completed');
+    // Legacy single-arg keys absent in multi-arg mode.
+    expect(parsed['intent_id']).toBeUndefined();
+    expect(parsed['feature_id']).toBeUndefined();
+    expect(parsed['packets_completed']).toBeUndefined();
+    expect(parsed['packets_failed']).toBeUndefined();
   });
 });

@@ -106,11 +106,11 @@ describe('run.ts — spec mode (spec only, no intent)', () => {
     expect(existsSync(join(f.root, 'intents', 'foo.json'))).toBe(false);
 
     const r = runRun(['foo', '--dry-run'], f.root);
+    void r;
 
-    // The dry-run path exits non-zero with the "Dry run — planning would
-    // be invoked" message because no agent runs. That's expected; what
-    // we verify is that the intent file was materialized BEFORE the
-    // dry-run early-exit.
+    // The dry-run path exits 0 (legacy single-arg preview contract).
+    // What we verify HERE is that the intent file was materialized
+    // BEFORE the dry-run early-exit at the planning step.
     expect(existsSync(join(f.root, 'intents', 'foo.json'))).toBe(true);
 
     const intent = JSON.parse(
@@ -342,13 +342,18 @@ describe('run.ts — Phase 5 multi-spec CLI dispatch', () => {
   });
 
   it('marks dependents as blocked when an upstream fails (multi-spec)', () => {
+    // Failure vehicle: 'a' is a legacy intent file with malformed JSON.
+    // _resolveAll only existsSync-checks the legacy intent path, so
+    // resolution succeeds; runSingleSpec then fails at intent parse.
+    // 'b' is a spec with depends_on: [a] — it must come out blocked.
+    // (The old version of this test used `a` as a spec and relied on
+    // dry-run-stops-at-planning being a `failed` outcome. Round 2
+    // restored the legacy --dry-run preview contract, so dry-run is
+    // now `completed`; we need a real failure vehicle here.)
     const f = makeFixture();
+    mkdirSync(join(f.root, 'intents'), { recursive: true });
+    writeFileSync(join(f.root, 'intents', 'a.json'), '{not valid json', 'utf-8');
     mkdirSync(join(f.root, 'specs'), { recursive: true });
-    writeFileSync(
-      join(f.root, 'specs', 'a.md'),
-      '---\nid: a\ntitle: A\n---\n',
-      'utf-8',
-    );
     writeFileSync(
       join(f.root, 'specs', 'b.md'),
       '---\nid: b\ntitle: B\ndepends_on: [a]\n---\n',
@@ -358,7 +363,7 @@ describe('run.ts — Phase 5 multi-spec CLI dispatch', () => {
     const r = runRun(['a', 'b', '--dry-run', '--json'], f.root);
 
     expect(r.status).toBe(1);
-    // JSON mode: parse the structured result for assertions.
+    // Multi-arg JSON mode: new envelope shape (specs/success/message).
     const parsed = JSON.parse(r.stdout);
     expect(parsed.success).toBe(false);
     expect(parsed.specs).toHaveLength(2);
@@ -367,5 +372,58 @@ describe('run.ts — Phase 5 multi-spec CLI dispatch', () => {
     expect(a.status).toBe('failed');
     expect(b.status).toBe('blocked');
     expect(b.blocked_by).toContain('a');
+  });
+
+  it('preserves legacy --dry-run preview contract for single-arg runs (exit 0)', () => {
+    // Pre-Phase-5 tools/run.ts:183 mapped dry-run-stops-at-planning to
+    // exit 0 (a non-failing PREVIEW). Phase 5 round 1 broke that;
+    // round 2 restored it. This test pins that contract end-to-end.
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'preview.md'),
+      '---\nid: preview\ntitle: Preview\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['preview', '--dry-run'], f.root);
+
+    expect(r.status).toBe(0);
+    // The dry-run path still REACHES planning (banner printed) — that's
+    // the behavior we're previewing.
+    expect(r.stderr).toContain('PLANNING');
+  });
+
+  it('preserves legacy --json single-arg shape (legacy keys present, no envelope)', () => {
+    // Pre-Phase-5 --json emitted a flat RunResult shape:
+    //   { intent_id, feature_id, packets_completed, packets_failed,
+    //     success, message }
+    // Phase 5 round 1 silently switched to the OrchestratorResult
+    // envelope (`{ specs, success, message }`) for ALL runs. Round 2
+    // adapts back to the legacy shape iff exactly one positional arg
+    // was passed. This test pins that adaptation end-to-end via the
+    // CLI subprocess so the run.ts wiring is exercised, not just the
+    // formatJsonOutput helper.
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'shape.md'),
+      '---\nid: shape\ntitle: Shape\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['shape', '--dry-run', '--json'], f.root);
+
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+    // Legacy keys MUST be present.
+    expect(parsed['intent_id']).toBe('shape');
+    expect(Object.prototype.hasOwnProperty.call(parsed, 'feature_id')).toBe(true);
+    expect(parsed['packets_completed']).toEqual([]);
+    expect(parsed['packets_failed']).toEqual([]);
+    expect(parsed['success']).toBe(true);
+    expect(typeof parsed['message']).toBe('string');
+    // New envelope key MUST NOT be present (single-arg legacy mode).
+    expect(parsed['specs']).toBeUndefined();
   });
 });
