@@ -1,0 +1,34 @@
+## Codex GPT-5.5 Review — Phase 3 (Round 2)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed range:** 895d116..HEAD (2 round-2 commits)
+**Date:** 2026-04-30
+
+### Verdict
+APPROVED
+
+### Staleness fix correctness — APPROVED
+In devPhase, the packet re-read at lines 297-300 is followed by refreshCompletionId() at line 305, then deriveDevResumePoint() at line 307. Order is correct.
+
+In qaPhase, refreshCompletionId() at line 453 precedes the early-exit `if (completionIds.has(packet.id))` check at line 455. Order is correct.
+
+The helper itself matches the deleted behavior: early return if already present, otherwise existsSync check and add to the set if present.
+
+### Test quality — APPROVED
+The 5 new tests in run.test.ts cover the meaningful helper contract: present file adds, stale file appearing after initial scan adds, already-present no-op, missing file unchanged, missing completions/ directory does not throw.
+
+Small note: these are helper-contract tests, not integration tests of the loop call sites. The call-site code is simple and directly inspected, so I would not block on that.
+
+### already_* assertions — APPROVED
+request_review.test.ts now asserts already_requested === true for idempotent path and false for recorded path. review.test.ts asserts already_decided === true for both idempotent decisions and false for recorded path. Pins the dual-form contract.
+
+### New issues introduced
+None found in the round-2 diff. Targeted tests passed: 21 passed. validate.ts passed.
+
+Full npm test still fails in lifecycle_cli.test.ts in the codex sandbox because those tests spawn npx tsx (restricted-env limitation, not a defect in the patch). Local invocation in the worktree confirms 187/187 passing.
+
+### Run.ts line growth (626 → 666)
+Acceptable. The helper is small, local to the two phase loops, and mirrors the existing patchJson exported-for-test precedent. Not worth moving to a separate module to save ~30 lines.
+
+### Required changes
+None — APPROVED.
