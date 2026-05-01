@@ -36,6 +36,15 @@
       "default": [],
       "description": "Optional constraints or requirements the planner must honor."
     },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "default": [],
+      "description": "Spec-level dependencies copied from the source spec's frontmatter. Each entry is the kebab-case id of another spec/intent that must complete before this one runs. Optional and additive (Phase 4 of single-entry-pipeline); existing intents without this field continue to validate."
+    },
     "status": {
       "type": "string",
       "enum": ["proposed", "approved", "planned", "superseded", "delivered"],
