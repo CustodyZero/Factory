@@ -21,3 +21,54 @@ Both round-1 regressions are fixed:
 ## Round budget remaining
 
 1 round. None expected — this is APPROVE.
+
+# Phase 5 QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-01
+**Verdict:** APPROVE
+
+## Acceptance criteria results
+
+All 10 acceptance criteria PASS, all 12 specific checks PASS.
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Multi-spec topo orchestration | PASS — orchestrator.ts:507-516 calls topoSort; tests pin order |
+| 2 | Cycles fail upfront | PASS — orchestrator.ts:498-505 returns before topo/execute |
+| 3 | Missing transitive deps fail upfront | PASS — orchestrator.ts:489-496 |
+| 4 | Per-spec failure propagation (blocked) | PASS — outcomeById in topo order |
+| 5 | Single-arg legacy intents preserved | PASS — formatJsonOutput + dry-run shim |
+| 6 | run.ts thin dispatcher | PASS — 203 lines, argv/render/exit only |
+| 7 | No new dependencies | PASS — package.json unchanged |
+| 8 | No schema changes | PASS — all 6 schemas byte-identical |
+| 9 | All tests pass | PASS — 358 tests, 26 files |
+| 10 | validate.ts PASS | PASS |
+
+## Facade-risk checks (FI-3.1, FI-3.5)
+
+- Subprocess tests assert **absence** of `specs` envelope key, not just presence of legacy keys. Real CLI contract pinned, not facade.
+- Blocked-propagation tests use malformed-intent fixtures (real failure vehicle), not the round-1 `dryRun: true` shortcut that was retired.
+- Test design did NOT regress under the round-2 contract change — propagation behavior is still pinned through actual failure paths.
+
+# Phase 5 Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-01
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 5 ships the multi-spec dependency-aware orchestrator (4-layer architecture: entry/driver/phases/lifecycle is now complete).
+
+- 4 commits: 52b287d, 213c945, 9258322, 9d70eea
+- run.ts: 315 → 203 lines (entry/dispatcher only)
+- orchestrator.ts: 591 lines (new driver)
+- tests: 311 → 358 (+47 across two rounds)
+- validate.ts: PASS, package.json unchanged, schemas unchanged
+- 1 round of REQUEST-CHANGES (legacy --dry-run + --json regressions), 1 round of APPROVE
+- Independent QA verification: APPROVE on all criteria
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
