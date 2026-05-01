@@ -89,6 +89,9 @@ describe('requestReview — idempotency on review_requested', () => {
     });
 
     expect(outcome.kind).toBe('already_requested');
+    // Pin the dual-form contract: the kind discriminator and the
+    // already_requested boolean alias must agree on the same outcome.
+    expect(outcome.already_requested).toBe(true);
     if (outcome.kind === 'already_requested') {
       expect(outcome.packet_id).toBe('pkt-already-rr');
       expect(outcome.branch).toBe('feature/foo');
@@ -122,6 +125,8 @@ describe('requestReview — happy path still works', () => {
     });
 
     expect(outcome.kind).toBe('recorded');
+    // Happy path: the alias must report false to match the kind.
+    expect(outcome.already_requested).toBe(false);
     if (outcome.kind === 'recorded') {
       expect(outcome.branch).toBe('feature/happy');
       expect(outcome.was_changes_requested).toBe(false);
