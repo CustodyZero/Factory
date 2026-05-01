@@ -27,22 +27,25 @@ This spec is the implementation work to land those decisions.
 
 End state: factory has the architecture above. Specifically:
 
-1. The pipeline lifecycle is decomposed into testable modules under `tools/pipeline/` and `tools/lifecycle/`
-2. `run.ts` is reduced to entry-point glue (target: under 100 lines)
+1. The pipeline lifecycle is decomposed into testable modules under `tools/pipeline/` and `tools/lifecycle/`; the four-layer architecture (entry / driver / phases / lifecycle) is fully realized.
+2. `run.ts` is reduced to entry-point glue (target: under 200 lines after Phase 4.5)
 3. Lifecycle scripts are individually idempotent
 4. `run.ts` calls lifecycle functions directly; agents call lifecycle CLIs
 5. Specs are first-class: `specs/<id>.md` files, frontmatter-validated, translated to intents at run time
 6. Multi-spec runs work with `depends_on` topo-sort
-7. Failures route through the recovery layer; the eight defined scenarios behave per spec
-8. Provider failover works at both the cross-CLI and within-CLI layers
-9. Documentation reflects the single-entry-point reality
+7. Pipeline emits typed events with provenance labels (live_run / test / healthcheck / replay / dry_run)
+8. Per-invocation cost is tracked, surfaced, and capped (per-run / per-packet / per-day)
+9. Failures route through the recovery layer; the eight defined scenarios behave per spec; recovery operates on events and respects cost caps
+10. Provider failover works at both the cross-CLI and within-CLI layers
+11. Documentation reflects the single-entry-point reality
 
 ## Acceptance criteria for the spec as a whole
 
-- All 98 existing tests still pass
-- Test count grows substantially (target: +50 unit tests across the new pure-logic modules)
+- All 98 baseline tests still pass; test count grows substantially across all phases
 - `run.ts <spec-id>` produces the same end-state artifacts as `run.ts <intent-id>` did before, given the same input work
 - `npx tsx tools/run.ts spec-a spec-b` with `spec-b.depends_on: [spec-a]` runs spec-a to completion before starting spec-b; if spec-a fails, spec-b is reported blocked and not attempted
+- After Phase 5.5, every pipeline run produces a typed event stream under `factory/events/<runId>.jsonl`
+- After Phase 5.7, every pipeline run produces a cost record stream under `factory/cost/<runId>.jsonl`; configurable caps abort at the right scope
 - A simulated provider 5xx error triggers `ProviderTransient` retry; persistent failure escalates to `ProviderUnavailable` failover; all-providers-down escalates with a structured failure record
 - A test failure during `complete.ts` does not trigger an auto-retry; it surfaces as an escalation
 - A build failure during `complete.ts` triggers one auto-retry with the guardrail prompt; second failure escalates
@@ -50,13 +53,21 @@ End state: factory has the architecture above. Specifically:
 
 ## Out of scope (explicitly NOT in this spec)
 
-- Parallel multi-spec execution and worktree isolation (deferred to a future spec)
-- Memory write-side (`session_memory` analog) and consolidation (`AutoDream` analog)
+The following research-derived patterns are deliberately deferred. Each has its own decision doc in `docs/decisions/` recording the deferral rationale:
+
+- **Parallel multi-spec execution and worktree isolation** — designed-for, not committed-to (per `single_entry_pipeline.md`)
+- **Memory write-side and consolidation** (session_memory + AutoDream analogs) — per `memory_scope_split.md`
+- **Graded verification** ("Green Contract" — TargetedTests/Package/Workspace/MergeReady tiers) — per `verification_grading_deferred.md`
+- **Unified preflight diagnostic** (`factory doctor`) — per `doctor_diagnostic_deferred.md`
+- **Manager-Executor with budget splitting** — depends on cost visibility (Phase 5.7); revisit afterward; flagged in `cost_visibility.md`
+- **Configurable policy DSL** for recovery (vs the recipes Phase 6 ships) — per `recovery_recipes_not_dsl.md`
+
+Other items NOT addressed by this spec:
+
 - Replacing `validate.ts`'s hand-rolled validators with `ajv`
 - PRD/roadmap views in `status.ts`
 - Hook system implementation (the architecture allows for it; building it is separate)
 - MCP integration changes
-- Manager-Executor cost-tracking and budget splitting
 
 These are real improvements but each is its own spec.
 
@@ -142,6 +153,30 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Frontmatter validation rejects bad specs with clear error messages
 - `validate.ts` validates spec frontmatter and the new intent `depends_on` field
 
+### Phase 4.5 — Phase-loop extraction (pure refactor)
+
+**Goal:** Move `planPhase`, `devPhase`, `qaPhase` from `tools/run.ts` into dedicated modules. Pure refactor; no behavior change. This addresses the run.ts size discipline concern surfaced after Phase 4 (run.ts at 773 lines, trending up).
+
+**Why this is its own phase:** the 4-layer architecture in `docs/decisions/single_entry_pipeline.md` calls for a "phases" layer separate from the entry, driver, and lifecycle layers. Today the imperative phase loops still live in run.ts. Phase 1 extracted only the *pure decision logic* from these loops; the imperative bodies stayed put. This phase moves them.
+
+**Specifically:**
+
+- Move `planPhase` to `tools/pipeline/plan_phase.ts`. Exposes `runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult`.
+- Move `devPhase` to `tools/pipeline/develop_phase.ts`. The file already exists from Phase 1 (containing pure decision functions like `deriveDevResumePoint`); this phase adds the imperative loop alongside the existing pure functions.
+- Move `qaPhase` to `tools/pipeline/verify_phase.ts`. Exposes `runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult`.
+- Each phase's I/O boundary is the imported function. Internally, phases continue to use the lifecycle library functions (Phase 3) and pure helpers (Phase 1).
+- `run.ts` becomes a thin coordinator: parse args, resolve spec/intent, call planPhase, then devPhase, then qaPhase, render summary.
+
+**Acceptance:**
+
+- All existing tests pass (≥253 baseline from Phase 4).
+- New phase modules have unit tests where pure logic exists; imperative wrappers may rely on existing integration tests.
+- `tools/run.ts` line count under **350 lines** (down from 773 at end of Phase 4).
+- No behavior change — same agent invocations, same lifecycle calls, same output for any input.
+- Phase boundary is testable: each phase can be invoked independently in tests with fixture inputs.
+
+**Risk:** Behavior leaks during refactor. Mitigation: same playbook as Phase 1 — run a known-good intent through end-to-end before and after, snapshot the output, compare.
+
 ### Phase 5 — Multi-spec dependency-aware orchestrator
 
 **Goal:** `run.ts <spec-1> <spec-2> <spec-3>` runs each spec's pipeline in topological order based on `depends_on`.
@@ -164,9 +199,56 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Cyclic dependency (`a depends on b, b depends on a`) errors before any agent invocation
 - Tests cover the topo sort and the blocked-on-failure logic
 
+### Phase 5.5 — Event observability
+
+**Goal:** Implement [`event_observability`](../docs/decisions/event_observability.md). Add typed events emitted during pipeline execution with provenance labels. Foundational for Phase 6 (recovery operates on events) and the future memory write-side.
+
+**Specifically:**
+
+- New `tools/pipeline/events.ts` (pure logic): event-type definitions (TypeScript union of `event_type` string literals), `Event` interface (`{ event_type, timestamp, provenance, payload }`), pure helpers for constructing events from typed inputs, event-payload schemas per type.
+- New `tools/events.ts` (I/O wrapper): `appendEvent(event, runId, artifactRoot)` that writes to `factory/events/<runId>.jsonl`. Uses append-only writes; no mid-run rewrites.
+- Provenance values: `live_run | test | healthcheck | replay | dry_run`. Defaults are derived from invocation context (e.g., `--dry-run` → `dry_run`, vitest test environment → `test`).
+- Initial event taxonomy (closed enum): `pipeline.started`, `pipeline.spec_resolved`, `pipeline.finished`, `pipeline.failed`, `spec.started`, `spec.blocked`, `spec.completed`, `phase.started`, `phase.completed`, `packet.started`, `packet.review_requested`, `packet.review_approved`, `packet.changes_requested`, `packet.completed`, `packet.failed`, `verification.passed`, `verification.failed`. Recovery and cost events arrive in Phase 6 / Phase 5.7 respectively.
+- Each phase from Phase 4.5 emits events at its key transitions. Implementation is consistent: phases call `appendEvent(...)` after each meaningful transition; events are not blocking (best-effort write).
+- Tests cover: event schema, provenance filtering, write-to-disk under tmpdir fixtures, recovery-from-truncated-jsonl reads (defensive).
+
+**Acceptance:**
+
+- All existing tests pass.
+- A live run produces a JSONL file under `factory/events/<runId>.jsonl` with at least the lifecycle events.
+- Vitest test runs use `provenance: "test"` so they don't pollute live event streams (verifiable by inspecting test fixtures).
+- Schema added at `schemas/event.schema.json` validates the event format.
+- run.ts emits `pipeline.started` and `pipeline.finished` minimum.
+- The implementation is small enough that Phase 6 can extend it cleanly (recovery scenarios become events without restructuring).
+
+### Phase 5.7 — Cost visibility
+
+**Goal:** Implement [`cost_visibility`](../docs/decisions/cost_visibility.md). Per-invocation cost tracking with caps. Lands before Phase 6 because recovery retry budgets need cost visibility to operate safely.
+
+**Specifically:**
+
+- New `tools/pipeline/cost.ts` (pure logic): `computeCost(provider, model, tokens_in, tokens_out, rateCard): CostRecord` returning `{ tokens_in, tokens_out, dollars: number | null, provider, model }`. Pure function over rate cards (loaded from a config table) and reported tokens.
+- New `tools/cost.ts` (I/O wrapper): `recordCost(record, runId, packetId, artifactRoot)`, `aggregateCost(runId, artifactRoot)`. Writes to `factory/cost/<runId>.jsonl`.
+- `tools/pipeline/agent_invoke.ts` updated to capture token counts from each agent's response (provider-specific extraction logic — codex/claude/copilot each report differently or not at all). Where a provider does not report tokens, record `tokens_in: null, tokens_out: null` and `dollars: null`.
+- Caps configurable in `factory.config.json` under `pipeline.cost_caps`: `{ per_run, per_packet, per_day }` (each optional, in dollars). Defaults: disabled (no caps).
+- Cap-crossing emits a `cost.cap_crossed` event (per Phase 5.5's event system) and triggers escalation: per-run cap aborts the entire run; per-packet cap fails just that packet (continuing to the next independent packet); per-day cap aborts the run AND records the cap-block date so subsequent runs that day are blocked.
+- run.ts reports aggregate cost in the final summary output (e.g., "completed; total cost: $0.42").
+- Tests cover: cost computation per provider, cap detection at each scope, escalation behavior, no-token-data handling, rate card lookup.
+
+**Acceptance:**
+
+- All existing tests pass.
+- Cost records produced by any live run; null fields when provider doesn't report.
+- Per-run cap of $1 with a fixture that consumes >$1 triggers an abort with the structured event.
+- Per-packet cap of $0.50 with a fixture aborts only that packet.
+- Provider-agnostic: codex, claude, copilot all produce normalized records.
+- Schema added at `schemas/cost_record.schema.json`.
+
 ### Phase 6 — Recovery layer
 
-**Goal:** Implement the eight failure scenarios with their recipes.
+**Goal:** Implement the eight failure scenarios with their recipes. Builds on Phase 5.5 (events) and Phase 5.7 (cost caps) — recovery operates on events as its substrate, and retry budgets respect cost caps to prevent runaway loops.
+
+Per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md), this uses scenario-keyed recipes (TypeScript functions), not a configurable policy DSL.
 
 **Specifically:**
 
@@ -176,6 +258,8 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Implement classifier: `(error, exitCode, output, context) -> FailureScenario`
 - Implement recipes for each scenario per the decision doc
 - Wire recovery insertion points: every agent invocation in phases, every verification step in `complete.ts`
+- Recovery emits events: `recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated` (per Phase 5.5's event taxonomy)
+- Recovery checks cost caps before each retry attempt (per Phase 5.7); if a retry would cross a cap, recovery escalates immediately with the cap-block reason
 - Implement escalation: write `factory/escalations/<spec-id>-<timestamp>.json` with structured failure context
 - Recovery budget: 1 attempt per scenario per packet per phase; 3 total recovery attempts per packet across all scenarios
 
@@ -232,28 +316,35 @@ The phases below are listed in the order they should land. Each phase is a candi
 
 | Risk | Phase(s) | Mitigation |
 |------|----------|------------|
-| Behavior change leaks during refactor | 1, 2, 3 | End-to-end smoke test against a known-good fixture before/after each phase; snapshot tests on prompt output |
-| New failure modes introduced by recovery logic | 6 | Each recipe has a unit test for at least one happy path and one failure path; recovery budget caps total attempts |
-| Schema migration breaks live config | 4, 7 | Schema changes are additive only; backward compat tested explicitly |
+| Behavior change leaks during refactor | 1, 2, 3, 4.5 | End-to-end smoke test against a known-good fixture before/after each phase; snapshot tests on prompt output |
+| New failure modes introduced by recovery logic | 6 | Each recipe has a unit test for at least one happy path and one failure path; recovery budget caps total attempts; cost caps further bound retry loops |
+| Schema migration breaks live config | 4, 5.5, 5.7, 7 | Schema changes are additive only; backward compat tested explicitly |
 | Multi-spec sequencing has edge cases | 5 | Tests cover: empty `depends_on`, single dep, transitive deps, cycle, mixed independent + dependent |
 | Provider failover misclassification | 6, 7 | Classifier tested with realistic error fixtures from each provider; failover decisions logged for observability |
+| Event-emission overhead in hot loops | 5.5 | Events are best-effort writes to JSONL, not blocking; performance verified under tmpdir fixture |
+| Cost-tracking misses tokens for some providers | 5.7 | Per-provider extraction logic has fallback to `null` cost; tested across codex/claude/copilot fixtures |
 | Documentation drift | 8 | Doc pass lands in the same packet as the architectural change it describes; nothing ships with the docs out of sync |
 
 ## Migration safety
 
-Phases 1–3 are pure refactors with no behavior change. Each lands behind a no-op invariant: same inputs, same outputs, more test coverage.
+Phases 1–3 and 4.5 are pure refactors with no behavior change. Each lands behind a no-op invariant: same inputs, same outputs, more test coverage.
 
-Phases 4–7 are additive: new artifact types, new orchestrator, new recovery layer. The existing `intents/<id>.json` flow remains supported during this work; we don't break operators mid-migration.
+Phases 4, 5, 5.5, 5.7, 6, 7 are additive: new artifact types, new orchestrator, event stream, cost stream, recovery layer, failover. The existing `intents/<id>.json` flow remains supported during this work; we don't break operators mid-migration.
 
 Phase 8 is documentation only.
 
-The whole spec is shippable phase-by-phase. We don't have to land all eight before any of it is useful.
+The whole spec is shippable phase-by-phase. We don't have to land all eleven before any of it is useful.
 
 ## References
 
 - [`docs/decisions/single_entry_pipeline.md`](../docs/decisions/single_entry_pipeline.md) — architectural decision
 - [`docs/decisions/spec_artifact_model.md`](../docs/decisions/spec_artifact_model.md) — spec layer decision
 - [`docs/decisions/memory_scope_split.md`](../docs/decisions/memory_scope_split.md) — memory scope constraint
+- [`docs/decisions/cost_visibility.md`](../docs/decisions/cost_visibility.md) — cost visibility decision (Phase 5.7)
+- [`docs/decisions/event_observability.md`](../docs/decisions/event_observability.md) — event observability decision (Phase 5.5)
+- [`docs/decisions/recovery_recipes_not_dsl.md`](../docs/decisions/recovery_recipes_not_dsl.md) — recipes vs DSL design choice (Phase 6)
+- [`docs/decisions/verification_grading_deferred.md`](../docs/decisions/verification_grading_deferred.md) — Green Contract deferral
+- [`docs/decisions/doctor_diagnostic_deferred.md`](../docs/decisions/doctor_diagnostic_deferred.md) — doctor command deferral
 - [`docs/research/factory_script_audit.md`](../docs/research/factory_script_audit.md) — diagnosis that produced the architecture
 - [`docs/research/claurst_audit.md`](../docs/research/claurst_audit.md) — manager-executor / single-loop / spec-as-input patterns
 - [`docs/research/claw_code_audit.md`](../docs/research/claw_code_audit.md) — recovery recipes / lane events / failure classification
