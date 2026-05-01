@@ -1,0 +1,51 @@
+## Codex GPT-5.5 Review — Phase 4 (Round 1)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-a44c803763231ffe1 vs main
+**Date:** 2026-04-30
+
+### Verdict
+REQUEST-CHANGES
+
+### Frontmatter parser correctness
+Not acceptable yet. The core shape is good: delimiter handling, required keys, unknown-key rejection, duplicate-key rejection, empty body support, Unicode body preservation, and regex safety are fine. No catastrophic regex risk or prototype pollution.
+
+Blocker: documented YAML-style comments are not handled. The decision doc shows depends_on: [...]  # optional, but parseFlowList requires the trimmed value to end with ']', so that documented form is rejected at spec_parse.ts:119. Full-line comments fail as "not key: value" at spec_parse.ts:155.
+
+Quoted scalar values are inconsistent: depends_on: ["a"] is rejected (quoted list elements rejected), but title: "A title" is accepted with quotes silently included via spec_parse.ts:176. So a user who writes title: "A title" gets a parsed title literally containing the quote characters.
+
+### Schema changes — APPROVED
+intent.schema.json adds optional depends_on with default [] and array-of-kebab-case strings. Existing intents without it still validate. spec.schema.json correctly describes id, title, optional depends_on with additionalProperties: false.
+
+### specToIntent translation — APPROVED
+Emits id, title, spec_path, status: "proposed", depends_on, created_by, created_at. Tests cover required fields, default empty deps, pass-through deps, injected creator, determinism.
+
+### ensureIntentForSpec idempotency — APPROVED
+Existing matching intents return { created: false } before any write path. Mismatched id/spec_path are clear errors. Tests check no rewrite via content and mtime.
+
+### run.ts argument disambiguation — APPROVED
+Spec-first lookup, legacy intent fallback, clear neither-found error. The Phase 5 warning for spec depends_on is explicit at run.ts:612.
+
+### validate.ts integration — APPROVED with parser caveat
+Walks top-level specs/*.md, validates frontmatter, filename/id matching, depends_on kebab-case, missing dependency targets, cycles. No-spec mode returns empty list cleanly.
+
+### Backward compatibility — APPROVED
+With no specs/<id>.md, run.ts uses intents/<id>.json as before. validate.ts works with no specs/ dir.
+
+### Test quality — Good
+Spot-checked spec_parse.test.ts, spec_to_intent.test.ts, specs.test.ts, run_spec_arg.test.ts, validate.test.ts. Tests are meaningful, not just happy-path. Cover delimiter failures, unknown keys, malformed lists, idempotency, mismatch errors, spec-first run behavior, legacy fallback, validator cycles, missing dependencies, bad intent depends_on.
+
+Gap: no tests for inline/full-line comments or quoted scalar values.
+
+CLI smoke tests could not be run in the sandbox (subprocess npx tsx fails with macOS keychain/IPC errors). Local invocation in the worktree confirms 238/238 passing.
+
+### Module boundaries — APPROVED
+spec_parse.ts is pure; grep shows no I/O imports or environment/time reads. tools/specs.ts owns filesystem reads/writes. Clean split.
+
+### Required changes
+1. Fix comment handling in the frontmatter parser so the documented "depends_on: [a]  # optional" form works, and add tests. Current rejection at spec_parse.ts:121 (parseFlowList endsWith(']') check) and spec_parse.ts:155 (full-line "not key: value").
+2. Make quoted scalar handling explicit and tested. Either reject quoted id/title like quoted depends_on elements, or implement minimal unquoting consistently. Right now quoted title is silently copied with quotes through spec_parse.ts:176.
+
+### Suggested improvements (optional)
+- Add one test using the exact decision-doc frontmatter block (with the # optional comment notation).
+- Add one validate.ts fixture with no specs/ directory and one legacy intent-only fixture, to pin compatibility more directly.
