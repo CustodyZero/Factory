@@ -43,3 +43,70 @@ None requiring changes.
 - Add one future compat test for unknown extra fields on intents if you want full coverage of that stated case.
 
 Reviewer note: status.ts and validate CLI tests could not be executed cleanly in the sandbox (tsx IPC issues / npx tsx temp-fixture timeouts). Static diff review found no behavior drift. Local invocation in worktree confirms 311/311 passing.
+
+---
+
+## QA Verification — Phase 4.6 (revised)
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-05-01
+
+### Verification verdict
+ALL-PASS — every required criterion (1-11) and both behavioral spot-checks (12-13) verified independently.
+
+### Highlights
+- npm test: 311 passing across 25 test files (Phase 4.5 baseline 282 + 29 new)
+- tools/validate.ts: 423 lines (was 785, target <500)
+- tools/pipeline/integrity.ts: exists; exports buildIndex, validateIntegrity, validateSpecCycles
+- No ajv dependency: grep -i ajv on package.json/package-lock.json returns empty
+- No tools/pipeline/schema_validate.ts (the rejected ajv adapter)
+- Schema files unchanged (git diff main..HEAD -- schemas/ is 0 lines)
+- Per-artifact validators preserved in validate.ts (validatePacketSchema, validateCompletionSchema, validateFeatureSchema, validateIntentSchema, readSpecFiles, validateSpecFile)
+- Cross-cutting integrity moved cleanly to integrity.ts (FI-1, FI-7, FI-8, FI-9, orphaned completions, feature↔packet refs, intent linkage, spec cycles)
+- CLI output unchanged
+- All 7 key compatibility tests present and passing (unknown fields accepted, missing change_class accepted, QA without verifies rejected, dev with verifies rejected, lax acceptance_criteria items, lax constraints items)
+
+### Behavioral spot-check
+- Malformed-fixture test in /tmp produced 8 clear errors with consistent ERROR [schema] tagging and file/field-level messages
+- Worktree's own validate run reports PASS
+
+### Independent observations
+- Codex's nit (no unknown-fields-on-intent compat test) confirmed real — cosmetic only
+- buildIndex is not byte-identical to original but behavior preserved; future-audit item, not a regression
+
+---
+
+## Orchestrator Approval — Phase 4.6 (revised)
+
+**Orchestrator:** this session
+**Date:** 2026-05-01
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- This is the partial-revert outcome after the original Phase 4.6 (ajv migration) was rejected by codex after 3 rounds of review
+- Codex GPT-5.5 (round 1, this attempt): APPROVED-WITH-NITS — extraction correct, behavior preserved, no semantic drift
+- Independent Opus QA (FI-7 separate identity): ALL-PASS on 11 acceptance criteria + 2 behavioral spot-checks; constructed real malformed fixtures and verified error reporting
+- Single-round approval. Clean execution: the developer started fresh from main, did exactly what was asked, no scope creep
+
+### Iteration record
+- Round 1 (2 commits, +29 tests): APPROVED-WITH-NITS — no required changes
+- Total: 2 commits, +29 tests (282 → 311), validate.ts 785 → 423 (-362 lines)
+
+### What lands
+- New module: tools/pipeline/integrity.ts (467 lines) — owns FI-1, FI-7, FI-8, FI-9, orphaned completions, feature↔packet refs, intent linkage, spec dependency cycles, plus snapshot types
+- validate.ts shrunk from 785 to 423 lines (-362) — clean architectural split
+- 29 new compatibility tests pinning hand-rolled validator behavior — safety net for any future changes
+- Zero new dependencies, zero schema changes
+
+### Architectural lesson learned
+The original Phase 4.6 attempted to migrate validate.ts from hand-rolled validators to ajv. After 3 rounds of codex review, the consensus was that the migration premise was wrong: the old validators were not "schema-driven validation waiting for ajv" — they were custom semantic checks operating on artifacts with JSON schemas nearby. Replacing them with ajv added complexity (785 → 1,396 lines + new dependency + custom drop-rules mini-DSL) rather than removing it.
+
+This revised Phase 4.6 honors codex's recommendation: keep the integrity extraction (real architectural win — clean split, smaller validate.ts), keep the compatibility tests (real safety net for future changes), drop the ajv migration entirely.
+
+This lesson should be recorded as a research note after the merge.
+
+### What's deliberately deferred
+- Codex's two nits: buildIndex byte-equivalence audit, intent unknown-extra-fields compat test. Both cosmetic.
+- Future re-attempt at schema-driven validation, if/when host-project experience surfaces a clear need. The schemas exist; an alternative migration path could be revisited later.
