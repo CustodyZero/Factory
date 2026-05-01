@@ -232,3 +232,47 @@ describe('validate.ts — intent depends_on field', () => {
     expect(r.stdout).toContain('Not_KebabCase');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Backward-compatibility — pre-Phase-4 layouts must keep validating
+// ---------------------------------------------------------------------------
+//
+// These pin compatibility with two flavors of pre-spec layouts that the
+// decision doc commits to keep working:
+//
+//   1. No specs/ directory at all (a brand-new project that has not yet
+//      authored any specs).
+//   2. A legacy intent that exists with no corresponding spec — running
+//      `run.ts <intent-id>` was always allowed for spec-less intents
+//      (docs/decisions/spec_artifact_model.md, "What this does NOT decide").
+//
+// Both must validate cleanly so that adding spec support never silently
+// breaks an existing host project.
+
+describe('validate.ts — legacy / spec-less compatibility', () => {
+  it('passes when there is no specs/ directory at all', () => {
+    const f = makeFixture();
+    // No specs/, no intents/, no other artifacts. Just factory.config.json.
+    const r = runValidate(f.root);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('PASS');
+  });
+
+  it('passes a legacy intent-only fixture (no specs/ directory)', () => {
+    const f = makeFixture();
+    // Legacy intent shape: inline `spec` field, no spec_path, no specs/ dir.
+    // This is the pre-Phase-4 layout that must continue to work.
+    writeIntent(f.root, {
+      id: 'legacy-intent',
+      title: 'A legacy intent',
+      spec: 'inline body for the planner',
+      status: 'proposed',
+      created_by: { kind: 'cli', id: 'factory-run' },
+      created_at: '2026-04-29T00:00:00.000Z',
+    });
+
+    const r = runValidate(f.root);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('PASS');
+  });
+});
