@@ -177,6 +177,38 @@ The phases below are listed in the order they should land. Each phase is a candi
 
 **Risk:** Behavior leaks during refactor. Mitigation: same playbook as Phase 1 — run a known-good intent through end-to-end before and after, snapshot the output, compare.
 
+### Phase 4.6 — Replace hand-rolled validators with ajv (pure refactor)
+
+**Goal:** Replace `tools/validate.ts`'s hand-rolled per-artifact validators with `ajv` consuming the existing JSON schemas in `schemas/`. Pure refactor; no behavior change. Target: `tools/validate.ts` under **400 lines** (down from 785).
+
+**Why this is its own phase:** the post-Phase-4.5 architecture audit identified `validate.ts` as the largest single source file in `tools/` (785 lines, 2.5× run.ts). Growth has been organic (new artifact types → new hand-rolled validator), and the previously-deferred recommendation to migrate to `ajv` is now overdue. Same playbook as Phase 4.5: extract before piling on more.
+
+**Specifically:**
+
+- Add `ajv` as a direct devDependency in `package.json`. Justification: replaces ~400 lines of hand-rolled validation logic with a well-established JSON-schema validator that operates against the already-existing `schemas/*.schema.json` files. Risk surface: behavioral (different error message format) and security (a new transitive dependency tree). Behavioral risk is mitigated by tests pinning the format; security risk is acceptable for a 12.5M-weekly-download library that is already in the npx history of this session for ad-hoc validation.
+- Replace these hand-rolled validator functions with ajv-driven validation:
+  - `validatePacketSchema` → ajv against `schemas/packet.schema.json`
+  - `validateCompletionSchema` → ajv against `schemas/completion.schema.json`
+  - `validateFeatureSchema` → ajv against `schemas/feature.schema.json`
+  - `validateIntentSchema` → ajv against `schemas/intent.schema.json`
+  - The spec frontmatter validator (added in Phase 4) → ajv against `schemas/spec.schema.json`
+- **Preserve unchanged**: cross-cutting integrity validations (FI-1 unique completions, FI-7 distinct identities, FI-9 no cyclic packet dependencies, spec dependency cycles, filename/id matching). These are relational, not per-artifact, and stay as hand-rolled logic.
+- **Preserve unchanged**: error-message shape and ordering. The pre-existing `ValidationResult` type with `severity`/`error_type`/`message` fields stays. ajv error messages are normalized into this shape so downstream consumers (and `validate.test.ts` assertions) don't break.
+- **Schema file shapes**: the existing schemas may need minor adjustments for ajv strict-mode compliance (e.g., explicit `additionalProperties`, ensuring all referenced `$defs` exist). Make these adjustments AS NEEDED but do not redesign the schemas.
+
+**Acceptance:**
+
+- All existing tests pass (≥282 baseline from Phase 4.5)
+- `tools/validate.ts` line count under **400** (down from 785)
+- `npm run factory:validate` produces the same exit code on the same inputs as before (PASS on this repo's current state; clearly-bad fixtures produce errors with the same `error_type` classifications)
+- `validate.test.ts` assertions for spec validation continue to pass; assertions for packet/completion/feature/intent validation continue to pass
+- New unit tests for the ajv adaptation: at least 2 tests verifying that ajv errors are correctly mapped to the `ValidationResult` shape; at least 1 test per artifact type confirming a known-bad fixture produces the right error
+- Existing schema files in `schemas/*.schema.json` remain authoritative; any modifications are surface-level (additionalProperties, $defs cleanup), not redesigns
+
+**Risk:** ajv error message text differs from the hand-rolled messages. Mitigation: tests assert on `error_type` and structural fields, not on free-form message text where possible. Where free-form message comparison is unavoidable, update test fixtures to match the new wording, but only after manually verifying the new wording is at least as informative as the old.
+
+**Constraint:** Do NOT change the JSON schema *semantics* — required fields, types, constraints. The schemas are factory's contract with host projects; changing them would propagate through every host installation. Schema *form* tweaks (adding `additionalProperties: false` where missing, fixing `$defs` references) are fine; semantic changes are not.
+
 ### Phase 5 — Multi-spec dependency-aware orchestrator
 
 **Goal:** `run.ts <spec-1> <spec-2> <spec-3>` runs each spec's pipeline in topological order based on `depends_on`.
@@ -316,7 +348,8 @@ Per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md),
 
 | Risk | Phase(s) | Mitigation |
 |------|----------|------------|
-| Behavior change leaks during refactor | 1, 2, 3, 4.5 | End-to-end smoke test against a known-good fixture before/after each phase; snapshot tests on prompt output |
+| Behavior change leaks during refactor | 1, 2, 3, 4.5, 4.6 | End-to-end smoke test against a known-good fixture before/after each phase; snapshot tests on prompt output; for 4.6 specifically, integration tests with known-bad fixtures verify the error-classification mapping |
+| ajv error format diverges from hand-rolled format | 4.6 | Tests assert on error_type and structural fields, not free-form message text. Where text assertions exist, update fixtures only after manually verifying the new text is at least as informative |
 | New failure modes introduced by recovery logic | 6 | Each recipe has a unit test for at least one happy path and one failure path; recovery budget caps total attempts; cost caps further bound retry loops |
 | Schema migration breaks live config | 4, 5.5, 5.7, 7 | Schema changes are additive only; backward compat tested explicitly |
 | Multi-spec sequencing has edge cases | 5 | Tests cover: empty `depends_on`, single dep, transitive deps, cycle, mixed independent + dependent |
@@ -327,13 +360,13 @@ Per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md),
 
 ## Migration safety
 
-Phases 1–3 and 4.5 are pure refactors with no behavior change. Each lands behind a no-op invariant: same inputs, same outputs, more test coverage.
+Phases 1–3, 4.5, and 4.6 are pure refactors with no behavior change. Each lands behind a no-op invariant: same inputs, same outputs, more test coverage. Phase 4.6 adds one direct devDependency (`ajv`); the dependency change is justified in its phase block.
 
 Phases 4, 5, 5.5, 5.7, 6, 7 are additive: new artifact types, new orchestrator, event stream, cost stream, recovery layer, failover. The existing `intents/<id>.json` flow remains supported during this work; we don't break operators mid-migration.
 
 Phase 8 is documentation only.
 
-The whole spec is shippable phase-by-phase. We don't have to land all eleven before any of it is useful.
+The whole spec is shippable phase-by-phase. We don't have to land all twelve before any of it is useful.
 
 ## References
 
