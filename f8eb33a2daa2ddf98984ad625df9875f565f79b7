@@ -1,0 +1,45 @@
+## Codex GPT-5.5 Review — Phase 4.5
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-a967d4c8c0425299f vs main
+**Date:** 2026-05-01
+
+### Verdict
+APPROVED-WITH-NITS
+
+### "No I/O in pipeline/" invariant evaluation — ENDORSED
+Phase 1's "no I/O in pipeline/" invariant was over-stated for the pre-Phase-4.5 reality. The single_entry_pipeline.md decision places phase modules under tools/pipeline/, and phases legitimately do I/O. The relaxation is correct architectural correction, not erosion. No need to split into tools/phases/ or pipeline/pure/ — that would add ceremony without solving a current problem.
+
+### No-behavior-change verification — PASSES
+Compared the deleted planPhase, devPhase, qaPhase, invokeAgent, safeCall, refreshCompletionId, and resolveRunArg bodies in the diff against the new modules.
+
+- runPlanPhase preserves existing-feature short-circuit, prompt construction, dry-run null result, provider/tier selection, planner invocation, stderr truncation, feature re-read, intent patch, and log messages.
+- runDevelopPhase preserves packet scan, completion refresh, topo sort, dependency failure behavior, dry-run continue behavior, developer/reviewer/rework invocations, lifecycle calls, force-approve fallback, completion identity, and result arrays.
+- runVerifyPhase preserves QA filtering, completion short-circuit, dependencies + verifies blocking, dry-run continue behavior, QA invocation, startPacket, completePacket, and skipped/failed/completed semantics.
+- run.ts still calls plan, develop, verify in the same order and preserves feature status/summary behavior.
+
+### runVerifyPhase rename — FINE
+No runtime caller still references qaPhase. rg only finds qaPhase in spec/docs/comments explaining the rename.
+
+### Helper placement — REASONABLE (one nit)
+refreshCompletionId and safeCall belong in lifecycle_helpers.ts. patchJson is borderline: run.ts has one copy AND plan_phase.ts has a private duplicate. Not blocking but a future cleanup should put it in a tiny JSON helper if touched again.
+
+### Test quality — GOOD
+Spot-checked develop_phase, verify_phase, plan_phase, phases_integration, run, agent_invoke, lifecycle_helpers tests. They cover deterministic imperative branches: existing-completion, blocked dependency, dry-run, empty feature, cross-phase callability. Some "exports callable" tests are low-value but a small part of overall coverage.
+
+Targeted Phase 4.5 tests in codex sandbox: 72 passed.
+Full npm test in sandbox: 259 passed, 23 failed — all from spawned npx tsx CLI tests returning status: null / SecItemCopyMatching failed -50. Sandbox env issue, not a Phase 4.5 regression. Local invocation in worktree confirms 282/282 passing.
+
+### resolveRunArg extraction — ACCEPTABLE
+Practically necessary for the under-350-line target (run.ts now 315; resolve_arg.ts 96). Slightly entry-ish rather than phase-ish, but Phase 5's driver/orchestrator will likely absorb this routing logic anyway.
+
+### New issues introduced
+None found.
+
+### Required changes
+None.
+
+### Suggested improvements (nits, optional)
+1. Adjust comments claiming the spawn path is covered by integration tests, or add a fake-provider test later; current tests avoid real spawn paths.
+2. Consider extracting patchJson to a small shared helper only if another patching use appears.
+3. Update old comments saying "devPhase / qaPhase" to "develop/verify phase" where convenient.
