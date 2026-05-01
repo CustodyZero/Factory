@@ -30,7 +30,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchJson } from '../run.js';
+import { patchJson, refreshCompletionId } from '../run.js';
 
 function makeTempJson(initial: Record<string, unknown>): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), 'patchjson-'));
@@ -103,6 +103,114 @@ describe('patchJson', () => {
       expect(readFileSync(path, 'utf-8')).toBe('not-json{');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshCompletionId — Phase 3 round 2 fix.
+//
+// Both devPhase and qaPhase build completionIds once at phase start. Per the
+// same external-mutation model that justifies the per-iteration packet
+// re-reads, an external agent may have invoked complete.ts directly on a
+// previous packet during the loop. The helper reconciles the in-memory set
+// against disk for one packet id at a time.
+//
+// Contract pinned:
+//   - completion file present, set empty   -> set gains the id
+//   - completion file present, set has id  -> no-op (idempotent)
+//   - completion file absent                -> set unchanged
+//   - completions/ dir absent               -> no throw, set unchanged
+// ---------------------------------------------------------------------------
+
+describe('refreshCompletionId', () => {
+  it('adds packetId to the set when the completion file exists on disk', () => {
+    const root = mkdtempSync(join(tmpdir(), 'refresh-completion-'));
+    try {
+      mkdirSync(join(root, 'completions'));
+      writeFileSync(
+        join(root, 'completions', 'pkt-x.json'),
+        JSON.stringify({ packet_id: 'pkt-x' }, null, 2) + '\n',
+        'utf-8',
+      );
+      const set = new Set<string>();
+      refreshCompletionId(set, 'pkt-x', root);
+      expect(set.has('pkt-x')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects a completion file that appears AFTER the phase-start scan but BEFORE the loop reaches that packet', () => {
+    // This pins the staleness behavior: the in-memory set was built
+    // before the completion file existed; the helper must reconcile.
+    const root = mkdtempSync(join(tmpdir(), 'refresh-completion-staleness-'));
+    try {
+      mkdirSync(join(root, 'completions'));
+      // Phase-start scan: empty completions dir, set is empty.
+      const completionIds = new Set<string>();
+      // ... loop iterates first packet ... external agent runs complete.ts
+      // on pkt-2 during/after that iteration, before our loop reaches it:
+      writeFileSync(
+        join(root, 'completions', 'pkt-2.json'),
+        JSON.stringify({ packet_id: 'pkt-2' }, null, 2) + '\n',
+        'utf-8',
+      );
+      // Loop now arrives at pkt-2. Without the refresh, completionIds.has
+      // would return false and we would reprocess. With the refresh, the
+      // disk fact wins.
+      refreshCompletionId(completionIds, 'pkt-2', root);
+      expect(completionIds.has('pkt-2')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op when the packetId is already in the set', () => {
+    // Idempotent: even if the file exists, it should not redundantly
+    // touch the set or read the disk in a way that mutates state.
+    const root = mkdtempSync(join(tmpdir(), 'refresh-completion-idem-'));
+    try {
+      mkdirSync(join(root, 'completions'));
+      writeFileSync(
+        join(root, 'completions', 'pkt-y.json'),
+        JSON.stringify({ packet_id: 'pkt-y' }, null, 2) + '\n',
+        'utf-8',
+      );
+      const set = new Set<string>(['pkt-y']);
+      const sizeBefore = set.size;
+      refreshCompletionId(set, 'pkt-y', root);
+      expect(set.has('pkt-y')).toBe(true);
+      expect(set.size).toBe(sizeBefore);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the set unchanged when the completion file does not exist', () => {
+    const root = mkdtempSync(join(tmpdir(), 'refresh-completion-missing-'));
+    try {
+      mkdirSync(join(root, 'completions'));
+      // No completion file for pkt-z.
+      const set = new Set<string>();
+      refreshCompletionId(set, 'pkt-z', root);
+      expect(set.has('pkt-z')).toBe(false);
+      expect(set.size).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not throw when the completions directory itself is missing', () => {
+    // Defensive: artifactRoot exists, but completions/ has not been
+    // created yet. existsSync returns false; helper returns cleanly.
+    const root = mkdtempSync(join(tmpdir(), 'refresh-completion-nodir-'));
+    try {
+      const set = new Set<string>();
+      expect(() => refreshCompletionId(set, 'pkt-w', root)).not.toThrow();
+      expect(set.has('pkt-w')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

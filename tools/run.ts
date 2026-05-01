@@ -122,6 +122,36 @@ function safeCall(fn: () => unknown): { ok: boolean; error?: string } {
   catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
 }
 
+/**
+ * Per-iteration staleness refresh for the in-memory `completionIds` set.
+ *
+ * Both phase loops build `completionIds` once at phase start. During the
+ * loop, an external agent may invoke `complete.ts` directly on a previous
+ * packet (the same external-mutation model that justifies the per-iteration
+ * packet re-reads in devPhase / qaPhase). Without this refresh, the next
+ * iteration's resume-point derivation or already-complete check would use
+ * a stale view of disk and reprocess an already-complete packet.
+ *
+ * Contract:
+ *   - If `set` already contains `packetId`, no I/O, no mutation.
+ *   - Else, if `<artifactRoot>/completions/<packetId>.json` exists on
+ *     disk, add `packetId` to `set`.
+ *   - Else, leave `set` unchanged.
+ *   - Never throws (existsSync does not throw on missing parents).
+ *
+ * Exported for unit testing.
+ */
+export function refreshCompletionId(
+  set: Set<string>,
+  packetId: string,
+  artifactRoot: string,
+): void {
+  if (set.has(packetId)) return;
+  if (existsSync(join(artifactRoot, 'completions', `${packetId}.json`))) {
+    set.add(packetId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Agent invocation (I/O leaf — pure helpers live in pipeline/agent_invoke.ts)
 // ---------------------------------------------------------------------------
@@ -269,6 +299,11 @@ function devPhase(
     // run may have invoked a lifecycle CLI that mutated this file).
     const freshPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? packet;
 
+    // Same external-mutation model applies to completions: a previous
+    // packet's developer agent may have invoked complete.ts directly,
+    // creating a completion file that wasn't in the phase-start scan.
+    refreshCompletionId(completionIds, packet.id, artifactRoot);
+
     const resumePoint = deriveDevResumePoint(freshPacket, completionIds.has(packet.id));
 
     if (resumePoint === 'completed') {
@@ -412,6 +447,11 @@ function qaPhase(
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
 
   for (const packet of qaPackets) {
+    // Same external-mutation model as devPhase: an external agent may
+    // have invoked complete.ts directly on this packet since the
+    // phase-start scan. Refresh before the early-exit check below.
+    refreshCompletionId(completionIds, packet.id, artifactRoot);
+
     if (completionIds.has(packet.id)) {
       fmt.log('verify', `${fmt.sym.ok} ${packet.id} — already complete`);
       completed.push(packet.id);
