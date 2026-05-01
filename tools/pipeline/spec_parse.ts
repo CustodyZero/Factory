@@ -35,7 +35,12 @@
  * Accepted shape:
  *   - Lines start with `key: value` where the key is an ASCII identifier
  *   - `depends_on` is the only array field; inline `[a, b, c]` flow-list only
- *   - No nested mappings, anchors/aliases, multi-line strings, or quoting
+ *   - No nested mappings, anchors/aliases, or multi-line strings
+ *   - Optional surrounding quotes (`"..."` or `'...'`) on scalar values and
+ *     flow-list elements are accepted and stripped. Escape sequences inside
+ *     quoted strings are NOT supported — `title: "with \"escapes\""` errors.
+ *   - YAML-style comments are accepted: a `#` outside of a quoted region
+ *     starts an end-of-line comment, and full-line comments are skipped.
  *   - Unknown keys are rejected to catch typos (e.g. `depnds_on`)
  *
  * If a host project ever needs richer frontmatter, the right move is to
@@ -113,10 +118,76 @@ function splitFrontmatter(content: string): FrontmatterSplit {
 }
 
 // ---------------------------------------------------------------------------
+// Comment stripping (quote-aware)
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove a trailing `# ...` comment from `line`, but only if the `#` is
+ * NOT inside a `"..."` or `'...'` quoted region. Returns the line with
+ * any inline comment discarded; the result is NOT trimmed (callers
+ * decide). This is intentionally a single pass over the string so that
+ * `#` inside quotes is preserved (e.g. `title: "a # b"`).
+ *
+ * Escape sequences are not supported — a backslash is treated as a
+ * literal character. This matches the parser's overall "no escapes"
+ * stance documented at the top of the file.
+ */
+function stripInlineComment(line: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i]!;
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+    } else if (ch === '#' && !inSingle && !inDouble) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+// ---------------------------------------------------------------------------
+// Scalar unquoting
+// ---------------------------------------------------------------------------
+
+/**
+ * If `value` is wrapped in matching quotes (`"..."` or `'...'`), return
+ * the inner content. Otherwise return `value` unchanged. An unclosed or
+ * mismatched leading quote throws SpecParseError.
+ *
+ * Escape sequences inside the quoted string are NOT supported: any
+ * additional matching-quote character anywhere inside the string is
+ * treated as the closing quote, so `"a\"b"` is rejected as having
+ * trailing content after the closing quote. Document and accept the
+ * limitation rather than silently corrupting the value.
+ */
+function unquoteScalar(value: string, key: string): string {
+  if (value.length === 0) return value;
+  const first = value[0]!;
+  if (first !== '"' && first !== "'") return value;
+  // Find the matching closing quote.
+  const closeIdx = value.indexOf(first, 1);
+  if (closeIdx === -1) {
+    throw new SpecParseError(
+      `'${key}' has an unclosed quoted value: ${value}`,
+    );
+  }
+  if (closeIdx !== value.length - 1) {
+    throw new SpecParseError(
+      `'${key}' has trailing content after a closing quote (escape sequences are not supported): ${value}`,
+    );
+  }
+  return value.slice(1, closeIdx);
+}
+
+// ---------------------------------------------------------------------------
 // Inline flow-list parser ([a, b, c]) — depends_on only
 // ---------------------------------------------------------------------------
 
 function parseFlowList(raw: string, key: string): string[] {
+  // The caller has already stripped inline comments at the line level.
   const trimmed = raw.trim();
   if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
     throw new SpecParseError(
@@ -125,19 +196,54 @@ function parseFlowList(raw: string, key: string): string[] {
   }
   const inner = trimmed.slice(1, -1).trim();
   if (inner === '') return [];
-  const parts = inner.split(',').map((p) => p.trim());
+  // Quote-aware split on commas so quoted elements may legally contain
+  // commas. Brackets/braces inside elements remain rejected below as a
+  // structural-syntax guard.
+  const parts: string[] = [];
+  {
+    let depth = 0;
+    let inSingle = false;
+    let inDouble = false;
+    let start = 0;
+    for (let i = 0; i < inner.length; i += 1) {
+      const ch = inner[i]!;
+      if (ch === "'" && !inDouble) {
+        inSingle = !inSingle;
+      } else if (ch === '"' && !inSingle) {
+        inDouble = !inDouble;
+      } else if (!inSingle && !inDouble) {
+        if (ch === ',' && depth === 0) {
+          parts.push(inner.slice(start, i).trim());
+          start = i + 1;
+        } else if (ch === '[' || ch === '{') {
+          depth += 1;
+        } else if (ch === ']' || ch === '}') {
+          depth -= 1;
+        }
+      }
+    }
+    parts.push(inner.slice(start).trim());
+  }
+  const result: string[] = [];
   for (const p of parts) {
     if (p === '') {
       throw new SpecParseError(`'${key}' contains an empty element`);
     }
-    // Reject quoting / nested structure to keep the format honest.
-    if (/^["']|["']$|[[\]{}]/.test(p)) {
+    // Reject nested-structure syntax. Quoting is now allowed and handled
+    // by unquoteScalar below; brackets/braces still indicate unsupported
+    // nested structures.
+    if (/[[\]{}]/.test(p)) {
       throw new SpecParseError(
-        `'${key}' element '${p}' uses unsupported syntax; bare identifiers only`,
+        `'${key}' element '${p}' uses unsupported syntax; bare identifiers or quoted strings only`,
       );
     }
+    const unquoted = unquoteScalar(p, key);
+    if (unquoted === '') {
+      throw new SpecParseError(`'${key}' contains an empty element`);
+    }
+    result.push(unquoted);
   }
-  return parts;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +256,12 @@ export function parseSpec(content: string): ParsedSpec {
   const fields: Record<string, string | string[]> = {};
   for (let lineNum = 0; lineNum < frontmatterLines.length; lineNum += 1) {
     const raw = frontmatterLines[lineNum]!;
-    const line = raw.replace(/\s+$/, ''); // rtrim
+    // Strip any quote-aware inline comment first so that downstream
+    // value parsing sees only the data portion of the line. Full-line
+    // comments (and lines that become empty after comment stripping)
+    // are skipped entirely.
+    const decommented = stripInlineComment(raw);
+    const line = decommented.replace(/\s+$/, ''); // rtrim
     if (line.trim() === '') continue;
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) {
@@ -176,7 +287,7 @@ export function parseSpec(content: string): ParsedSpec {
     if (key === 'depends_on') {
       fields[key] = parseFlowList(value, key);
     } else {
-      fields[key] = value;
+      fields[key] = unquoteScalar(value, key);
     }
   }
 
