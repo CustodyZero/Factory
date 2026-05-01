@@ -1,0 +1,35 @@
+## Codex GPT-5.5 Review — Phase 4 (Round 2)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed range:** be31ec3..HEAD (2 round-2 commits)
+**Date:** 2026-04-30
+
+### Verdict
+APPROVED
+
+### Comment handling — fixed
+stripInlineComment is quote-aware: toggles single/double quote state and only strips at # when outside both quote modes (spec_parse.ts ~line 135). Applied before parsing each frontmatter line; lines that become empty are skipped (~line 263).
+
+Tests cover scalar comments, flow-list comments, full-line comments, # inside both quote styles, and quoted flow-list elements. Codex's specific round-1 case is covered as `depends_on: [a, b]   # optional; default empty` (spec_parse.test.ts ~line 166).
+
+### Quoted scalar handling — fixed
+unquoteScalar strips matching single or double quotes, throws on unclosed quotes, throws on trailing content after closing quote (spec_parse.ts ~line 166). Applied uniformly to flow-list elements (~line 240) and top-level scalar fields (~line 287). Tests cover double-quoted, single-quoted, quoted flow-list elements, mixed bare/double/single flow lists, error cases.
+
+### No new issues introduced
+Checked delimiter handling, required keys, unknown keys, duplicate keys, malformed depends_on, old quoted-element rejection replacement, and edge cases. None found.
+
+Specific edge checks:
+- title: "" unquotes to empty, then fails the existing non-empty title check
+- depends_on: [] still returns [] and is tested
+- title: "x # y" preserves # (covered by quoted-title tests)
+- Old quoted depends_on rejection correctly replaced by accepted quoted-element behavior plus nested-bracket rejection
+
+### Test additions — meaningful
+Parser tests are targeted. Decision-doc regression test exercises the actual broken documented shape from docs/decisions/spec_artifact_model.md.
+
+Validate compat tests are meaningful (not tautological): invoke validate.ts through the CLI smoke helper, cover no-specs/ and legacy inline-intent modes.
+
+Reviewer ran tools/test/spec_parse.test.ts: 34/34 passed. status.ts and validate smoke tests could not be executed cleanly in the sandbox (child tsx execution fails — env issue, not a defect).
+
+### Required changes
+None — APPROVED.
