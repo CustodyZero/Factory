@@ -5,9 +5,11 @@
  * Structural and semantic validation of factory artifacts.
  *
  * Validation layers:
- *   1. Schema validation — required fields, types, patterns
- *   2. Referential integrity — cross-references between artifacts
- *   3. Invariant enforcement — FI-1, FI-4, FI-7, FI-8, FI-9
+ *   1. Schema validation — required fields, types, patterns (this file)
+ *   2. Cross-artifact integrity (delegated to ./pipeline/integrity.ts):
+ *      - Referential integrity between artifacts
+ *      - Invariants FI-1, FI-7, FI-8, FI-9
+ *      - Spec dependency cycles
  *
  * Exit codes:
  *   0 — all validations pass
@@ -20,20 +22,14 @@ import { findProjectRoot, resolveArtifactRoot } from './config.js';
 import { resolveSpecPath } from './plan.js';
 import { parseSpec, SpecParseError } from './pipeline/spec_parse.js';
 import type { ParsedSpec } from './pipeline/spec_parse.js';
+import {
+  buildIndex,
+  validateIntegrity,
+  validateSpecCycles,
+  type DiscoveredSpec,
+  type ValidationResult,
+} from './pipeline/integrity.js';
 import * as fmt from './output.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type Severity = 'error' | 'warning';
-
-interface ValidationResult {
-  readonly file: string;
-  readonly severity: Severity;
-  readonly error_type: string;
-  readonly message: string;
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -285,21 +281,8 @@ function validateIntentSchema(filepath: string, data: unknown): ValidationResult
 }
 
 // ---------------------------------------------------------------------------
-// Spec validation (Phase 4 of single-entry-pipeline)
+// Spec discovery + per-file validation (Phase 4 of single-entry-pipeline)
 // ---------------------------------------------------------------------------
-
-/**
- * One entry per `.md` file under `specs/` at the project root.
- * `parsed` is null when the parser threw; the error is captured separately
- * so cycle detection and other downstream checks can still run on the
- * specs that DID parse.
- */
-interface DiscoveredSpec {
-  readonly filename: string;     // e.g. 'foo.md'
-  readonly stem: string;         // e.g. 'foo'
-  readonly filepath: string;     // e.g. 'specs/foo.md' (relative for reporting)
-  readonly parsed: ParsedSpec | null;
-}
 
 function readSpecFiles(): DiscoveredSpec[] {
   const dir = join(PROJECT_ROOT, 'specs');
@@ -370,351 +353,6 @@ function validateSpecFile(s: DiscoveredSpec): ValidationResult[] {
   return results;
 }
 
-/**
- * Detect cycles in the spec dependency graph.
- *
- * Specs that failed to parse are skipped (their errors were already
- * reported by validateSpecFile). Each cycle is reported once: we walk
- * the graph from each unvisited node, and on detecting a back-edge we
- * record the cycle members.
- */
-function validateSpecCycles(specs: DiscoveredSpec[]): ValidationResult[] {
-  const results: ValidationResult[] = [];
-  const graph = new Map<string, ReadonlyArray<string>>();
-  const fileById = new Map<string, string>();
-  for (const s of specs) {
-    if (s.parsed === null) continue;
-    graph.set(s.parsed.frontmatter.id, s.parsed.frontmatter.depends_on ?? []);
-    fileById.set(s.parsed.frontmatter.id, s.filepath);
-  }
-
-  // Detect missing-target dependencies as a separate (referential) error.
-  for (const [id, deps] of graph) {
-    for (const dep of deps) {
-      if (!graph.has(dep)) {
-        results.push({
-          file: fileById.get(id) ?? `specs/${id}.md`,
-          severity: 'error',
-          error_type: 'referential',
-          message: `Spec '${id}' depends_on '${dep}' but no spec with that id exists`,
-        });
-      }
-    }
-  }
-
-  // Tarjan-style DFS for cycle detection. Reports each strongly-connected
-  // member the first time we find a back-edge that includes it.
-  const visited = new Set<string>();
-  const onStack = new Set<string>();
-  const stack: string[] = [];
-  const reported = new Set<string>();
-
-  function dfs(node: string): void {
-    visited.add(node);
-    onStack.add(node);
-    stack.push(node);
-    for (const dep of graph.get(node) ?? []) {
-      if (!graph.has(dep)) continue; // missing target, already reported
-      if (!visited.has(dep)) {
-        dfs(dep);
-      } else if (onStack.has(dep)) {
-        const cycleStart = stack.indexOf(dep);
-        const cycleMembers = stack.slice(cycleStart);
-        const cycleStr = [...cycleMembers, dep].join(' -> ');
-        for (const m of cycleMembers) {
-          if (reported.has(m)) continue;
-          reported.add(m);
-          results.push({
-            file: fileById.get(m) ?? `specs/${m}.md`,
-            severity: 'error',
-            error_type: 'invariant',
-            message: `Cyclic spec dependency: ${cycleStr}`,
-          });
-        }
-      }
-    }
-    onStack.delete(node);
-    stack.pop();
-  }
-
-  for (const id of graph.keys()) {
-    if (!visited.has(id)) dfs(id);
-  }
-
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// Referential integrity + invariants
-// ---------------------------------------------------------------------------
-
-interface ArtifactIndex {
-  packetIds: Set<string>;
-  completionPacketIds: Set<string>;
-  packets: Array<{ id: string; kind: string; verifies: string | null; dependencies: string[]; started_at: string | null; status: string | null; feature_id: string | null }>;
-  completions: Array<{ packet_id: string; completed_by_id: string }>;
-  features: Array<{ id: string; status: string; packets: string[] }>;
-  intents: Array<{ id: string; status: string; feature_id: string | null }>;
-}
-
-function buildIndex(
-  packets: Array<{ data: unknown }>,
-  completions: Array<{ data: unknown }>,
-  features: Array<{ data: unknown }>,
-  intents: Array<{ data: unknown }>,
-): ArtifactIndex {
-  const index: ArtifactIndex = {
-    packetIds: new Set(),
-    completionPacketIds: new Set(),
-    packets: [],
-    completions: [],
-    features: [],
-    intents: [],
-  };
-
-  for (const { data } of packets) {
-    if (isObject(data) && typeof data['id'] === 'string') {
-      index.packetIds.add(data['id']);
-      index.packets.push({
-        id: data['id'],
-        kind: typeof data['kind'] === 'string' ? data['kind'] : 'dev',
-        verifies: typeof data['verifies'] === 'string' ? data['verifies'] : null,
-        dependencies: isStringArray(data['dependencies']) ? data['dependencies'] : [],
-        started_at: typeof data['started_at'] === 'string' ? data['started_at'] : null,
-        status: typeof data['status'] === 'string' ? data['status'] : null,
-        feature_id: typeof data['feature_id'] === 'string' ? data['feature_id'] : null,
-      });
-    }
-  }
-
-  for (const { data } of completions) {
-    if (isObject(data) && typeof data['packet_id'] === 'string') {
-      index.completionPacketIds.add(data['packet_id']);
-      const by = isObject(data['completed_by']) ? data['completed_by'] : {};
-      index.completions.push({
-        packet_id: data['packet_id'],
-        completed_by_id: typeof by['id'] === 'string' ? by['id'] : '',
-      });
-    }
-  }
-
-  for (const { data } of features) {
-    if (isObject(data) && typeof data['id'] === 'string') {
-      index.features.push({
-        id: data['id'],
-        status: typeof data['status'] === 'string' ? data['status'] : '',
-        packets: isStringArray(data['packets']) ? data['packets'] : [],
-      });
-    }
-  }
-
-  for (const { data } of intents) {
-    if (isObject(data) && typeof data['id'] === 'string') {
-      index.intents.push({
-        id: data['id'],
-        status: typeof data['status'] === 'string' ? data['status'] : '',
-        feature_id: typeof data['feature_id'] === 'string' ? data['feature_id'] : null,
-      });
-    }
-  }
-
-  return index;
-}
-
-function validateIntegrity(index: ArtifactIndex): ValidationResult[] {
-  const results: ValidationResult[] = [];
-
-  // Orphaned completions
-  for (const pid of index.completionPacketIds) {
-    if (!index.packetIds.has(pid)) {
-      results.push({ file: `completions/${pid}.json`, severity: 'error', error_type: 'referential', message: `Orphaned completion: packet '${pid}' does not exist` });
-    }
-  }
-
-  // Feature -> packet referential integrity
-  for (const f of index.features) {
-    for (const pid of f.packets) {
-      if (!index.packetIds.has(pid)) {
-        results.push({ file: `features/${f.id}.json`, severity: 'error', error_type: 'referential', message: `Feature '${f.id}' references packet '${pid}' which does not exist` });
-      }
-    }
-  }
-
-  // Packet -> feature integrity
-  for (const p of index.packets) {
-    if (p.feature_id === null) continue;
-    const feature = index.features.find((f) => f.id === p.feature_id);
-    if (feature === undefined) {
-      results.push({ file: `packets/${p.id}.json`, severity: 'error', error_type: 'referential', message: `Packet '${p.id}' declares feature_id '${p.feature_id}' but that feature does not exist` });
-    } else if (!feature.packets.includes(p.id)) {
-      results.push({ file: `packets/${p.id}.json`, severity: 'error', error_type: 'referential', message: `Packet '${p.id}' declares feature_id '${p.feature_id}' but the feature does not list this packet` });
-    }
-  }
-
-  // Intent linkage integrity
-  for (const intent of index.intents) {
-    if (intent.feature_id === null) {
-      if (intent.status === 'planned' || intent.status === 'delivered') {
-        results.push({
-          file: `intents/${intent.id}.json`,
-          severity: 'error',
-          error_type: 'referential',
-          message: `Intent '${intent.id}' is '${intent.status}' but has no linked feature_id`,
-        });
-      }
-      continue;
-    }
-
-    const feature = index.features.find((candidate) => candidate.id === intent.feature_id);
-    if (feature === undefined) {
-      results.push({
-        file: `intents/${intent.id}.json`,
-        severity: 'error',
-        error_type: 'referential',
-        message: `Intent '${intent.id}' references feature '${intent.feature_id}' which does not exist`,
-      });
-      continue;
-    }
-
-    if (intent.status === 'proposed') {
-      results.push({
-        file: `intents/${intent.id}.json`,
-        severity: 'error',
-        error_type: 'invariant',
-        message: `Intent '${intent.id}' is still 'proposed' but already links feature '${intent.feature_id}'`,
-      });
-    }
-
-    if (intent.status === 'approved' && feature.status === 'draft') {
-      results.push({
-        file: `intents/${intent.id}.json`,
-        severity: 'error',
-        error_type: 'invariant',
-        message: `Intent '${intent.id}' is 'approved' but linked feature '${feature.id}' is still 'draft'. Planner output must be at least 'planned'.`,
-      });
-    }
-
-    if (intent.status === 'delivered' && feature.status !== 'completed' && feature.status !== 'delivered') {
-      results.push({
-        file: `intents/${intent.id}.json`,
-        severity: 'error',
-        error_type: 'invariant',
-        message: `Intent '${intent.id}' is 'delivered' but feature '${feature.id}' is '${feature.status}'`,
-      });
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // QA packet structural checks
-  for (const p of index.packets) {
-    if (p.kind === 'qa' && p.verifies !== null) {
-      if (!index.packetIds.has(p.verifies)) {
-        results.push({ file: `packets/${p.id}.json`, severity: 'error', error_type: 'referential', message: `QA packet '${p.id}' verifies '${p.verifies}' which does not exist` });
-      } else {
-        const target = index.packets.find((t) => t.id === p.verifies);
-        if (target !== undefined && target.kind !== 'dev') {
-          results.push({ file: `packets/${p.id}.json`, severity: 'error', error_type: 'referential', message: `QA packet '${p.id}' verifies '${p.verifies}' which is not a dev packet` });
-        }
-      }
-    }
-  }
-
-  // FI-1: No duplicate completions
-  const completionCounts = new Map<string, number>();
-  for (const c of index.completions) {
-    completionCounts.set(c.packet_id, (completionCounts.get(c.packet_id) ?? 0) + 1);
-  }
-  for (const [pid, count] of completionCounts) {
-    if (count > 1) {
-      results.push({ file: `completions/${pid}.json`, severity: 'error', error_type: 'invariant', message: `FI-1 violation: ${count} completion records for packet '${pid}'` });
-    }
-  }
-
-  // FI-7: QA completion identity must differ from dev completion identity
-  const completionIdentityMap = new Map<string, string>();
-  for (const c of index.completions) {
-    completionIdentityMap.set(c.packet_id, c.completed_by_id);
-  }
-  for (const p of index.packets) {
-    if (p.kind !== 'qa' || p.verifies === null) continue;
-    const qaIdentity = completionIdentityMap.get(p.id);
-    const devIdentity = completionIdentityMap.get(p.verifies);
-    if (qaIdentity !== undefined && devIdentity !== undefined && qaIdentity === devIdentity) {
-      results.push({ file: `completions/${p.id}.json`, severity: 'error', error_type: 'invariant', message: `FI-7 violation: QA packet '${p.id}' completed by '${qaIdentity}' — same identity as dev packet '${p.verifies}'` });
-    }
-  }
-
-  // FI-8: Every dev packet in a feature must have a QA counterpart
-  for (const f of index.features) {
-    const featurePacketSet = new Set(f.packets);
-    for (const pid of f.packets) {
-      const packet = index.packets.find((p) => p.id === pid);
-      if (packet === undefined || packet.kind !== 'dev') continue;
-      if (packet.status === 'abandoned' || packet.status === 'deferred') continue;
-      const hasQa = index.packets.some((p) => p.kind === 'qa' && p.verifies === pid && featurePacketSet.has(p.id));
-      if (!hasQa) {
-        results.push({ file: `features/${f.id}.json`, severity: 'error', error_type: 'invariant', message: `FI-8 violation: dev packet '${pid}' in feature '${f.id}' has no QA counterpart` });
-      }
-    }
-  }
-
-  // FI-9: No cyclic packet dependencies
-  const depGraph = new Map<string, string[]>();
-  for (const p of index.packets) depGraph.set(p.id, p.dependencies);
-
-  function hasCycle(startId: string): boolean {
-    const visited = new Set<string>();
-    const stack = new Set<string>();
-    function dfs(id: string): boolean {
-      if (stack.has(id)) return true;
-      if (visited.has(id)) return false;
-      visited.add(id);
-      stack.add(id);
-      for (const dep of depGraph.get(id) ?? []) {
-        if (dfs(dep)) return true;
-      }
-      stack.delete(id);
-      return false;
-    }
-    return dfs(startId);
-  }
-
-  const reportedCycles = new Set<string>();
-  for (const p of index.packets) {
-    if (reportedCycles.has(p.id)) continue;
-    if (hasCycle(p.id)) {
-      results.push({ file: `packets/${p.id}.json`, severity: 'error', error_type: 'invariant', message: `FI-9 violation: packet '${p.id}' is part of a dependency cycle` });
-      reportedCycles.add(p.id);
-    }
-  }
-
-  // Feature completion consistency
-  for (const f of index.features) {
-    if (f.status === 'completed' || f.status === 'delivered') {
-      for (const pid of f.packets) {
-        if (!index.completionPacketIds.has(pid)) {
-          const packet = index.packets.find((p) => p.id === pid);
-          if (packet !== undefined && packet.status !== 'abandoned' && packet.status !== 'deferred') {
-            results.push({ file: `features/${f.id}.json`, severity: 'error', error_type: 'invariant', message: `Feature '${f.id}' is '${f.status}' but packet '${pid}' has no completion` });
-          }
-        }
-      }
-    }
-  }
-
-  // Intent linkage
-  for (const intent of index.intents) {
-    if (intent.feature_id !== null) {
-      const feature = index.features.find((f) => f.id === intent.feature_id);
-      if (feature === undefined) {
-        results.push({ file: `intents/${intent.id}.json`, severity: 'error', error_type: 'referential', message: `Intent '${intent.id}' references feature '${intent.feature_id}' which does not exist` });
-      }
-    }
-  }
-
-  return results;
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -742,14 +380,14 @@ function main(): void {
     }
   }
 
-  // Schema validation
+  // Per-artifact schema validation
   for (const p of packets) { if (p.data != null) allResults.push(...validatePacketSchema(p.filepath, p.data)); }
   for (const c of completions) { if (c.data != null) allResults.push(...validateCompletionSchema(c.filepath, c.data)); }
   for (const f of features) { if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data)); }
   for (const i of intents) { if (i.data != null) allResults.push(...validateIntentSchema(i.filepath, i.data)); }
   for (const s of specs) { allResults.push(...validateSpecFile(s)); }
 
-  // Integrity + invariants
+  // Cross-artifact integrity + invariants (delegated to integrity module)
   const index = buildIndex(packets, completions, features, intents);
   allResults.push(...validateIntegrity(index));
   allResults.push(...validateSpecCycles(specs));
