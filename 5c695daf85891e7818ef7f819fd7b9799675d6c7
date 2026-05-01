@@ -1,0 +1,52 @@
+## Codex GPT-5.5 Review — Phase 4.6 (Round 2)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed range:** 840c257..HEAD (1 round-2 commit)
+**Date:** 2026-05-01
+
+### Verdict
+REQUEST-CHANGES
+
+### Lax-mode filter correctness — INCOMPLETE
+Several old-validator-enforced cases are still dropped, and the "always keep required errors" rule is too broad — making some optional fields stricter than old behavior.
+
+### `verifies` regression — REQUIRED FIX
+The old validator explicitly enforced:
+- QA packet must have a kebab-case string verifies
+- Dev packet must not have verifies set
+
+Round 2 suppresses invalid verifies values (QA verifies: null, QA verifies: "Not_KebabCase", dev verifies: "some-dev") because /verifies is optional and not allowlisted. validateIntegrity only checks QA references when verifies !== null, so it does not restore the old schema behavior.
+
+### Compatibility tests — INSUFFICIENT
+The added tests cover representative lax-pass cases but do not pin the load-bearing old-fail cases:
+- invalid QA/dev verifies
+- missing/non-string change_class
+- empty/non-string intent spec or spec_path
+- feature planned_by: {}
+- feature acceptance_criteria item shape
+- intent constraints: [""]
+
+### enforcedOptionalPaths allowlist — INCOMPLETE AND PARTLY WRONG
+- Missing: packet /verifies; intent /spec and /spec_path need old non-empty-string semantics, not schema presence semantics
+- Over-enforced: intent /constraints keeps item minLength; old only required strings
+
+### Other regressions identified
+- Feature acceptance_criteria items: old only checked non-empty array; new validates each item (rejects [42] or [""]). Stricter than old.
+- Packet change_class: old only checked enum if string-typed; did not require the field. New keeps required + type errors. Stricter than old.
+- Intent constraints item minLength: old only required string array. Stricter than old.
+- Feature optional planned_by: old didn't check; new keeps nested required errors because required is always kept. Stricter than old.
+- Intent spec/spec_path: old used non-empty string presence; new uses property presence via oneOf. Both more-permissive AND stricter cases.
+
+### Stale comment fix and date-time test — ADDRESSED
+schema_validate.ts:13 comment updated. Date-time permissiveness tests added at schema_validate.test.ts:318.
+
+### Misleading line-178 test — REMOVED at adapter-test level
+Replaced with acceptance test. But end-to-end validate.ts still rejects unknown spec frontmatter in parseSpec at spec_parse.ts:279 — that's parser-level, separate from schema validation.
+
+### Required changes
+1. Restore the old packet verifies check as hand-rolled validation near tools/validate.ts:164, called from packet validation at validate.ts:357.
+2. Fix lax filtering so required errors under optional paths are not always kept. Current behavior at schema_validate.ts:303 makes optional planned_by stricter than old behavior.
+3. Restore old intent spec/spec_path semantics with a hand-rolled check: exactly one non-empty string counts as present. Current schema oneOf in intent.schema.json:8 does not match old behavior.
+4. Add compatibility tests for the cases above, especially invalid verifies, missing/non-string change_class, empty/non-string spec/spec_path, planned_by: {}, feature acceptance item shape, and constraints: [""].
+
+Targeted schema_validate.test.ts passed locally. Full vitest run was not conclusive in the sandbox due to CLI-spawned tests failing with environment process issues.
