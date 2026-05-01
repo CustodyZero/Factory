@@ -32,7 +32,7 @@ import {
 } from './config.js';
 import type { FactoryConfig, ModelTier, PipelineProvider } from './config.js';
 import { hydrateIntent } from './plan.js';
-import type { RawIntentArtifact, IntentArtifact } from './plan.js';
+import type { RawIntentArtifact } from './plan.js';
 import type { Feature, RawPacket } from './execute.js';
 import * as fmt from './output.js';
 import { topoSort } from './pipeline/topo.js';
@@ -41,7 +41,6 @@ import {
   buildReviewPrompt,
   buildReworkPrompt,
   buildQaPrompt,
-  buildPlannerPrompt,
 } from './pipeline/prompts.js';
 import {
   deriveDevResumePoint,
@@ -52,6 +51,7 @@ import {
 } from './pipeline/develop_phase.js';
 import type { DevResumePoint } from './pipeline/develop_phase.js';
 import { invokeAgent } from './pipeline/agent_invoke.js';
+import { runPlanPhase } from './pipeline/plan_phase.js';
 import { refreshCompletionId, safeCall } from './pipeline/lifecycle_helpers.js';
 import { startPacket } from './lifecycle/start.js';
 import { requestReview } from './lifecycle/request_review.js';
@@ -118,72 +118,6 @@ export function patchJson(
 // ---------------------------------------------------------------------------
 // Pipeline phases
 // ---------------------------------------------------------------------------
-
-function planPhase(
-  intent: IntentArtifact,
-  config: FactoryConfig,
-  artifactRoot: string,
-  dryRun: boolean,
-): { feature_id: string } | null {
-  fmt.log('plan', `Intent: ${fmt.bold(intent.id)} — "${intent.title}"`);
-
-  // Check if already planned
-  const features = readJsonDir<{ id: string; intent_id?: string; status: string }>(join(artifactRoot, 'features'));
-  const existing = features.find((f) => f.intent_id === intent.id);
-  if (existing !== undefined) {
-    fmt.log('plan', `Feature already exists: ${fmt.bold(existing.id)} (${existing.status})`);
-    return { feature_id: existing.id };
-  }
-
-  // Build planner prompt — reference spec_path so the agent reads the file itself.
-  // Do NOT inline spec contents here: it bloats the CLI invocation beyond OS limits
-  // and defeats the purpose of spec_path (the agent should read the authoritative
-  // source directly, not a snapshot embedded in the prompt).
-  const rawIntent = readJson<RawIntentArtifact>(join(artifactRoot, 'intents', `${intent.id}.json`));
-  const prompt = buildPlannerPrompt({
-    intent,
-    plannerInstructions: config.personas.planner.instructions,
-    artifactDir: config.artifact_dir,
-    specPath: rawIntent?.spec_path ?? null,
-  });
-
-  if (dryRun) {
-    fmt.log('plan', `[dry-run] Would invoke planner with ${prompt.length} char prompt`);
-    return null;
-  }
-
-  const provider = config.pipeline?.persona_providers.planner ?? 'claude';
-  const plannerTier = config.personas.planner.model ?? 'high';
-  fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
-
-  const result = invokeAgent(provider, prompt, config, plannerTier);
-  if (result.exit_code !== 0) {
-    fmt.log('plan', fmt.error(`Planner failed (exit ${result.exit_code})`));
-    if (result.stderr) fmt.log('plan', fmt.muted(result.stderr.slice(0, 500)));
-    return null;
-  }
-
-  fmt.log('plan', fmt.success('Planner completed'));
-
-  // Re-read features to find what was created
-  const newFeatures = readJsonDir<{ id: string; intent_id?: string; status: string }>(join(artifactRoot, 'features'));
-  const created = newFeatures.find((f) => f.intent_id === intent.id);
-  if (created === undefined) {
-    fmt.log('plan', fmt.error('Planner did not create a feature artifact'));
-    return null;
-  }
-
-  // Update intent status (best-effort)
-  patchJson(join(artifactRoot, 'intents', `${intent.id}.json`), (d) => {
-    d['status'] = 'planned';
-    d['feature_id'] = created.id;
-    d['planned_at'] = timestamp();
-    return true;
-  });
-
-  fmt.log('plan', `Feature created: ${fmt.bold(created.id)}`);
-  return { feature_id: created.id };
-}
 
 function devPhase(
   feature: Feature,
@@ -555,8 +489,13 @@ function run(intentId: string, dryRun: boolean, jsonMode: boolean): RunResult {
   // Phase 1: Plan
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('PLANNING'));
-  const planResult = planPhase(hydrated.intent, config, artifactRoot, dryRun);
-  if (planResult === null) {
+  const planResult = runPlanPhase({
+    intent: hydrated.intent,
+    config,
+    artifactRoot,
+    dryRun,
+  });
+  if (planResult.feature_id === null) {
     const msg = dryRun ? 'Dry run — planning would be invoked' : 'Planning failed';
     return failResult(intentId, null, msg, dryRun);
   }
