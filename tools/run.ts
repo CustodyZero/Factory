@@ -23,7 +23,6 @@
  * stitches those pure decisions and library calls together.
  */
 
-import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -52,7 +51,7 @@ import {
   nextPointAfterFinalize,
 } from './pipeline/develop_phase.js';
 import type { DevResumePoint } from './pipeline/develop_phase.js';
-import { resolveModelId, buildProviderArgs } from './pipeline/agent_invoke.js';
+import { invokeAgent } from './pipeline/agent_invoke.js';
 import { startPacket } from './lifecycle/start.js';
 import { requestReview } from './lifecycle/request_review.js';
 import { recordReview } from './lifecycle/review.js';
@@ -152,53 +151,6 @@ export function refreshCompletionId(
   if (existsSync(join(artifactRoot, 'completions', `${packetId}.json`))) {
     set.add(packetId);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Agent invocation (I/O leaf — pure helpers live in pipeline/agent_invoke.ts)
-// ---------------------------------------------------------------------------
-
-interface InvokeResult {
-  readonly exit_code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function invokeAgent(
-  provider: PipelineProvider,
-  prompt: string,
-  config: FactoryConfig,
-  modelTier?: ModelTier,
-): InvokeResult {
-  const pipelineConfig = config.pipeline;
-  if (pipelineConfig === undefined) {
-    return { exit_code: 1, stdout: '', stderr: 'Pipeline config not found' };
-  }
-  const providerConfig = pipelineConfig.providers[provider];
-  if (providerConfig === undefined) {
-    return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' not configured` };
-  }
-  if (!providerConfig.enabled) {
-    return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' is disabled` };
-  }
-
-  const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
-  const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
-  // Copilot: prompt via stdin to avoid OS command-line length limits.
-  const useStdin = provider === 'copilot';
-  const result = spawnSync(command, args, {
-    cwd: findProjectRoot(),
-    encoding: 'utf-8',
-    timeout: 600_000, // 10 min per agent
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: true,
-    ...(useStdin ? { input: prompt } : {}),
-  });
-  return {
-    exit_code: result.status ?? 1,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  };
 }
 
 // ---------------------------------------------------------------------------
