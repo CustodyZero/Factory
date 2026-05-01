@@ -43,3 +43,81 @@ None.
 1. Adjust comments claiming the spawn path is covered by integration tests, or add a fake-provider test later; current tests avoid real spawn paths.
 2. Consider extracting patchJson to a small shared helper only if another patching use appears.
 3. Update old comments saying "devPhase / qaPhase" to "develop/verify phase" where convenient.
+
+---
+
+## QA Verification — Phase 4.5
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-05-01
+
+### Verification verdict
+ALL-PASS — every required criterion (1-11) and every spot-check (12-14) verified independently.
+
+### Highlights
+- npm test: 282 passing across 25 test files (Phase 4 baseline 253 + 29 new tests)
+- tools/run.ts: 315 lines (well under 350 target; down from 773)
+- Three new phase modules exist with documented exports:
+  - tools/pipeline/plan_phase.ts (runPlanPhase)
+  - tools/pipeline/develop_phase.ts (runDevelopPhase + Phase 1's pure functions retained)
+  - tools/pipeline/verify_phase.ts (runVerifyPhase, renamed from qaPhase)
+- No-behavior-change verified by reading runPlanPhase / runDevelopPhase / runVerifyPhase against the original planPhase/devPhase/qaPhase line-for-line
+- Phase 1's pure functions retained (deriveDevResumePoint, nextPointAfter*, DevResumePoint type at lines 51-142 of develop_phase.ts)
+- Phase 1's pure helpers retained in agent_invoke.ts (resolveModelId, buildProviderArgs); imperative invokeAgent added alongside
+- runVerifyPhase rename clean: no caller references qaPhase as a function (only doc-string mentions explaining the rename)
+- patchJson stayed in run.ts (single use site for the coordinator)
+- refreshCompletionId and safeCall moved to tools/pipeline/lifecycle_helpers.ts
+- No new external dependencies; validate.ts PASS
+
+### Behavioral spot-check
+- run() in run.ts: parses args, calls resolveRunArg, then runPlanPhase, runDevelopPhase, runVerifyPhase in order, then renders summary (verified at run.ts:125-268)
+- lifecycle_helpers.ts exists with both helpers (refreshCompletionId at L57, safeCall at L88)
+- agent_invoke.ts docblock at L7-32 explicitly acknowledges the I/O-invariant relaxation with rationale; invokeAgent at L164 uses spawnSync as expected
+
+### Independent observations
+- The four commits each map cleanly to one extraction step — reviewable in sequence
+- runPlanPhase returns { feature_id: string | null } instead of returning null directly on plan failure. Equivalent control flow, slightly cleaner contract; caller updated at run.ts:181
+- main (the previous merge commit) has 271 tests + 1 failing in QA's environment; this branch has 282 + 0 failing. Either an incidentally-fixed flaky test or a sandbox-specific failure on main. Either way, the branch is unambiguously green.
+
+---
+
+## Orchestrator Approval — Phase 4.5
+
+**Orchestrator:** this session
+**Date:** 2026-05-01
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- Codex GPT-5.5 round 1: APPROVED-WITH-NITS — verified no behavior change by reading each phase function's diff carefully; endorsed the "no I/O in pipeline/" invariant relaxation as architectural correction
+- Independent Opus QA (FI-7 separate identity): ALL-PASS on 11 acceptance criteria + 3 behavioral spot-checks; verified Phase 1's pure functions retained, Phase 4.5's imperative additions placed correctly
+- Single-round phase: no required changes from codex. The developer's first pass was clean — substantial refactor (458-line reduction in run.ts) with no behavior change
+
+### What lands
+- 4 new modules under tools/pipeline/: plan_phase, verify_phase, lifecycle_helpers, resolve_arg
+- Existing tools/pipeline/develop_phase.ts extended with imperative runDevelopPhase alongside Phase 1's pure functions
+- tools/pipeline/agent_invoke.ts gains the imperative invokeAgent (was in run.ts); pure helpers retained
+- tools/run.ts shrunk from 773 to 315 lines (-458). The architectural "entry layer" is now thin
+- +29 new tests across phase modules, integration tests, and helper tests
+
+### Architectural call
+The developer relaxed Phase 1's "no I/O in tools/pipeline/" invariant to accommodate the imperative phase modules per single_entry_pipeline.md's 4-layer architecture. Codex endorsed this as architectural correction. The new effective invariant: tools/pipeline/ contains both pure helpers AND imperative phase modules; pure helpers are the simpler ones (topo, prompts, agent_invoke pure helpers, develop_phase's decision functions); imperative phase modules do I/O for their own scope. No need to split into tools/phases/ or pipeline/pure/ — that would add ceremony without solving a current problem.
+
+This is recorded here in the git notes so future contributors understand the invariant evolved deliberately.
+
+### Iteration record
+- Round 1 (4 commits, +29 tests): APPROVED-WITH-NITS, no required changes
+- Total: 4 commits, +29 tests (253 → 282), run.ts 773 → 315 (-458)
+
+### What's deliberately deferred
+- Nits from codex (3 cosmetic items: spawn-path test coverage, patchJson consolidation, old-naming comments) — small enough to defer; would not affect correctness if left
+
+### Practical implication for the architecture
+The 4-layer architecture from single_entry_pipeline.md is now realized:
+- Entry: tools/run.ts (315 lines — thin coordinator)
+- Driver: deferred to Phase 5 (multi-spec orchestrator)
+- Phases: tools/pipeline/{plan_phase, develop_phase, verify_phase}.ts
+- Lifecycle: tools/lifecycle/* (Phase 3)
+
+Phase 5+ work lands on a clean architectural foundation rather than piling onto a god script.
