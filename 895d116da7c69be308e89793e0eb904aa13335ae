@@ -1,0 +1,64 @@
+## Codex GPT-5.5 Review — Phase 3 (Round 1)
+
+**Reviewer:** codex CLI v0.125.0 with --model gpt-5.5
+**Reviewed branch:** worktree-agent-a5ce934390650bd4f vs main
+**Date:** 2026-04-30
+
+### Verdict
+REQUEST-CHANGES
+
+### Library extraction correctness
+Mostly correct per module.
+
+- start: correct. Exports startPacket, preserves missing/completed/deferred guards, preserves already_started no-op path.
+- request_review: correct. Exports requestReview, no lifecycle shell-out, only git branch shell-out remains. already_requested populated correctly.
+- review: correct. Exports recordReview, preserves matching-decision idempotency and mismatched-decision error.
+- complete: correct mechanical move. Keeps existing verification/git behavior and already_complete semantics.
+
+### CLI wrappers preserve contract
+Looks preserved for normal agent-facing calls. The wrappers parse the same args, render the same success/error messages, and exit the same way as the Phase 2 source. The Phase 2 lifecycle_cli.test.ts smoke tests are the regression guard (could not run them in this sandbox due to spawnSync EPERM/SIGSEGV in restricted env, but the implementation matches Phase 2's rendering branches).
+
+### run.ts wiring
+Mostly correct, but one defensive removal is not safe under the same external-mutation model the file still assumes.
+
+Evidence:
+- All four lifecycle imports present.
+- execSync, buildToolCommand, runLifecycle, and LifecycleResult are gone from executable code.
+- Lifecycle calls now go through direct imports plus safeCall.
+
+### already_* fields
+Correct in the libraries. startPacket, requestReview, recordReview, completePacket all populate the boolean correctly on idempotent rerun (true) and happy path (false). run.ts reacts indirectly: the already paths do not throw, so safeCall() treats them as success. Acceptable.
+
+### Defensive logic
+**The retained packet re-reads are justified.** Top of dev loop: an agent may have changed packet state. Review branch: reviewer may have invoked review.ts, so disk must be reread.
+
+**The removed completion refresh is NOT fully safe.** completionIds is built once at phase start in dev and QA. If a completion file appears after that scan but before the packet's loop iteration, deriveDevResumePoint(..., completionIds.has(packet.id)) uses stale state and may reprocess an already-complete packet. This conflicts with the rationale for retaining packet re-reads — the developer assumes external agents may mutate packets but not create completions, which is inconsistent.
+
+Stale points:
+- Dev completion set created once at devPhase start, then used at the per-iteration deriveDevResumePoint call
+- QA completion set created once at qaPhase start, then used at the per-iteration "already complete" check
+
+### Test quality
+Mixed.
+
+- Structural tests in run.test.ts strip comments and assert no execSync, no lifecycle script filenames, lifecycle imports present. Meaningful for the Phase 3 invariant.
+- Gaps:
+  - Tests only inspect run.ts, not tools/pipeline/* (the spec says no internal lifecycle CLI shell-outs there either).
+  - Existing request/review tests do not assert the new boolean aliases (already_requested, already_decided) directly.
+  - The behavioral Phase 3 test only covers startPacket + completePacket, not requestReview + recordReview.
+
+### Line-count miss
+Acceptable. Phase 3 acceptance criteria do not require <550 strictly; brief explicitly allowed stopping rather than over-extracting. Extracting more orchestration would either violate the Phase 1 "pure pipeline modules" boundary or become Phase 4/5-style work.
+
+### New issues introduced
+1. Stale completion detection after removing the per-loop completion-file refresh in run.ts.
+
+### Required changes
+1. Restore a completion refresh before deriving dev resume state and before QA already-complete checks. Either:
+   (a) Add the small per-iteration refresh that was deleted (`if (!completionIds.has(packet.id) && existsSync(...)) completionIds.add(packet.id)`) at the top of each dev and QA iteration. Mirrors the retained packet re-read pattern.
+   (b) Rebuild the completionIds set from disk per-iteration (more I/O but stronger).
+   The reasoning for retaining packet re-reads applies equally to completions: external agents may have invoked lifecycle CLIs.
+
+### Suggested improvements (optional)
+1. Add direct assertions for already_requested and already_decided in the request_review and review test files.
+2. Make lifecycle_cli.test.ts invoke the repo-local tsx binary or run with a cwd that can resolve local dev dependencies; npx from temp dirs is brittle in restricted environments.
