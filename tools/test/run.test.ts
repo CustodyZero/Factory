@@ -279,15 +279,19 @@ describe('run.ts — Phase 3 + 4.5 structural invariants', () => {
     expect(code).not.toMatch(/export\s+interface\s+LifecycleResult/);
   });
 
-  it('imports the three phase functions (Phase 4.5: phase-loop extraction)', () => {
-    // After Phase 4.5 the coordinator delegates to runPlanPhase /
-    // runDevelopPhase / runVerifyPhase rather than walking the loops
-    // inline. A regression that re-inlined any of these would either
-    // drop the import or duplicate the loop body — the import check
-    // catches the first failure mode.
-    expect(code).toMatch(/from\s+['"]\.\/pipeline\/plan_phase\.js['"]/);
-    expect(code).toMatch(/from\s+['"]\.\/pipeline\/develop_phase\.js['"]/);
-    expect(code).toMatch(/from\s+['"]\.\/pipeline\/verify_phase\.js['"]/);
+  it('imports the orchestrator (Phase 5: multi-spec sequencing)', () => {
+    // After Phase 5 the entry layer delegates to runOrchestrator. The
+    // per-spec phase calls (runPlanPhase / runDevelopPhase /
+    // runVerifyPhase) live in the orchestrator now, so run.ts only
+    // imports the driver. A regression that re-inlined the per-spec
+    // body would either drop this import or pull the phase imports
+    // back into run.ts.
+    expect(code).toMatch(/from\s+['"]\.\/pipeline\/orchestrator\.js['"]/);
+    // The phase-function imports moved to the orchestrator; run.ts
+    // itself should not import them anymore.
+    expect(code).not.toMatch(/from\s+['"]\.\/pipeline\/plan_phase\.js['"]/);
+    expect(code).not.toMatch(/from\s+['"]\.\/pipeline\/develop_phase\.js['"]/);
+    expect(code).not.toMatch(/from\s+['"]\.\/pipeline\/verify_phase\.js['"]/);
   });
 });
 

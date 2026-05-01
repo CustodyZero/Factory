@@ -124,7 +124,12 @@ describe('run.ts — spec mode (spec only, no intent)', () => {
     expect(r.stderr).toContain('Generated intent from spec');
   });
 
-  it('warns about depends_on when present (Phase 5 sequencing not yet implemented)', () => {
+  it('errors when a single-spec arg has depends_on but the dep is not passed (Phase 5)', () => {
+    // Phase 5 implements multi-spec sequencing. The user is required
+    // to pass all transitive deps explicitly; a single-arg invocation
+    // for a spec that declares deps is a missing-transitive-dep
+    // error (no agent is invoked). Replaces the Phase 4 stale-
+    // sequencing warning that this test used to assert.
     const f = makeFixture();
     mkdirSync(join(f.root, 'specs'), { recursive: true });
     writeFileSync(
@@ -135,8 +140,10 @@ describe('run.ts — spec mode (spec only, no intent)', () => {
 
     const r = runRun(['a', '--dry-run'], f.root);
 
-    expect(r.stderr).toContain('depends_on');
-    expect(r.stderr).toContain('not yet implemented');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Missing transitive dependency');
+    expect(r.stderr).toContain("'a'");
+    expect(r.stderr).toContain("'b'");
   });
 });
 
@@ -251,5 +258,114 @@ describe('run.ts — neither spec nor intent', () => {
     expect(r.stderr).toContain('No spec or intent found');
     expect(r.stderr).toContain('specs/ghost.md');
     expect(r.stderr).toContain('intents/ghost.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — multi-spec dispatch through the CLI
+//
+// These tests drive the run.ts CLI with multiple positional args. They
+// verify the end-to-end glue path (argv parse -> runOrchestrator ->
+// renderSummary -> exit code) on top of the orchestrator unit tests in
+// tools/test/orchestrator.test.ts.
+// ---------------------------------------------------------------------------
+
+describe('run.ts — Phase 5 multi-spec CLI dispatch', () => {
+  it('accepts multiple positional args and processes them all', () => {
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'one.md'),
+      '---\nid: one\ntitle: One\n---\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(f.root, 'specs', 'two.md'),
+      '---\nid: two\ntitle: Two\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['one', 'two', '--dry-run'], f.root);
+
+    // Both intents materialized in the spec→intent translation step.
+    expect(existsSync(join(f.root, 'intents', 'one.json'))).toBe(true);
+    expect(existsSync(join(f.root, 'intents', 'two.json'))).toBe(true);
+    // Multi-spec banner appears in stderr.
+    expect(r.stderr).toContain('Multi-spec run');
+    // Both specs are listed in the final summary.
+    expect(r.stderr).toContain('one');
+    expect(r.stderr).toContain('two');
+  });
+
+  it('errors before invoking any agent when a 2-spec cycle is detected', () => {
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'a.md'),
+      '---\nid: a\ntitle: A\ndepends_on: [b]\n---\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(f.root, 'specs', 'b.md'),
+      '---\nid: b\ntitle: B\ndepends_on: [a]\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['a', 'b', '--dry-run'], f.root);
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Cyclic spec dependency');
+    // PLANNING never reached.
+    expect(r.stderr).not.toContain('PLANNING');
+  });
+
+  it('errors before invoking any agent when transitive deps are missing', () => {
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'a.md'),
+      '---\nid: a\ntitle: A\ndepends_on: [b]\n---\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(f.root, 'specs', 'b.md'),
+      '---\nid: b\ntitle: B\n---\n',
+      'utf-8',
+    );
+
+    // User passed only `a` — but `a` depends on `b`.
+    const r = runRun(['a', '--dry-run'], f.root);
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Missing transitive dependency');
+    expect(r.stderr).not.toContain('PLANNING');
+  });
+
+  it('marks dependents as blocked when an upstream fails (multi-spec)', () => {
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'a.md'),
+      '---\nid: a\ntitle: A\n---\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(f.root, 'specs', 'b.md'),
+      '---\nid: b\ntitle: B\ndepends_on: [a]\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['a', 'b', '--dry-run', '--json'], f.root);
+
+    expect(r.status).toBe(1);
+    // JSON mode: parse the structured result for assertions.
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.success).toBe(false);
+    expect(parsed.specs).toHaveLength(2);
+    const a = parsed.specs.find((s: { id: string }) => s.id === 'a');
+    const b = parsed.specs.find((s: { id: string }) => s.id === 'b');
+    expect(a.status).toBe('failed');
+    expect(b.status).toBe('blocked');
+    expect(b.blocked_by).toContain('a');
   });
 });
