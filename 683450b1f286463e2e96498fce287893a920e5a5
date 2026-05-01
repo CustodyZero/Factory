@@ -34,3 +34,65 @@ Reviewer could not reproduce the full CLI smoke test run in the sandbox because 
 
 ### Required changes
 None — APPROVED.
+
+---
+
+## QA Verification — Phase 2
+
+**QA agent:** separate Opus invocation (FI-7 separate identity)
+**Date:** 2026-04-30
+
+### Verification verdict
+ALL-PASS — every required criterion (1-11) and the behavioral spot-check (12) verified independently against the worktree state.
+
+### Highlights
+- npm test: 173 passing across 15 test files (Phase 1 baseline 156 + 17 new)
+- All four lifecycle scripts verified idempotent on twice-in-a-row invocation; second invocations exit 0 with informative messages, no state mutation
+- Mismatched review.ts re-decision still errors (exit 1, clear guidance to run request-review.ts again)
+- FI-1 verified end-to-end: completion file mtime AND sha256 unchanged between first and second complete.ts call
+- packet_id mismatch protection verified: constructing a completion record with mismatched packet_id triggers the clear error path
+- CLI stderr byte-identical to main for three legacy error paths (request-review qa, request-review not-started, review qa --approve)
+- tools/run.ts unchanged at 644 lines
+- No new external dependencies (git diff main..HEAD -- package.json empty)
+- validate.ts PASS
+- CLI smoke tests verified in tools/test/lifecycle_cli.test.ts (spawnSync-based, 2 occurrences, covers both idempotent paths and legacy multi-line errors)
+
+### Behavioral spot-check
+- git-diff stderr suppression in non-git fixtures: stderr is empty when complete.ts runs in a tmp dir without a git repo
+
+### Independent observations
+- All checks ran cleanly with no surprises
+- CLI smoke tests run in ~3s within the suite (acceptable cost)
+
+---
+
+## Orchestrator Approval — Phase 2
+
+**Orchestrator:** this session
+**Date:** 2026-04-30
+
+### Decision
+APPROVED for merge to main, pending human go-ahead.
+
+### Rationale
+- Codex GPT-5.5 round 1: REQUEST-CHANGES (3 real issues — error message drift, missing packet_id validation, missing CLI smoke tests)
+- Codex GPT-5.5 round 2: APPROVED (all 3 fixes verified, plus an additional dead-branch removal and optional git-diff stderr suppression)
+- Independent Opus QA (separate identity per FI-7): ALL-PASS on 11 acceptance criteria + 1 behavioral spot-check, with substantive independent verification (cloned main for baseline, byte-for-byte stderr diff, mtime+sha256 for FI-1, packet_id mismatch fixture)
+- Both rounds caught real defects that would have shipped: round-1's error message drift would have degraded operator UX; round-1's missing packet_id check would have silently returned success on corrupt completions. Bounded iteration model worked as designed.
+
+### Iteration record
+- Round 1 (3 commits, +10 tests): REQUEST-CHANGES
+- Round 2 (4 commits, +7 tests): APPROVED — including 3 fix commits, 1 optional improvement commit, +6 CLI smoke tests + 1 packet_id mismatch test
+- Total: 7 commits, +17 tests (156 → 173), +963/-156 line delta on lifecycle scripts; tools/run.ts unchanged at 644
+
+### What lands
+- 3 lifecycle scripts (request-review, review, complete) now idempotent on re-invocation
+- Mismatched review.ts re-decision still errors with clear guidance
+- complete.ts validates packet_id before idempotent short-circuit (corruption protection)
+- New error-class pattern (RequestReviewError, RecordReviewError) preserves byte-identical multi-line CLI output via summary + details rendering
+- CLI smoke tests added (lifecycle_cli.test.ts) — closes the gap that allowed round-1's drift to slip past library-level tests
+- Optional cosmetic cleanup: git-diff stderr suppressed in non-git fixtures
+
+### What's deliberately deferred
+- Full library-ization of the lifecycle scripts and removal of run.ts's defensive status reads (Phase 3)
+- Phases 4-8
