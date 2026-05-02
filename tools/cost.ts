@@ -40,7 +40,11 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import type { CostRecord } from './pipeline/cost.js';
-import { aggregateDollars } from './pipeline/cost.js';
+import {
+  aggregateDollars,
+  localDateFromTimestamp,
+  utcDateWindow,
+} from './pipeline/cost.js';
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -151,24 +155,24 @@ export function aggregateRunCost(
 // ---------------------------------------------------------------------------
 
 /**
- * Sum cost across every run-file in `<artifactRoot>/cost/` whose
- * filename starts with the given local-date prefix `YYYY-MM-DD`.
+ * Sum cost across every CostRecord whose `timestamp` falls on the
+ * given local YYYY-MM-DD date.
  *
- * Why filename-prefix scan: `newRunId` returns
- * `YYYY-MM-DDTHH-MM-SSZ-<8hex>` — the leading 10 characters are the
- * UTC date stamp. Per the file-header invariant, the day cap is local
- * date, so we filter run ids by their UTC-date prefix only when the
- * local-date and UTC-date components match. This is approximate at the
- * timezone boundary (local midnight may include some run ids stamped
- * with the previous UTC date), but the day-cap is a budget guardrail,
- * not an accounting record — the approximation matches the operator's
- * working day better than a UTC cutoff would.
+ * Round-2 fix (Issue 2): the previous implementation filtered by
+ * filename prefix (`f.startsWith(`${date}T`)`). Run-id filenames use
+ * UTC timestamps (newRunId), but the day-cap is local-date scoped —
+ * so a 23:00 Phoenix run (UTC-7) gets a filename prefixed with the
+ * NEXT UTC day, and `readDayCost('today', ...)` excluded it. The day
+ * cap silently underreported in any timezone west of UTC.
  *
- * Note on the approximation: a truly precise local-day aggregation
- * would have to read every record to compare its `timestamp` to the
- * local-day boundary. Today we accept the prefix approximation; the
- * cost is observability-class and the operator-facing summary still
- * shows the per-run total separately.
+ * Correct behaviour: classify records by their `timestamp` field
+ * (UTC ISO-8601 stored on each row), converted to local date via the
+ * pure `localDateFromTimestamp` helper. To keep the work bounded, we
+ * pre-filter candidate filenames to the 3-day UTC window from
+ * `utcDateWindow` — a record's local date is at most ±1 UTC day from
+ * its run-id's UTC date, so files outside that window cannot contain
+ * matching records. This keeps the scan O(few-files) instead of
+ * O(all-cost-files).
  */
 export function readDayCost(
   date: string,
@@ -182,17 +186,32 @@ export function readDayCost(
   } catch {
     return { total: 0, unknown_count: 0 };
   }
-  const matching = entries.filter(
-    (f) => f.endsWith('.jsonl') && f.startsWith(`${date}T`),
+  // Bounded candidate scan: only filenames whose UTC-date prefix
+  // falls in the ±1-day window around `date` can contain records
+  // that belong to the local day. This is a pre-filter; the
+  // authoritative classification still happens per-record below.
+  const utcWindow = utcDateWindow(date);
+  const candidates = entries.filter(
+    (f) => f.endsWith('.jsonl') && utcWindow.some((d) => d !== '' && f.startsWith(`${d}T`)),
   );
   let total = 0;
   let unknown_count = 0;
-  for (const f of matching) {
+  for (const f of candidates) {
     const runId = f.slice(0, f.length - '.jsonl'.length);
     const records = readCostRecords(runId, artifactRoot);
-    const agg = aggregateDollars(records);
-    total += agg.total;
-    unknown_count += agg.unknown_count;
+    for (const r of records) {
+      // Per-record local-date check: the record's UTC timestamp
+      // converted to local date must equal the requested local date.
+      // Records that fall on a different local day (e.g. a run that
+      // started at 23:30 local and produced records that crossed
+      // local midnight) are correctly excluded.
+      if (localDateFromTimestamp(r.timestamp) !== date) continue;
+      if (r.dollars === null) {
+        unknown_count += 1;
+      } else {
+        total += r.dollars;
+      }
+    }
   }
   return { total, unknown_count };
 }

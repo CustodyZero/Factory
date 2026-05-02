@@ -338,3 +338,104 @@ export function checkCap(running_total: number, cap: number | undefined): boolea
   if (cap === undefined) return false;
   return running_total >= cap;
 }
+
+// ---------------------------------------------------------------------------
+// Local-date helpers — pure
+//
+// Round-2 fix (Issue 2): per-day cost aggregation must classify each
+// CostRecord by its LOCAL date, not by the UTC date encoded in its
+// run-id filename. A run started at 23:00 in Phoenix (UTC-7) gets a
+// run-id filename prefixed with the NEXT UTC day; the operator
+// considers it "today" but the prior filename-prefix scan in
+// readDayCost would miss it.
+//
+// These helpers stay in pipeline/cost.ts (pure layer) so the I/O
+// wrapper in tools/cost.ts can compose them without inverting the
+// boundary. Both functions are total and deterministic given a fixed
+// system timezone — they read no env vars and perform no I/O.
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a UTC ISO-8601 timestamp as a YYYY-MM-DD string in LOCAL
+ * time. Inverse-flavoured partner of `localDateString` (which takes
+ * a Date directly).
+ *
+ * The intended use is per-record day-cap classification: the cap is
+ * configured against the operator's working day, not against a UTC
+ * day boundary. Reading the record's `timestamp` field (always UTC
+ * ISO) and converting it to the local date here is what makes the
+ * cap honest in non-UTC zones.
+ *
+ * Returns the empty string ("") when the timestamp does not parse —
+ * a caller that compares against a real local-date string will never
+ * accidentally match. The empty-string sentinel is honest: we cannot
+ * classify an unparseable timestamp.
+ */
+export function localDateFromTimestamp(isoTimestamp: string): string {
+  const d = new Date(isoTimestamp);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Given a local YYYY-MM-DD, return the three UTC YYYY-MM-DD strings
+ * that bracket it: the day before, the day of, and the day after.
+ *
+ * Why three: a record's UTC date can be at most ±1 calendar day away
+ * from its local date in any earth-bound timezone (max offset is
+ * UTC+14, min is UTC-12). So a record dated locally `2026-05-02` can
+ * have a UTC date of `2026-05-01`, `2026-05-02`, or `2026-05-03` —
+ * never anything else. readDayCost uses this window to bound the
+ * candidate run-files it scans, keeping the work O(few-files) instead
+ * of O(all-cost-files).
+ *
+ * Returns `['', localDate, '']` if `localDate` does not parse — a
+ * caller filtering filename prefixes with `f.startsWith(`${''}T`)`
+ * matches nothing, which is the safe degraded behaviour.
+ */
+export function utcDateWindow(localDate: string): [string, string, string] {
+  // Parse the local date into a Date positioned at local midnight on
+  // that day. We cannot construct the date directly from a UTC parse
+  // (that would give us UTC midnight, which is the wrong day in
+  // negative offsets); we use the y/m/d Date constructor which
+  // interprets in local time.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
+  if (m === null) return ['', localDate, ''];
+  const year = Number.parseInt(m[1]!, 10);
+  const month = Number.parseInt(m[2]!, 10) - 1;
+  const day = Number.parseInt(m[3]!, 10);
+  const localMidnight = new Date(year, month, day, 0, 0, 0, 0);
+  if (Number.isNaN(localMidnight.getTime())) return ['', localDate, ''];
+
+  // Format a Date as UTC YYYY-MM-DD.
+  const fmt = (d: Date): string => {
+    const y = d.getUTCFullYear();
+    const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const da = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${mo}-${da}`;
+  };
+
+  const today = fmt(localMidnight);
+  const dayMs = 24 * 60 * 60 * 1000;
+  // Use the local-midnight as our anchor and step ±1 calendar day at
+  // the local-time level. Adding/subtracting 24h crosses one local-day
+  // boundary; the resulting Date's UTC date is what we want for the
+  // window edges. This is safe for DST: even on a 23h or 25h day the
+  // resulting Date still lands inside the next/prior local day, and we
+  // are taking only the UTC-date component — sub-day skew is irrelevant.
+  const yesterdayLocal = new Date(year, month, day - 1, 0, 0, 0, 0);
+  const tomorrowLocal = new Date(year, month, day + 1, 0, 0, 0, 0);
+  // Defensive fallback: if the constructor produced an invalid date
+  // (extreme inputs), fall back to a UTC-millis offset. Same end
+  // result for normal inputs.
+  const yesterday = Number.isNaN(yesterdayLocal.getTime())
+    ? fmt(new Date(localMidnight.getTime() - dayMs))
+    : fmt(yesterdayLocal);
+  const tomorrow = Number.isNaN(tomorrowLocal.getTime())
+    ? fmt(new Date(localMidnight.getTime() + dayMs))
+    : fmt(tomorrowLocal);
+  return [yesterday, today, tomorrow];
+}

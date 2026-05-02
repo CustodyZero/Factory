@@ -459,7 +459,10 @@ describe('per-day cost cap', () => {
 
     // Pre-seed a prior run-file for today with $4.50 already spent.
     // Use a synthetic run-id with today's date prefix so readDayCost
-    // picks it up.
+    // picks it up. Round-2: readDayCost classifies records by their
+    // `timestamp` field's local date, so we use `new Date()` (now)
+    // as the timestamp — guaranteed to fall on today's local date in
+    // any host TZ.
     const today = localDateString();
     const priorRunId = `${today}T08-00-00Z-aaaaaaaa`;
     const priorRecord: CostRecord = {
@@ -471,7 +474,7 @@ describe('per-day cost cap', () => {
       tokens_in: 100_000,
       tokens_out: 50_000,
       dollars: 4.5,
-      timestamp: `${today}T08:00:00.000Z`,
+      timestamp: new Date().toISOString(),
     };
     recordCost(priorRecord, root);
 
