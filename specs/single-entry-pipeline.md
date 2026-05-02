@@ -213,27 +213,32 @@ The phases below are listed in the order they should land. Each phase is a candi
 
 - Schema-driven validation via ajv or any other engine. Deferred indefinitely; the existing hand-rolled validators stay authoritative. If a future need surfaces, the compatibility tests added here will pin the behavior and a different migration approach can be considered.
 
-### Phase 5 — Multi-spec dependency-aware orchestrator
+### Phase 5 — Multi-spec dependency-aware orchestrator ✅ COMPLETE
+
+**Status:** Merged in commit `edcf0da` (2026-05-02). 4-layer architecture (entry/driver/phases/lifecycle) is now complete.
 
 **Goal:** `run.ts <spec-1> <spec-2> <spec-3>` runs each spec's pipeline in topological order based on `depends_on`.
 
-**Specifically:**
+**What shipped:**
 
-- New `tools/pipeline/orchestrator.ts` module
-- Parse all spec arguments; load each spec's frontmatter; topo-sort by `depends_on`
-- Reject cyclic dependencies upfront with a clear error
-- Process specs sequentially in topo order
-- If a spec fails (after recovery), mark all dependent specs as blocked and skip them
-- Independent specs continue regardless of other specs' failures
-- Final summary report covers all specs: completed, failed, blocked
+- New `tools/pipeline/orchestrator.ts` (591 lines) — driver layer owning the multi-spec gate sequence (resolve → missing-deps → cycles → topo → execute) plus the per-spec runner that delegates to `runPlanPhase` / `runDevelopPhase` / `runVerifyPhase`.
+- `tools/run.ts` reduced from 315 → 203 lines — pure entry/dispatcher (argv parse, render, exit).
+- Public surface: `runOrchestrator`, `OrchestratorOptions`, `OrchestratorResult`, `SpecOutcome` (discriminated union: `completed` | `failed` | `blocked`). Internal helpers `_resolveAll`, `_detectCycles`, `_findMissingDeps` exported under `_` prefix for test pinning.
+- Cycles and missing transitive deps fail upfront before any agent invocation. Per-spec failures mark dependents `blocked`; independents continue.
+- Single-arg legacy contract preserved: same exit codes, `--dry-run` exits 0 on planning preview, `--json` emits the legacy flat shape (`{ intent_id, feature_id, packets_completed, packets_failed, success, message }`). Multi-arg uses the new `{ specs, success, message }` envelope.
+- 47 new tests (311 → 358). Subprocess CLI tests pin the legacy `--dry-run` exit code and `--json` shape end-to-end.
+- No new dependencies. No schema changes.
 
-**Acceptance:**
+**What this does NOT include (still deferred):**
 
-- `run.ts a b` where `b.depends_on: [a]` runs a first, then b
-- `run.ts a b` where `a` fails: `b` reported blocked, not attempted
-- `run.ts a b c` where `a` and `b` are independent and `b` fails: `a` and `c` still complete
-- Cyclic dependency (`a depends on b, b depends on a`) errors before any agent invocation
-- Tests cover the topo sort and the blocked-on-failure logic
+- Per-spec recovery / retry — Phase 6.
+- Parallel execution — out of scope until Phase 6+ proves recovery is stable in sequential mode.
+- Auto-resolution of transitive deps — user must pass all transitive deps explicitly; missing-dep detection catches this upfront.
+
+**Iteration record:**
+
+- 2 review rounds used (codex GPT-5.5): Round 1 REQUEST-CHANGES (legacy `--dry-run` exit-code regression and `--json` shape regression for single-arg); Round 2 APPROVE after a focused 12-line shim in `runSingleSpec` and a new `formatJsonOutput` helper in `run.ts`.
+- Independent QA verification (separate Opus identity, FI-7) APPROVE on all 10 acceptance criteria.
 
 ### Phase 5.5 — Event observability
 
