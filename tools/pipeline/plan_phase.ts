@@ -26,6 +26,12 @@ import type { IntentArtifact, RawIntentArtifact } from '../plan.js';
 import * as fmt from '../output.js';
 import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
+import {
+  makePhaseStarted,
+  makePhaseCompleted,
+  type Provenance,
+} from './events.js';
+import { appendEvent } from '../events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -36,6 +42,16 @@ export interface PlanPhaseOptions {
   readonly config: FactoryConfig;
   readonly artifactRoot: string;
   readonly dryRun: boolean;
+  /**
+   * Phase 5.5 — events plumbing. When present, the phase emits
+   * `phase.started` / `phase.completed` events at its boundaries.
+   * Optional so that single-purpose unit tests of plan-phase logic
+   * (which already exist) don't have to construct an events
+   * context they don't care about.
+   */
+  readonly runId?: string;
+  readonly provenance?: Provenance;
+  readonly specId?: string | null;
 }
 
 export interface PlanPhaseResult {
@@ -104,6 +120,41 @@ function patchJson(
  * produce a feature artifact).
  */
 export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
+  const { intent, config, artifactRoot, dryRun } = opts;
+
+  // Phase 5.5: emit phase.started at entry. Best-effort; appendEvent
+  // swallows errors. The eventCtx local short-circuits if no run_id
+  // was passed (unit-test invocations).
+  const eventCtx = opts.runId !== undefined && opts.provenance !== undefined
+    ? { run_id: opts.runId, provenance: opts.provenance }
+    : null;
+  if (eventCtx !== null) {
+    appendEvent(
+      makePhaseStarted(eventCtx, { phase: 'plan', spec_id: opts.specId ?? intent.id }),
+      artifactRoot,
+    );
+  }
+
+  // The result.feature_id is the signal we use to derive the
+  // phase.completed `outcome`: any null at the final return is a
+  // failure path (planner failed, dry-run stopped, no artifact
+  // produced); a non-null id is a successful plan.
+  const result = runPlanPhaseInner(opts);
+
+  if (eventCtx !== null) {
+    appendEvent(
+      makePhaseCompleted(eventCtx, {
+        phase: 'plan',
+        spec_id: opts.specId ?? intent.id,
+        outcome: result.feature_id !== null ? 'ok' : 'failed',
+      }),
+      artifactRoot,
+    );
+  }
+  return result;
+}
+
+function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   const { intent, config, artifactRoot, dryRun } = opts;
 
   fmt.log('plan', `Intent: ${fmt.bold(intent.id)} — "${intent.title}"`);

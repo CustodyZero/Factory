@@ -33,6 +33,12 @@ import { startPacket } from '../lifecycle/start.js';
 import { requestReview } from '../lifecycle/request_review.js';
 import { recordReview } from '../lifecycle/review.js';
 import { completePacket } from '../lifecycle/complete.js';
+import {
+  makePhaseStarted,
+  makePhaseCompleted,
+  type Provenance,
+} from './events.js';
+import { appendEvent } from '../events.js';
 
 // ---------------------------------------------------------------------------
 // Resume points
@@ -160,6 +166,17 @@ export interface DevelopPhaseOptions {
   readonly artifactRoot: string;
   readonly projectRoot: string;
   readonly dryRun: boolean;
+  /**
+   * Phase 5.5 — events plumbing. When present, the phase emits
+   * `phase.started` / `phase.completed` events at its boundaries.
+   * Optional so existing develop-phase unit tests don't have to
+   * construct an events context. Lifecycle scripts called from
+   * inside this phase pick up the run_id via process.env.FACTORY_RUN_ID
+   * (set by the orchestrator), independent of these options.
+   */
+  readonly runId?: string;
+  readonly provenance?: Provenance;
+  readonly specId?: string | null;
 }
 
 export interface DevelopPhaseResult {
@@ -190,6 +207,38 @@ function readJsonDir<T>(dir: string): T[] {
  * of completed and failed packet ids.
  */
 export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
+  const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
+
+  // Phase 5.5: emit phase.started at entry. The eventCtx is null when
+  // the caller (e.g. a unit test) didn't pass run_id/provenance.
+  const eventCtx = opts.runId !== undefined && opts.provenance !== undefined
+    ? { run_id: opts.runId, provenance: opts.provenance }
+    : null;
+  if (eventCtx !== null) {
+    appendEvent(
+      makePhaseStarted(eventCtx, { phase: 'develop', spec_id: opts.specId ?? null }),
+      artifactRoot,
+    );
+  }
+
+  const result = runDevelopPhaseInner(opts);
+
+  if (eventCtx !== null) {
+    // Outcome: 'failed' iff any packet failed; 'ok' otherwise. A
+    // feature with zero dev packets reports 'ok' (no work to fail at).
+    appendEvent(
+      makePhaseCompleted(eventCtx, {
+        phase: 'develop',
+        spec_id: opts.specId ?? null,
+        outcome: result.failed.length === 0 ? 'ok' : 'failed',
+      }),
+      artifactRoot,
+    );
+  }
+  return result;
+}
+
+function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
