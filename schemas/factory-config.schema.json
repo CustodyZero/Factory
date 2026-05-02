@@ -82,7 +82,33 @@
           },
           "additionalProperties": false
         },
-        "max_review_iterations": { "type": "integer", "minimum": 1 }
+        "max_review_iterations": { "type": "integer", "minimum": 1 },
+        "cost_caps": {
+          "type": "object",
+          "description": "Phase 5.7 — optional dollar caps per scope. Absent = disabled (no enforcement). Caps use >= semantics: a running total at-or-above the cap triggers escalation.",
+          "properties": {
+            "per_run": { "type": "number", "minimum": 0, "description": "Per-run cap in USD. Crossing aborts the entire pipeline run." },
+            "per_packet": { "type": "number", "minimum": 0, "description": "Per-packet cap in USD. Crossing fails just the affected packet; the orchestrator continues to the next independent packet." },
+            "per_day": { "type": "number", "minimum": 0, "description": "Per-day cap in USD (LOCAL date). Crossing aborts the run AND records the date so subsequent same-day runs are blocked at orchestrator entry." }
+          },
+          "additionalProperties": false
+        },
+        "rate_card": {
+          "type": "object",
+          "description": "Phase 5.7 — optional partial overrides on top of DEFAULT_RATE_CARD in tools/pipeline/cost.ts. Outer key is provider, inner key is model id.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["input_per_mtok", "output_per_mtok"],
+              "properties": {
+                "input_per_mtok": { "type": "number", "minimum": 0 },
+                "output_per_mtok": { "type": "number", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
       },
       "additionalProperties": false
     }

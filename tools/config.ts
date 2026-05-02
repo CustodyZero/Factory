@@ -43,6 +43,39 @@ export interface PipelineProviderConfig {
   readonly model_map?: ModelMap;
 }
 
+/**
+ * Per-scope dollar budgets (Phase 5.7).
+ *
+ * All three are optional; an absent field means "no cap configured"
+ * — `checkCap` returns false for undefined caps so the absence of a
+ * cap_caps block preserves the pre-Phase-5.7 behavior (no
+ * enforcement). See docs/decisions/cost_visibility.md.
+ *
+ * Caps are checked with `>=` semantics: a running total at-or-above
+ * the cap is "crossed" and triggers the configured escalation
+ * (per-run / per-packet / per-day). Per-day uses the operator's
+ * LOCAL date — see tools/cost.ts for the rationale.
+ */
+export interface CostCaps {
+  readonly per_run?: number;
+  readonly per_packet?: number;
+  readonly per_day?: number;
+}
+
+/**
+ * Rate-card overrides — partial map merged on top of the defaults in
+ * tools/pipeline/cost.ts. Outer key is provider, inner key is model
+ * id; entries replace the matching default. See `mergeRateCard`.
+ */
+export interface CostRateCardOverrides {
+  readonly [provider: string]: {
+    readonly [model: string]: {
+      readonly input_per_mtok: number;
+      readonly output_per_mtok: number;
+    };
+  };
+}
+
 export interface PipelineConfig {
   readonly providers: {
     readonly [key: string]: PipelineProviderConfig;
@@ -59,6 +92,18 @@ export interface PipelineConfig {
     readonly qa: string;
   };
   readonly max_review_iterations: number;
+  /**
+   * Phase 5.7 — optional dollar caps per scope. Absent = disabled
+   * (no enforcement). Defaults are NOT supplied; the operator opts
+   * in by writing this block.
+   */
+  readonly cost_caps?: CostCaps;
+  /**
+   * Phase 5.7 — optional rate-card overrides. Partial map; missing
+   * entries fall through to DEFAULT_RATE_CARD in
+   * tools/pipeline/cost.ts.
+   */
+  readonly rate_card?: CostRateCardOverrides;
 }
 
 export interface FactoryConfig {
@@ -167,6 +212,13 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
     for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
       mergedProviders[key] = { ...defaultProviders[key], ...rawProviders?.[key] } as PipelineProviderConfig;
     }
+    // Phase 5.7: cost_caps and rate_card pass through unchanged from
+    // the raw config. Both are optional and have no defaults — absent
+    // means "no enforcement / fall through to DEFAULT_RATE_CARD". The
+    // shape narrowing is handled by the TypeScript types; we only
+    // forward whatever the user wrote (or nothing).
+    const rawCostCaps = rawPipeline?.cost_caps;
+    const rawRateCard = rawPipeline?.rate_card;
     const pipeline: PipelineConfig = {
       ...defaultPipeline,
       ...rawPipeline,
@@ -179,6 +231,8 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
         ...defaultPipeline.completion_identities,
         ...rawPipeline?.completion_identities,
       },
+      ...(rawCostCaps !== undefined ? { cost_caps: rawCostCaps } : {}),
+      ...(rawRateCard !== undefined ? { rate_card: rawRateCard } : {}),
     };
 
     return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, pipeline } as FactoryConfig;
