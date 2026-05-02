@@ -1,0 +1,43 @@
+# Phase 5.7 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-02
+**Branch:** worktree-agent-a0b554550bc724180 (commits 09f1998, 8ce487f, 1fa21fc, c3f5c3f)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. Planner invocations are not recorded in the cost stream
+
+**File:** `tools/pipeline/plan_phase.ts:210` — `invokeAgent(provider, prompt, config, plannerTier)` is called without a subsequent `recordCost`.
+
+The architectural decision in `docs/decisions/cost_visibility.md` says "Every agent invocation records token counts." The planner is an agent invocation. Missing it makes run/day totals incomplete, breaks per-run cap accounting (planner-heavy runs underreport), and undermines Phase 6's retry-budget assumptions ("how much has this packet cost so far" needs to include the planning cost that produced the packet).
+
+The developer flagged this as a "known gap, suitable for follow-up." Codex disagrees: the contract is "every invocation," and the planner is the most expensive single invocation in the pipeline.
+
+**Fix:** After `invokeAgent` in `runPlanPhaseInner`, write a `CostRecord` when `opts.runId` is present. `packet_id: null`, `spec_id: opts.specId ?? intent.id`. Add a test that exercises a real planning invocation path (not a pre-created feature).
+
+### 2. Per-day aggregation uses UTC run-id prefix, breaking the per-day cap in non-UTC timezones
+
+**File:** `tools/cost.ts:185` — `entries.filter((f) => f.endsWith('.jsonl') && f.startsWith(`${date}T`))`.
+
+`localDateString` correctly returns local-date strings. But `readDayCost` filters filenames by that local date string, and filenames come from `newRunId`, which uses UTC ISO timestamp. So a run started at 23:00 local in America/Phoenix (UTC-7) is at 06:00 UTC the next day; its filename prefix is `2026-05-03T...` but the operator considers it "May 2." `readDayCost('2026-05-02', ...)` excludes it. Per-day cap silently underreports for any timezone west of UTC.
+
+**Fix:** `readDayCost` must scan records and filter by the records' `timestamp` field (also stored in each `CostRecord`). Convert each record's UTC timestamp via the same `localDateString` helper and match against the requested local date. Don't rely on filename prefixes for day-cap accounting.
+
+A simple bounded scan: filenames in the 3-day UTC window (yesterday/today/tomorrow UTC relative to the requested local date) cover all possible records. Or just scan all .jsonl files in `<artifactRoot>/cost/`; the data is small.
+
+## Acknowledged interpretations
+
+- `total_cost_dollars` optional in `pipeline.finished` (omitted when all invocations are null-dollar) — **acceptable**.
+- Cap-crossed message in `OrchestratorResult.message` — **operator-friendly and fine**.
+
+## What this change does well
+
+- Pure/I/O split is genuinely clean: `tools/pipeline/cost.ts` has no fs dependency.
+- Null-dollar handling is honest: unknown costs are excluded from cap totals but surfaced in summaries (operator sees "X unknown-cost invocations" alongside the dollar total). No silent zero-cost fallback.
+- Cap-crossed event ordering for run/day paths is well-structured (event before abort).
+
+## Round budget remaining
+
+2 rounds.
