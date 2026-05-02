@@ -29,6 +29,9 @@ import {
   makePhaseCompleted,
 } from './events.js';
 import { appendEvent } from '../events.js';
+import type { InvokeResult } from './agent_invoke.js';
+import type { CostRecord } from './cost.js';
+import { recordCost } from '../cost.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -84,6 +87,36 @@ function readJsonDir<T>(dir: string): T[] {
     .filter((f) => f.endsWith('.json'))
     .map((f) => readJson<T>(join(dir, f)))
     .filter((x): x is T => x !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Cost recording (Phase 5.7)
+//
+// Best-effort wrapper around recordCost. No-op when runId is undefined
+// (unit tests that drive runVerifyPhase directly may omit it). Mirrors
+// the recordInvocationCost helper in develop_phase.ts.
+// ---------------------------------------------------------------------------
+
+function recordInvocationCost(
+  invokeResult: InvokeResult,
+  runId: string | undefined,
+  packetId: string | null,
+  specId: string | null,
+  artifactRoot: string,
+): void {
+  if (runId === undefined) return;
+  const record: CostRecord = {
+    run_id: runId,
+    packet_id: packetId,
+    spec_id: specId,
+    provider: invokeResult.cost.provider,
+    model: invokeResult.cost.model,
+    tokens_in: invokeResult.cost.tokens_in,
+    tokens_out: invokeResult.cost.tokens_out,
+    dollars: invokeResult.cost.dollars,
+    timestamp: new Date().toISOString(),
+  };
+  recordCost(record, artifactRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +217,7 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
 
     fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
     const qaResult = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
+    recordInvocationCost(qaResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot);
     if (qaResult.exit_code !== 0) {
       fmt.log('verify', `  ${fmt.sym.fail} QA agent failed`);
       failed.push(packet.id);

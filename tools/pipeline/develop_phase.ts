@@ -38,6 +38,9 @@ import {
   makePhaseCompleted,
 } from './events.js';
 import { appendEvent } from '../events.js';
+import type { InvokeResult } from './agent_invoke.js';
+import type { CostRecord } from './cost.js';
+import { recordCost } from '../cost.js';
 
 // ---------------------------------------------------------------------------
 // Resume points
@@ -203,6 +206,40 @@ function readJsonDir<T>(dir: string): T[] {
     .filter((x): x is T => x !== null);
 }
 
+// ---------------------------------------------------------------------------
+// Cost recording (Phase 5.7)
+//
+// Best-effort: every invokeAgent call inside this phase is followed
+// by recordInvocationCost which writes one CostRecord row to the
+// per-run JSONL. The function is a no-op when runId is undefined
+// (which happens when the phase is driven directly by a unit test
+// that did not pass runId — e.g. develop_phase.test.ts).
+//
+// This commit only PERSISTS rows; cap enforcement lands in step 4.
+// ---------------------------------------------------------------------------
+
+function recordInvocationCost(
+  invokeResult: InvokeResult,
+  runId: string | undefined,
+  packetId: string | null,
+  specId: string | null,
+  artifactRoot: string,
+): void {
+  if (runId === undefined) return;
+  const record: CostRecord = {
+    run_id: runId,
+    packet_id: packetId,
+    spec_id: specId,
+    provider: invokeResult.cost.provider,
+    model: invokeResult.cost.model,
+    tokens_in: invokeResult.cost.tokens_in,
+    tokens_out: invokeResult.cost.tokens_out,
+    dollars: invokeResult.cost.dollars,
+    timestamp: new Date().toISOString(),
+  };
+  recordCost(record, artifactRoot);
+}
+
 /**
  * Run the develop phase for a feature: implement / review / rework /
  * finalize each dev packet in topological order. Returns the lists
@@ -309,6 +346,7 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
           fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
           const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
+          recordInvocationCost(devResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot);
           const devOk = devResult.exit_code === 0;
           fmt.log('develop', devOk
             ? `  ${fmt.sym.ok} Implementation done`
@@ -340,6 +378,7 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
+          recordInvocationCost(reviewResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot);
           if (reviewResult.exit_code !== 0) {
             fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
             currentPoint = nextPointAfterReview(false, null);
@@ -365,6 +404,7 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
           const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config, devTier);
+          recordInvocationCost(reworkResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot);
           if (reworkResult.exit_code !== 0) fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
           currentPoint = nextPointAfterRework(reworkResult.exit_code === 0);
           break;
