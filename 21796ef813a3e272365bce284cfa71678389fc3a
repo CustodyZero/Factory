@@ -1,0 +1,29 @@
+# Phase 5.5 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-02
+**Branch:** phase-5.5-event-observability (round-2 commit 6d347d9)
+**Verdict:** APPROVE
+
+## Summary
+
+All four round-1 findings are fixed in production code:
+
+1. Provenance is no longer caller-controlled: `BaseInputs` only carries `run_id`, `dry_run`, and `timestamp`; `envelope()` derives provenance internally via `deriveProvenance({dryRun})`.
+2. `FACTORY_RUN_ID` is captured before overwrite and restored/deleted in `finally`, including early returns and thrown exceptions.
+3. Dry-run planning now emits `phase.completed(plan)` with `outcome: 'ok'`.
+4. The orchestrator now emits `pipeline.failed` in the catch path and rethrows; `run.ts` converts that to a clean non-zero CLI exit without dumping a raw stack.
+
+## Non-blocking observations (follow-up if desired, not required for merge)
+
+- **Provenance regression test is weaker than its comment claims.** The test relies on TypeScript-level type-safety to prevent passing `{ provenance: ... }` to BaseInputs, but Vitest does not typecheck at runtime. Production code is still correct because it ignores any extra `provenance` field on the input. A stronger test would explicitly construct an event using `as any` to pass the old shape and confirm the resulting event still has the correctly-derived provenance. (Not merge-blocking — the contract is enforced by the API shape.)
+- **`round-2 invariant` comments** are process-heavy. Worth a follow-up cleanup pass to remove PR-specific framing in favor of stable invariant statements.
+
+## Strongest parts
+
+- Env-var cleanup is correctly scoped with `try/finally`.
+- Exception path preserves the observability contract while keeping CLI behavior clean (no raw stacks dumped).
+
+## Round budget remaining
+
+1 round. None expected — this is APPROVE.
