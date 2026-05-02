@@ -285,6 +285,16 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Provider-agnostic: codex, claude, copilot all produce normalized records.
 - Schema added at `schemas/cost_record.schema.json`.
 
+### Checkpoint after Phase 5.7 — Orchestrator review
+
+**Trigger:** all Phase 5-series work merged (5, 5.5, 5.7) before Phase 6 begins.
+
+**Why:** Phase 5 shipped `tools/pipeline/orchestrator.ts` at 591 lines. Phase 5.5 will add event emission at orchestrator transitions; Phase 5.7 will add cost-cap enforcement in the orchestrator's per-spec loop. By the end of 5.7 the orchestrator will have grown materially, and that is the right moment to look for decomposition opportunities — not earlier (premature abstraction without knowing the final shape) and not later (Phase 6 recovery lands on top of whatever shape it has, so any orchestrator restructuring should precede it).
+
+**Scope:** read-only review pass. Possible outcomes: no change needed; minor refactor (likely along event/cost emission seams); decomposition into sub-modules. Any structural change goes through normal process classification (cross-cutting if it touches phase contracts, local otherwise).
+
+**Out of scope at this checkpoint:** recovery integration (Phase 6's job), parallel execution.
+
 ### Phase 6 — Recovery layer
 
 **Goal:** Implement the eight failure scenarios with their recipes. Builds on Phase 5.5 (events) and Phase 5.7 (cost caps) — recovery operates on events as its substrate, and retry budgets respect cost caps to prevent runaway loops.
