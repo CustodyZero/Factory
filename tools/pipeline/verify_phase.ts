@@ -27,7 +27,6 @@ import { completePacket } from '../lifecycle/complete.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
-  type Provenance,
 } from './events.js';
 import { appendEvent } from '../events.js';
 
@@ -46,9 +45,12 @@ export interface VerifyPhaseOptions {
    * `phase.started` / `phase.completed` events at its boundaries.
    * Optional so existing verify-phase unit tests don't have to
    * construct an events context.
+   *
+   * Provenance is NOT passed in — it is derived inside the events
+   * envelope from `dryRun` via deriveProvenance. (Round-2 invariant
+   * pin: callers cannot supply a free-form provenance value.)
    */
   readonly runId?: string;
-  readonly provenance?: Provenance;
   readonly specId?: string | null;
 }
 
@@ -98,8 +100,12 @@ export function runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. Best-effort.
-  const eventCtx = opts.runId !== undefined && opts.provenance !== undefined
-    ? { run_id: opts.runId, provenance: opts.provenance }
+  //
+  // Round-2 invariant: callers pass `dry_run` (a hint), never a
+  // pre-derived provenance. The pure constructors call
+  // deriveProvenance internally — VITEST > dryRun > live_run.
+  const eventCtx = opts.runId !== undefined
+    ? { run_id: opts.runId, dry_run: opts.dryRun }
     : null;
   if (eventCtx !== null) {
     appendEvent(

@@ -148,7 +148,10 @@ describe('newRunId', () => {
 // the shape that consumers (recovery, memory, replay) will rely on.
 // ---------------------------------------------------------------------------
 
-const base = { run_id: 'run-x', provenance: 'test' as const, timestamp: '2026-05-02T07:52:06.000Z' };
+// Round-2: BaseInputs no longer accepts a `provenance` field. Tests run
+// under VITEST so deriveProvenance returns 'test' regardless of the
+// dry_run hint; that's pinned in event_provenance.test.ts.
+const base = { run_id: 'run-x', dry_run: false, timestamp: '2026-05-02T07:52:06.000Z' };
 
 describe('event constructors', () => {
   it('makePipelineStarted', () => {
@@ -269,7 +272,7 @@ describe('event constructors', () => {
     // we just need to confirm a non-empty ISO string lands on the
     // envelope. The `with-timestamp` tests above pin format equality.
     const e = makePipelineStarted(
-      { run_id: 'r', provenance: 'test' },
+      { run_id: 'r' },
       { args: [], dry_run: false },
     );
     expect(e.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -284,11 +287,11 @@ describe('appendEvent / readEvents (tmpdir)', () => {
   it('writes a single JSONL line per call separated by \\n', () => {
     const root = mkTmp();
     const e1 = makeSpecStarted(
-      { run_id: 'run-1', provenance: 'test' },
+      { run_id: 'run-1' },
       { spec_id: 'a' },
     );
     const e2 = makeSpecCompleted(
-      { run_id: 'run-1', provenance: 'test' },
+      { run_id: 'run-1' },
       {
         spec_id: 'a',
         status: 'completed',
@@ -308,7 +311,7 @@ describe('appendEvent / readEvents (tmpdir)', () => {
     const root = mkTmp();
     expect(existsSync(join(root, 'events'))).toBe(false);
     const e = makeSpecStarted(
-      { run_id: 'run-mkdir', provenance: 'test' },
+      { run_id: 'run-mkdir' },
       { spec_id: 'a' },
     );
     appendEvent(e, root);
@@ -317,9 +320,9 @@ describe('appendEvent / readEvents (tmpdir)', () => {
 
   it('readEvents round-trips written events in order', () => {
     const root = mkTmp();
-    const e1 = makeSpecStarted({ run_id: 'rt', provenance: 'test' }, { spec_id: 'a' });
+    const e1 = makeSpecStarted({ run_id: 'rt' }, { spec_id: 'a' });
     const e2 = makePhaseStarted(
-      { run_id: 'rt', provenance: 'test' },
+      { run_id: 'rt' },
       { phase: 'plan', spec_id: 'a' },
     );
     appendEvent(e1, root);
@@ -333,7 +336,7 @@ describe('appendEvent / readEvents (tmpdir)', () => {
   it('readEvents tolerates a truncated final line (defensive)', () => {
     const root = mkTmp();
     const e = makeSpecStarted(
-      { run_id: 'trunc', provenance: 'test' },
+      { run_id: 'trunc' },
       { spec_id: 'a' },
     );
     appendEvent(e, root);
@@ -359,7 +362,7 @@ describe('appendEvent / readEvents (tmpdir)', () => {
     // Create a regular file at the path where we'd want the events dir.
     writeFileSync(blockedRoot, 'i am a file, not a dir', 'utf-8');
     const e = makeSpecStarted(
-      { run_id: 'r', provenance: 'test' },
+      { run_id: 'r' },
       { spec_id: 'a' },
     );
     expect(() => appendEvent(e, blockedRoot)).not.toThrow();
@@ -368,7 +371,7 @@ describe('appendEvent / readEvents (tmpdir)', () => {
   it('events round-tripped through readEvents preserve their full envelope', () => {
     const root = mkTmp();
     const original: Event = makePipelineFinished(
-      { run_id: 'env-rt', provenance: 'test' },
+      { run_id: 'env-rt' },
       { message: 'all done', specs_completed: 3 },
     );
     appendEvent(original, root);

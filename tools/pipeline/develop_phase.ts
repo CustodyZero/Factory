@@ -36,7 +36,6 @@ import { completePacket } from '../lifecycle/complete.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
-  type Provenance,
 } from './events.js';
 import { appendEvent } from '../events.js';
 
@@ -173,9 +172,12 @@ export interface DevelopPhaseOptions {
    * construct an events context. Lifecycle scripts called from
    * inside this phase pick up the run_id via process.env.FACTORY_RUN_ID
    * (set by the orchestrator), independent of these options.
+   *
+   * Provenance is NOT passed in — it is derived inside the events
+   * envelope from `dryRun` via deriveProvenance. (Round-2 invariant
+   * pin: callers cannot supply a free-form provenance value.)
    */
   readonly runId?: string;
-  readonly provenance?: Provenance;
   readonly specId?: string | null;
 }
 
@@ -210,9 +212,13 @@ export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. The eventCtx is null when
-  // the caller (e.g. a unit test) didn't pass run_id/provenance.
-  const eventCtx = opts.runId !== undefined && opts.provenance !== undefined
-    ? { run_id: opts.runId, provenance: opts.provenance }
+  // the caller (e.g. a unit test) didn't pass run_id.
+  //
+  // Round-2 invariant: callers pass `dry_run` (a hint), never a
+  // pre-derived provenance. The pure constructors call
+  // deriveProvenance internally — VITEST > dryRun > live_run.
+  const eventCtx = opts.runId !== undefined
+    ? { run_id: opts.runId, dry_run: opts.dryRun }
     : null;
   if (eventCtx !== null) {
     appendEvent(

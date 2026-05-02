@@ -29,7 +29,6 @@ import { invokeAgent } from './agent_invoke.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
-  type Provenance,
 } from './events.js';
 import { appendEvent } from '../events.js';
 
@@ -48,9 +47,12 @@ export interface PlanPhaseOptions {
    * Optional so that single-purpose unit tests of plan-phase logic
    * (which already exist) don't have to construct an events
    * context they don't care about.
+   *
+   * Provenance is NOT passed in — it is derived inside the events
+   * envelope from `dryRun` via deriveProvenance. (Round-2 invariant
+   * pin: callers cannot supply a free-form provenance value.)
    */
   readonly runId?: string;
-  readonly provenance?: Provenance;
   readonly specId?: string | null;
 }
 
@@ -125,8 +127,12 @@ export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
   // Phase 5.5: emit phase.started at entry. Best-effort; appendEvent
   // swallows errors. The eventCtx local short-circuits if no run_id
   // was passed (unit-test invocations).
-  const eventCtx = opts.runId !== undefined && opts.provenance !== undefined
-    ? { run_id: opts.runId, provenance: opts.provenance }
+  //
+  // Round-2 invariant: callers pass `dry_run` (a hint), never a
+  // pre-derived provenance. The pure constructors call
+  // deriveProvenance internally — VITEST > dryRun > live_run.
+  const eventCtx = opts.runId !== undefined
+    ? { run_id: opts.runId, dry_run: dryRun }
     : null;
   if (eventCtx !== null) {
     appendEvent(
@@ -135,18 +141,31 @@ export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
     );
   }
 
-  // The result.feature_id is the signal we use to derive the
-  // phase.completed `outcome`: any null at the final return is a
-  // failure path (planner failed, dry-run stopped, no artifact
-  // produced); a non-null id is a successful plan.
   const result = runPlanPhaseInner(opts);
 
   if (eventCtx !== null) {
+    // Round-2 fix (Issue 3): the plan phase's outcome must NOT collapse
+    // two distinct cases ("planner genuinely failed" vs "dry-run stopped
+    // early before invoking the planner") into a single `failed` label.
+    //
+    //   - feature_id !== null  -> 'ok' (planner succeeded, or feature
+    //     already existed)
+    //   - feature_id === null && dryRun  -> 'ok' (successful preview,
+    //     not a failure — the orchestrator emits spec.completed with
+    //     status='completed' for this branch, so phase 'failed' here
+    //     would contradict the rest of the stream)
+    //   - feature_id === null && !dryRun  -> 'failed' (real planning
+    //     failure, e.g. planner agent exited non-zero or did not
+    //     produce a feature artifact)
+    const phaseOutcome: 'ok' | 'failed' =
+      result.feature_id !== null ? 'ok' :
+      dryRun ? 'ok' :
+      'failed';
     appendEvent(
       makePhaseCompleted(eventCtx, {
         phase: 'plan',
         spec_id: opts.specId ?? intent.id,
-        outcome: result.feature_id !== null ? 'ok' : 'failed',
+        outcome: phaseOutcome,
       }),
       artifactRoot,
     );

@@ -27,7 +27,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Event, EventPayload, Provenance } from './pipeline/events.js';
+import type { Event, EventPayload } from './pipeline/events.js';
 
 // Re-export newRunId from the pure module so callers can take a single
 // dependency on `tools/events.ts` without also importing the pure side.
@@ -38,33 +38,35 @@ export { newRunId } from './pipeline/events.js';
 //
 // Lifecycle scripts (start.ts, request_review.ts, review.ts,
 // complete.ts) need to emit packet.* / verification.* events but they
-// don't take a runId/provenance parameter — they're invoked both as
+// don't take a runId/dryRun parameter — they're invoked both as
 // CLI subprocesses (when an agent calls them) and as in-process
 // library calls (when the phases call them). The orchestrator pins
 // the run_id into process.env.FACTORY_RUN_ID at the start of every
-// pipeline invocation; this helper consults that env var, derives
-// provenance from VITEST, and emits.
+// pipeline invocation; this helper consults that env var and emits
+// through the pure constructors, which derive provenance via the
+// VITEST > dryRun > live_run rule.
 //
 // CONTRACT
 //
 //   - If FACTORY_RUN_ID is not set, the helper is a no-op. This is
 //     the safe default for a lifecycle script run outside an
 //     orchestrator session: do not invent a run_id, do not emit.
-//   - Provenance is `test` under vitest, else `live_run`. Lifecycle
-//     scripts have no notion of dry-run (the phase modules already
-//     short-circuit before invoking lifecycle on dry-run paths).
+//   - Lifecycle scripts pass dry_run: false. Lifecycle scripts have
+//     no notion of dry-run — the phase modules already short-circuit
+//     before invoking lifecycle on dry-run paths. Under vitest the
+//     pure deriveProvenance helper still wins, tagging every event
+//     'test' regardless of the dry_run flag.
 //   - Best-effort: any failure is swallowed by appendEvent.
 // ---------------------------------------------------------------------------
 
 /**
- * Build the BaseInputs contract from process.env + vitest detection,
- * or return null when FACTORY_RUN_ID is unset (no event to emit).
+ * Resolve the run id from process.env, or return null when
+ * FACTORY_RUN_ID is unset (no event to emit).
  */
-function lifecycleEventContext(): { run_id: string; provenance: Provenance } | null {
+function lifecycleRunId(): string | null {
   const runId = process.env['FACTORY_RUN_ID'];
   if (runId === undefined || runId.length === 0) return null;
-  const provenance: Provenance = process.env['VITEST'] !== undefined ? 'test' : 'live_run';
-  return { run_id: runId, provenance };
+  return runId;
 }
 
 /**
@@ -76,6 +78,10 @@ function lifecycleEventContext(): { run_id: string; provenance: Provenance } | n
  * `tools/pipeline/events.ts` without paying the run-id detection
  * cost when no env var is set.
  *
+ * The closure receives `{ run_id, dry_run: false }` — provenance is
+ * NOT a caller-supplied field anywhere in the events API; it is
+ * derived inside the pure constructors via deriveProvenance.
+ *
  * Examples:
  *
  *   appendLifecycleEvent(
@@ -84,12 +90,12 @@ function lifecycleEventContext(): { run_id: string; provenance: Provenance } | n
  *   );
  */
 export function appendLifecycleEvent<P extends EventPayload>(
-  build: (base: { run_id: string; provenance: Provenance }) => Event<P>,
+  build: (base: { run_id: string; dry_run: false }) => Event<P>,
   artifactRoot: string,
 ): void {
-  const ctx = lifecycleEventContext();
-  if (ctx === null) return;
-  appendEvent(build(ctx), artifactRoot);
+  const runId = lifecycleRunId();
+  if (runId === null) return;
+  appendEvent(build({ run_id: runId, dry_run: false }), artifactRoot);
 }
 
 /**

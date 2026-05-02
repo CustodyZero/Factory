@@ -317,11 +317,25 @@ export function newRunId(clock: () => Date = () => new Date()): string {
 // Each constructor sets `event_type` exactly once (at both the envelope
 // and the payload). Discriminated-union narrowing means a caller of
 // `makePipelineStarted` gets a value typed as `Event<PipelineStartedPayload>`.
+//
+// PROVENANCE INVARIANT (Phase 5.5 round 2): callers cannot supply a
+// provenance value directly. They pass `dry_run` as a hint, and the
+// envelope derives provenance via `deriveProvenance({dryRun})` — the
+// VITEST > dryRun > live_run rule from the head of this module is the
+// sole authority. This pins the "tests cannot lie about being live
+// runs" guarantee at the API surface, not just at the helper.
 // ---------------------------------------------------------------------------
 
 interface BaseInputs {
   readonly run_id: string;
-  readonly provenance: Provenance;
+  /**
+   * Whether the surrounding pipeline invocation is a dry-run. Used as
+   * the `dryRun` input to deriveProvenance; the envelope NEVER takes a
+   * provenance value directly. Lifecycle scripts pass `false` (they
+   * never run during dry-run by construction); the orchestrator passes
+   * its own `dryRun` flag. Defaults to `false` when omitted.
+   */
+  readonly dry_run?: boolean;
   readonly timestamp?: string; // ISO; default now
 }
 
@@ -334,7 +348,7 @@ function envelope<P extends EventPayload>(
   return {
     event_type: payload.event_type,
     timestamp: base.timestamp ?? nowIso(),
-    provenance: base.provenance,
+    provenance: deriveProvenance({ dryRun: base.dry_run ?? false }),
     run_id: base.run_id,
     payload,
   };
