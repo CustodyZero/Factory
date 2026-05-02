@@ -42,6 +42,7 @@ import {
 } from './config.js';
 import * as fmt from './output.js';
 import { runOrchestrator, type OrchestratorResult, type SpecOutcome } from './pipeline/orchestrator.js';
+import { aggregateRunCost } from './cost.js';
 
 // ---------------------------------------------------------------------------
 // patchJson — kept exported here for the run.test.ts contract.
@@ -82,8 +83,13 @@ export function patchJson(
  * Render the orchestrator result to stderr as a human-readable summary.
  * The summary lists each spec's outcome (completed / failed / blocked)
  * so the operator can see the full picture in a single block.
+ *
+ * Phase 5.7 — also reads the per-run cost stream and reports total
+ * dollars + unknown-cost invocation count. The cost line is omitted
+ * entirely when there were no invocations (e.g. dry-run, top-level
+ * failure before any agent ran).
  */
-function renderSummary(result: OrchestratorResult): void {
+function renderSummary(result: OrchestratorResult, artifactRoot: string): void {
   process.stderr.write('\n');
   process.stderr.write(fmt.divider() + '\n');
   if (result.specs.length === 0) {
@@ -100,6 +106,23 @@ function renderSummary(result: OrchestratorResult): void {
       renderOutcomeLine(o);
     }
     fmt.log('done', result.success ? fmt.success(result.message) : fmt.warn(result.message));
+  }
+  // Phase 5.7 — cost summary line. Read the per-run cost JSONL and
+  // surface total dollars + unknown-cost count. Three branches:
+  //   - count == 0          → omit the line (no invocations happened)
+  //   - all unknown         → just report the count (no $ figure)
+  //   - mixed / all known   → "$X.YZ" plus "(N unknown-cost ...)"
+  // The line is informational; the exit code is unchanged.
+  const cost = aggregateRunCost(result.run_id, artifactRoot);
+  if (cost.count > 0) {
+    const knownCount = cost.count - cost.unknown_count;
+    if (knownCount === 0) {
+      fmt.log('done', fmt.info(`Cost: ${cost.unknown_count} unknown-cost invocation(s) (provider did not report tokens)`));
+    } else if (cost.unknown_count === 0) {
+      fmt.log('done', fmt.info(`Total cost: $${cost.total.toFixed(4)} over ${cost.count} invocation(s)`));
+    } else {
+      fmt.log('done', fmt.info(`Total cost: $${cost.total.toFixed(4)} (${cost.unknown_count} unknown-cost invocation(s))`));
+    }
   }
   if (!result.success && result.specs.some((o) => o.status === 'failed')) {
     fmt.log('done', fmt.info('Fix the failures and re-run to continue.'));
@@ -169,7 +192,7 @@ function main(): void {
     process.exit(1);
   }
 
-  renderSummary(result);
+  renderSummary(result, artifactRoot);
 
   if (jsonMode) {
     process.stdout.write(formatJsonOutput(positional, result) + '\n');

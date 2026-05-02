@@ -150,6 +150,13 @@ export interface PipelineFinishedPayload {
   readonly success: true;
   readonly message: string;
   readonly specs_completed: number;
+  /**
+   * Phase 5.7 — total dollars across the run, summed from every
+   * cost record. Optional because invocations may be entirely
+   * provider-don't-report (copilot today), in which case the orch
+   * may omit this field rather than report a misleading 0.
+   */
+  readonly total_cost_dollars?: number;
 }
 
 export interface PipelineFailedPayload {
@@ -405,14 +412,31 @@ export function makePipelineSpecResolved(
 
 export function makePipelineFinished(
   base: BaseInputs,
-  fields: { readonly message: string; readonly specs_completed: number },
+  fields: {
+    readonly message: string;
+    readonly specs_completed: number;
+    /**
+     * Phase 5.7 — pass undefined to omit; pass a number to include
+     * `total_cost_dollars` in the payload.
+     */
+    readonly total_cost_dollars?: number;
+  },
 ): Event<PipelineFinishedPayload> {
-  return envelope(base, {
-    event_type: 'pipeline.finished',
-    success: true,
-    message: fields.message,
-    specs_completed: fields.specs_completed,
-  });
+  const payload: PipelineFinishedPayload = fields.total_cost_dollars !== undefined
+    ? {
+        event_type: 'pipeline.finished',
+        success: true,
+        message: fields.message,
+        specs_completed: fields.specs_completed,
+        total_cost_dollars: fields.total_cost_dollars,
+      }
+    : {
+        event_type: 'pipeline.finished',
+        success: true,
+        message: fields.message,
+        specs_completed: fields.specs_completed,
+      };
+  return envelope(base, payload);
 }
 
 export function makePipelineFailed(

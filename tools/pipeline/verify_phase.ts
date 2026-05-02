@@ -27,10 +27,12 @@ import { completePacket } from '../lifecycle/complete.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
+  makeCostCapCrossed,
 } from './events.js';
 import { appendEvent } from '../events.js';
 import type { InvokeResult } from './agent_invoke.js';
 import type { CostRecord } from './cost.js';
+import { checkCap } from './cost.js';
 import { recordCost } from '../cost.js';
 
 // ---------------------------------------------------------------------------
@@ -90,12 +92,22 @@ function readJsonDir<T>(dir: string): T[] {
 }
 
 // ---------------------------------------------------------------------------
-// Cost recording (Phase 5.7)
+// Cost recording + per-packet cap enforcement (Phase 5.7)
 //
-// Best-effort wrapper around recordCost. No-op when runId is undefined
-// (unit tests that drive runVerifyPhase directly may omit it). Mirrors
-// the recordInvocationCost helper in develop_phase.ts.
+// Mirrors the helper in develop_phase.ts. The QA path only invokes
+// the agent once per packet, so the per-packet tracker is effectively
+// a single-shot here. We still use the same shape so the contract is
+// uniform across phases — simpler for Phase 6 recovery to consume.
 // ---------------------------------------------------------------------------
+
+interface PacketCostTracker {
+  total: number;
+  crossed: boolean;
+}
+
+function newPacketCostTracker(): PacketCostTracker {
+  return { total: 0, crossed: false };
+}
 
 function recordInvocationCost(
   invokeResult: InvokeResult,
@@ -103,8 +115,11 @@ function recordInvocationCost(
   packetId: string | null,
   specId: string | null,
   artifactRoot: string,
-): void {
-  if (runId === undefined) return;
+  perPacketCap: number | undefined,
+  tracker: PacketCostTracker,
+  dryRun: boolean,
+): { capCrossed: boolean } {
+  if (runId === undefined) return { capCrossed: false };
   const record: CostRecord = {
     run_id: runId,
     packet_id: packetId,
@@ -117,6 +132,28 @@ function recordInvocationCost(
     timestamp: new Date().toISOString(),
   };
   recordCost(record, artifactRoot);
+
+  if (invokeResult.cost.dollars !== null) {
+    tracker.total += invokeResult.cost.dollars;
+  }
+  if (!tracker.crossed && checkCap(tracker.total, perPacketCap)) {
+    tracker.crossed = true;
+    appendEvent(
+      makeCostCapCrossed(
+        { run_id: runId, dry_run: dryRun },
+        {
+          scope: 'per_packet',
+          cap_dollars: perPacketCap as number,
+          running_total: tracker.total,
+          packet_id: packetId,
+          spec_id: specId,
+        },
+      ),
+      artifactRoot,
+    );
+    return { capCrossed: true };
+  }
+  return { capCrossed: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +254,21 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
 
     fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
     const qaResult = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
-    recordInvocationCost(qaResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot);
+    // Phase 5.7 — per-packet cost cap. Tracker is single-shot for the
+    // QA path. A cap crossing here marks the packet failed (like an
+    // exit_code != 0 from the agent itself) and continues to the
+    // next packet — does NOT abort the whole verify phase.
+    const perPacketCap = config.pipeline?.cost_caps?.per_packet;
+    const packetCostTracker = newPacketCostTracker();
+    const { capCrossed } = recordInvocationCost(
+      qaResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+      perPacketCap, packetCostTracker, dryRun,
+    );
+    if (capCrossed) {
+      fmt.log('verify', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
+      failed.push(packet.id);
+      continue;
+    }
     if (qaResult.exit_code !== 0) {
       fmt.log('verify', `  ${fmt.sym.fail} QA agent failed`);
       failed.push(packet.id);
