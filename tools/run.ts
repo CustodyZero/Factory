@@ -146,13 +146,28 @@ function main(): void {
   const projectRoot = findProjectRoot();
   const artifactRoot = resolveArtifactRoot(projectRoot, config);
 
-  const result = runOrchestrator({
-    args: positional,
-    config,
-    projectRoot,
-    artifactRoot,
-    dryRun,
-  });
+  // Phase 5.5 round 2: the orchestrator now rethrows on unexpected
+  // exceptions (after emitting a closing pipeline.failed event). Catch
+  // here to translate the exception into a non-zero exit code with a
+  // user-facing summary line, instead of letting Node print a raw
+  // stack trace. The orchestrator already restored FACTORY_RUN_ID via
+  // its finally block before the throw reached us.
+  let result: OrchestratorResult;
+  try {
+    result = runOrchestrator({
+      args: positional,
+      config,
+      projectRoot,
+      artifactRoot,
+      dryRun,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`\n${fmt.divider()}\n`);
+    fmt.log('done', fmt.error(`Pipeline crashed: ${msg}`));
+    process.stderr.write(`${fmt.divider()}\n`);
+    process.exit(1);
+  }
 
   renderSummary(result);
 

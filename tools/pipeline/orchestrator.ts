@@ -47,6 +47,17 @@ import { runPlanPhase } from './plan_phase.js';
 import { runDevelopPhase } from './develop_phase.js';
 import { runVerifyPhase } from './verify_phase.js';
 import { topoSort } from './topo.js';
+import {
+  newRunId,
+  makePipelineStarted,
+  makePipelineSpecResolved,
+  makePipelineFinished,
+  makePipelineFailed,
+  makeSpecStarted,
+  makeSpecBlocked,
+  makeSpecCompleted,
+} from './events.js';
+import { appendEvent } from '../events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -88,6 +99,13 @@ export interface OrchestratorResult {
   /** True iff every spec resolved successfully and finished with `completed`. */
   readonly success: boolean;
   readonly message: string;
+  /**
+   * Unique id for this pipeline invocation. Always present, even on
+   * top-level resolution failures (the id is generated before any
+   * gate runs so pipeline.started / pipeline.failed land in the same
+   * stream). Phase 5.5 of specs/single-entry-pipeline.md.
+   */
+  readonly run_id: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,12 +322,25 @@ type RunSpecOutcome =
       readonly reason: string;
     };
 
+interface RunSingleSpecContext {
+  readonly runId: string;
+  /**
+   * Whether the surrounding pipeline invocation is a dry-run. Threaded
+   * through to the phase modules as the BaseInputs hint that
+   * deriveProvenance consumes. Provenance itself is NEVER carried by
+   * this context — it is derived once, inside the envelope helper, on
+   * every `make*` call. (Round-2 invariant pin.)
+   */
+  readonly dryRun: boolean;
+}
+
 function runSingleSpec(
   spec: ResolvedSpec,
   config: FactoryConfig,
   projectRoot: string,
   artifactRoot: string,
   dryRun: boolean,
+  ctx: RunSingleSpecContext,
 ): RunSpecOutcome {
   if (!existsSync(spec.intentPath)) {
     const msg = `Intent not found: ${spec.id}`;
@@ -336,6 +367,8 @@ function runSingleSpec(
     config,
     artifactRoot,
     dryRun,
+    runId: ctx.runId,
+    specId: spec.id,
   });
   if (planResult.feature_id === null) {
     // Pre-Phase-5 contract: --dry-run that stops at planning is a
@@ -409,12 +442,28 @@ function runSingleSpec(
   // Phase 2: Develop.
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('DEVELOPMENT'));
-  const devResult = runDevelopPhase({ feature, config, artifactRoot, projectRoot, dryRun });
+  const devResult = runDevelopPhase({
+    feature,
+    config,
+    artifactRoot,
+    projectRoot,
+    dryRun,
+    runId: ctx.runId,
+    specId: spec.id,
+  });
 
   // Phase 3: Verify.
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('VERIFICATION'));
-  const qaResult = runVerifyPhase({ feature, config, artifactRoot, projectRoot, dryRun });
+  const qaResult = runVerifyPhase({
+    feature,
+    config,
+    artifactRoot,
+    projectRoot,
+    dryRun,
+    runId: ctx.runId,
+    specId: spec.id,
+  });
 
   // Update feature status if all packets completed.
   const allCompleted = [...devResult.completed, ...qaResult.completed];
@@ -478,114 +527,263 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
   fmt.resetTimer();
   process.stderr.write(fmt.header('RUN', `[${config.project_name}]`) + '\n\n');
 
-  // 1. Resolve every arg.
-  const resolution = _resolveAll(args, artifactRoot, projectRoot);
-  if (!resolution.ok) {
-    fmt.log('error', fmt.error(resolution.error));
-    return { specs: [], success: false, message: resolution.error };
-  }
-  const resolved = resolution.resolved;
+  // Phase 5.5: generate the run id BEFORE any gate so pipeline.started
+  // and pipeline.failed both land in the same per-run JSONL stream
+  // (even on top-level resolution failures). Provenance is NOT carried
+  // on the eventBase — every `make*` call derives it from base.dry_run
+  // via deriveProvenance (VITEST > dryRun > live_run). The dry_run
+  // hint is the only piece of invocation context callers may pass.
+  const runId = newRunId();
+  const eventBase = { run_id: runId, dry_run: dryRun };
 
-  // 2. Detect missing transitive deps before any agent invocation.
-  const missing = _findMissingDeps(resolved);
-  if (missing.length > 0) {
-    const lines = missing.map((m) => `'${m.specId}' depends_on '${m.missingId}' which was not given as an argument`);
-    const msg = `Missing transitive dependency: ${lines.join('; ')}. Pass all transitive deps explicitly.`;
-    fmt.log('error', fmt.error(msg));
-    return { specs: [], success: false, message: msg };
-  }
+  // Phase 5.5 round 2: scope FACTORY_RUN_ID strictly to the
+  // orchestrator's lifetime. Capture the prior value, set the new one,
+  // and restore (or delete) it in `finally` below. This prevents an
+  // in-process caller that runs a lifecycle function AFTER the
+  // orchestrator returns from silently appending events to the prior
+  // run's stream — a dishonest-system pattern called out in the
+  // round-1 review.
+  const priorRunId = process.env['FACTORY_RUN_ID'];
+  process.env['FACTORY_RUN_ID'] = runId;
 
-  // 3. Detect cycles before any agent invocation.
-  const { cycles } = _detectCycles(resolved);
-  if (cycles.length > 0) {
-    const formatted = cycles.map(formatCycle).join('; ');
-    const msg = `Cyclic spec dependency detected: ${formatted}. Resolve the cycle before running.`;
-    fmt.log('error', fmt.error(msg));
-    return { specs: [], success: false, message: msg };
-  }
-
-  // 4. Topo-sort using the existing primitive.
-  const order = topoSort<ResolvedSpec>(
-    resolved,
-    (s) => s.id,
-    (s) => s.dependsOn,
-  );
-
-  if (resolved.length > 1) {
-    fmt.log('plan', `Multi-spec run: ${order.map((s) => s.id).join(' -> ')}`);
-  }
-
-  // 5. Sequential per-spec execution. Track outcomes so dependents can
-  //    be marked blocked.
+  // Track outcomes outside the try block so the catch handler can
+  // include partial totals in the synthetic pipeline.failed payload.
   const outcomeById = new Map<string, SpecOutcome>();
   const collected: SpecOutcome[] = [];
 
-  for (const spec of order) {
-    // Compute which (if any) of this spec's depends_on have already
-    // failed or been blocked. Empty depsBlocked means we are clear to
-    // run this spec.
-    const depsBlocked: string[] = [];
-    for (const dep of spec.dependsOn) {
-      const prior = outcomeById.get(dep);
-      if (prior !== undefined && prior.status !== 'completed') {
-        depsBlocked.push(dep);
-      }
+  // pipeline.started — first event in the stream. Emitted inside the
+  // try-block so an immediate post-emission throw still hits the
+  // catch handler and produces a closing pipeline.failed.
+  try {
+    appendEvent(
+      makePipelineStarted(eventBase, { args: [...args], dry_run: dryRun }),
+      artifactRoot,
+    );
+
+    // Helper: emit pipeline.failed for top-level (pre-execution)
+    // failures and return the OrchestratorResult envelope. Centralised
+    // here so every early-return path stays in sync — the failure
+    // event is part of the contract; forgetting one is a regression.
+    const failTopLevel = (msg: string): OrchestratorResult => {
+      appendEvent(
+        makePipelineFailed(eventBase, {
+          message: msg,
+          specs_completed: 0,
+          specs_failed: 0,
+          specs_blocked: 0,
+        }),
+        artifactRoot,
+      );
+      return { specs: [], success: false, message: msg, run_id: runId };
+    };
+
+    // 1. Resolve every arg.
+    const resolution = _resolveAll(args, artifactRoot, projectRoot);
+    if (!resolution.ok) {
+      fmt.log('error', fmt.error(resolution.error));
+      return failTopLevel(resolution.error);
     }
-    if (depsBlocked.length > 0) {
-      const reason = `Blocked by upstream spec(s) that did not complete: ${depsBlocked.join(', ')}`;
-      const outcome: SpecOutcome = {
-        id: spec.id,
-        status: 'blocked',
-        blocked_by: depsBlocked,
-        reason,
-      };
+    const resolved = resolution.resolved;
+
+    // 2. Detect missing transitive deps before any agent invocation.
+    const missing = _findMissingDeps(resolved);
+    if (missing.length > 0) {
+      const lines = missing.map((m) => `'${m.specId}' depends_on '${m.missingId}' which was not given as an argument`);
+      const msg = `Missing transitive dependency: ${lines.join('; ')}. Pass all transitive deps explicitly.`;
+      fmt.log('error', fmt.error(msg));
+      return failTopLevel(msg);
+    }
+
+    // 3. Detect cycles before any agent invocation.
+    const { cycles } = _detectCycles(resolved);
+    if (cycles.length > 0) {
+      const formatted = cycles.map(formatCycle).join('; ');
+      const msg = `Cyclic spec dependency detected: ${formatted}. Resolve the cycle before running.`;
+      fmt.log('error', fmt.error(msg));
+      return failTopLevel(msg);
+    }
+
+    // 4. Topo-sort using the existing primitive.
+    const order = topoSort<ResolvedSpec>(
+      resolved,
+      (s) => s.id,
+      (s) => s.dependsOn,
+    );
+
+    // pipeline.spec_resolved — fired AFTER the resolution gates pass.
+    // The order array carries the topo-sorted execution sequence so
+    // downstream consumers see the planned order even before any spec
+    // starts.
+    appendEvent(
+      makePipelineSpecResolved(eventBase, {
+        spec_ids: resolved.map((s) => s.id),
+        order: order.map((s) => s.id),
+      }),
+      artifactRoot,
+    );
+
+    if (resolved.length > 1) {
+      fmt.log('plan', `Multi-spec run: ${order.map((s) => s.id).join(' -> ')}`);
+    }
+
+    // 5. Sequential per-spec execution. Track outcomes so dependents
+    //    can be marked blocked.
+    for (const spec of order) {
+      // Compute which (if any) of this spec's depends_on have already
+      // failed or been blocked. Empty depsBlocked means we are clear
+      // to run this spec.
+      const depsBlocked: string[] = [];
+      for (const dep of spec.dependsOn) {
+        const prior = outcomeById.get(dep);
+        if (prior !== undefined && prior.status !== 'completed') {
+          depsBlocked.push(dep);
+        }
+      }
+      if (depsBlocked.length > 0) {
+        const reason = `Blocked by upstream spec(s) that did not complete: ${depsBlocked.join(', ')}`;
+        const outcome: SpecOutcome = {
+          id: spec.id,
+          status: 'blocked',
+          blocked_by: depsBlocked,
+          reason,
+        };
+        outcomeById.set(spec.id, outcome);
+        collected.push(outcome);
+        // spec.blocked — emitted in lieu of spec.started/spec.completed.
+        // A blocked spec never enters its phases.
+        appendEvent(
+          makeSpecBlocked(eventBase, { spec_id: spec.id, blocked_by: depsBlocked, reason }),
+          artifactRoot,
+        );
+        process.stderr.write('\n');
+        fmt.log('plan', fmt.warn(`Skipping '${spec.id}': ${reason}`));
+        continue;
+      }
+
+      // Banner per spec when there's more than one.
+      if (resolved.length > 1) {
+        process.stderr.write('\n');
+        fmt.log('plan', fmt.bold(`Spec: ${spec.id}`));
+      }
+
+      // spec.started before runSingleSpec runs so the pre-pipeline
+      // resolution / parsing failures still bracket cleanly with a
+      // spec.completed (status='failed'). Symmetry matters for replay.
+      appendEvent(
+        makeSpecStarted(eventBase, { spec_id: spec.id }),
+        artifactRoot,
+      );
+
+      const result = runSingleSpec(
+        spec, config, projectRoot, artifactRoot, dryRun,
+        { runId, dryRun },
+      );
+      let outcome: SpecOutcome;
+      if (result.status === 'completed') {
+        outcome = {
+          id: spec.id,
+          status: 'completed',
+          feature_id: result.feature_id,
+          packets_completed: result.packets_completed,
+          packets_failed: result.packets_failed,
+        };
+      } else {
+        outcome = {
+          id: spec.id,
+          status: 'failed',
+          feature_id: result.feature_id,
+          packets_completed: result.packets_completed,
+          packets_failed: result.packets_failed,
+          reason: result.reason,
+        };
+      }
+      // spec.completed — bracket-close for spec.started above. The
+      // payload status mirrors `outcome.status` so consumers can pin
+      // success/failure from the event alone.
+      appendEvent(
+        makeSpecCompleted(eventBase, {
+          spec_id: spec.id,
+          status: result.status,
+          feature_id: result.feature_id,
+          packets_completed: [...result.packets_completed],
+          packets_failed: [...result.packets_failed],
+          ...(result.status === 'failed' ? { reason: result.reason } : {}),
+        }),
+        artifactRoot,
+      );
       outcomeById.set(spec.id, outcome);
       collected.push(outcome);
-      process.stderr.write('\n');
-      fmt.log('plan', fmt.warn(`Skipping '${spec.id}': ${reason}`));
-      continue;
     }
 
-    // Banner per spec when there's more than one.
-    if (resolved.length > 1) {
-      process.stderr.write('\n');
-      fmt.log('plan', fmt.bold(`Spec: ${spec.id}`));
-    }
+    // 6. Aggregate.
+    const allCompleted = collected.every((o) => o.status === 'completed');
+    const totals = {
+      completed: collected.filter((o) => o.status === 'completed').length,
+      failed: collected.filter((o) => o.status === 'failed').length,
+      blocked: collected.filter((o) => o.status === 'blocked').length,
+    };
+    const message = allCompleted
+      ? `All ${totals.completed} spec(s) completed`
+      : `${totals.completed} completed, ${totals.failed} failed, ${totals.blocked} blocked`;
 
-    const result = runSingleSpec(spec, config, projectRoot, artifactRoot, dryRun);
-    let outcome: SpecOutcome;
-    if (result.status === 'completed') {
-      outcome = {
-        id: spec.id,
-        status: 'completed',
-        feature_id: result.feature_id,
-        packets_completed: result.packets_completed,
-        packets_failed: result.packets_failed,
-      };
+    // Bracket-close: pipeline.finished on full success, pipeline.failed
+    // when any spec failed or was blocked. Emitted from the
+    // orchestrator (not run.ts) so unit tests that drive
+    // runOrchestrator directly see the complete event sequence — this
+    // is the only place that knows whether the run resolved cleanly.
+    // run.ts continues to own the exit-code decision via
+    // result.success.
+    if (allCompleted) {
+      appendEvent(
+        makePipelineFinished(eventBase, { message, specs_completed: totals.completed }),
+        artifactRoot,
+      );
     } else {
-      outcome = {
-        id: spec.id,
-        status: 'failed',
-        feature_id: result.feature_id,
-        packets_completed: result.packets_completed,
-        packets_failed: result.packets_failed,
-        reason: result.reason,
-      };
+      appendEvent(
+        makePipelineFailed(eventBase, {
+          message,
+          specs_completed: totals.completed,
+          specs_failed: totals.failed,
+          specs_blocked: totals.blocked,
+        }),
+        artifactRoot,
+      );
     }
-    outcomeById.set(spec.id, outcome);
-    collected.push(outcome);
+
+    return { specs: collected, success: allCompleted, message, run_id: runId };
+  } catch (err) {
+    // Phase 5.5 round 2: an unexpected exception (anywhere in the
+    // resolution gates, runSingleSpec, or a phase function) must NOT
+    // leave the event stream open with only pipeline.started and no
+    // closing event. We synthesise a pipeline.failed using whatever
+    // outcomes were collected so far, then RETHROW so the exception
+    // continues to propagate. The orchestrator is not in a position
+    // to invent successful outcomes when it crashed; the caller
+    // (run.ts) translates the exception into a non-zero exit code.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const partialTotals = {
+      completed: collected.filter((o) => o.status === 'completed').length,
+      failed: collected.filter((o) => o.status === 'failed').length,
+      blocked: collected.filter((o) => o.status === 'blocked').length,
+    };
+    appendEvent(
+      makePipelineFailed(eventBase, {
+        message: `Orchestrator crashed: ${errMsg}`,
+        specs_completed: partialTotals.completed,
+        specs_failed: partialTotals.failed,
+        specs_blocked: partialTotals.blocked,
+      }),
+      artifactRoot,
+    );
+    throw err;
+  } finally {
+    // Restore (or unset) FACTORY_RUN_ID so an in-process caller cannot
+    // accidentally inherit our run id. The pair (capture, restore)
+    // scopes the env var to the orchestrator's dynamic extent.
+    if (priorRunId === undefined) {
+      delete process.env['FACTORY_RUN_ID'];
+    } else {
+      process.env['FACTORY_RUN_ID'] = priorRunId;
+    }
   }
-
-  // 6. Aggregate.
-  const allCompleted = collected.every((o) => o.status === 'completed');
-  const totals = {
-    completed: collected.filter((o) => o.status === 'completed').length,
-    failed: collected.filter((o) => o.status === 'failed').length,
-    blocked: collected.filter((o) => o.status === 'blocked').length,
-  };
-  const message = allCompleted
-    ? `All ${totals.completed} spec(s) completed`
-    : `${totals.completed} completed, ${totals.failed} failed, ${totals.blocked} blocked`;
-
-  return { specs: collected, success: allCompleted, message };
 }

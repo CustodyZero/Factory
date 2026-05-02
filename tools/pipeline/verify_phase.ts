@@ -24,6 +24,11 @@ import { buildQaPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
 import { completePacket } from '../lifecycle/complete.js';
+import {
+  makePhaseStarted,
+  makePhaseCompleted,
+} from './events.js';
+import { appendEvent } from '../events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -35,6 +40,18 @@ export interface VerifyPhaseOptions {
   readonly artifactRoot: string;
   readonly projectRoot: string;
   readonly dryRun: boolean;
+  /**
+   * Phase 5.5 — events plumbing. When present, the phase emits
+   * `phase.started` / `phase.completed` events at its boundaries.
+   * Optional so existing verify-phase unit tests don't have to
+   * construct an events context.
+   *
+   * Provenance is NOT passed in — it is derived inside the events
+   * envelope from `dryRun` via deriveProvenance. (Round-2 invariant
+   * pin: callers cannot supply a free-form provenance value.)
+   */
+  readonly runId?: string;
+  readonly specId?: string | null;
 }
 
 export interface VerifyPhaseResult {
@@ -80,6 +97,42 @@ function readJsonDir<T>(dir: string): T[] {
  * packet ids.
  */
 export function runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult {
+  const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
+
+  // Phase 5.5: emit phase.started at entry. Best-effort.
+  //
+  // Round-2 invariant: callers pass `dry_run` (a hint), never a
+  // pre-derived provenance. The pure constructors call
+  // deriveProvenance internally — VITEST > dryRun > live_run.
+  const eventCtx = opts.runId !== undefined
+    ? { run_id: opts.runId, dry_run: opts.dryRun }
+    : null;
+  if (eventCtx !== null) {
+    appendEvent(
+      makePhaseStarted(eventCtx, { phase: 'verify', spec_id: opts.specId ?? null }),
+      artifactRoot,
+    );
+  }
+
+  const result = runVerifyPhaseInner(opts);
+
+  if (eventCtx !== null) {
+    // Outcome: 'failed' if any QA packet failed; 'ok' otherwise.
+    // Skipped packets are NOT failures here — they're a sequencing
+    // signal (dev-not-yet-complete) reflected in the `skipped` list.
+    appendEvent(
+      makePhaseCompleted(eventCtx, {
+        phase: 'verify',
+        spec_id: opts.specId ?? null,
+        outcome: result.failed.length === 0 ? 'ok' : 'failed',
+      }),
+      artifactRoot,
+    );
+  }
+  return result;
+}
+
+function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));

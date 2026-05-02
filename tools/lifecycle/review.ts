@@ -21,6 +21,11 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from '../config.js';
 import type { FactoryConfig } from '../config.js';
+import { appendLifecycleEvent } from '../events.js';
+import {
+  makePacketReviewApproved,
+  makePacketChangesRequested,
+} from '../pipeline/events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -158,6 +163,26 @@ export function recordReview(options: RecordReviewOptions): RecordReviewOutcome 
 
   packet['status'] = targetStatus;
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+
+  // Phase 5.5 — emit packet.review_approved or packet.changes_requested
+  // based on the decision. No-op outside an orchestrator session.
+  if (targetStatus === 'review_approved') {
+    appendLifecycleEvent(
+      (base) => makePacketReviewApproved(base, {
+        packet_id: packetId,
+        review_iteration: iteration,
+      }),
+      artifactRoot,
+    );
+  } else {
+    appendLifecycleEvent(
+      (base) => makePacketChangesRequested(base, {
+        packet_id: packetId,
+        review_iteration: iteration,
+      }),
+      artifactRoot,
+    );
+  }
 
   return {
     kind: 'recorded',

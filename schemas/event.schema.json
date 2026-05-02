@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "Factory Pipeline Event",
+  "description": "One line of the JSONL event stream emitted by the factory pipeline. Reference artifact for human readers and future tooling. NOT wired into validate.ts; the pure TypeScript types in tools/pipeline/events.ts are the authoritative contract today.",
+  "type": "object",
+  "required": ["event_type", "timestamp", "provenance", "run_id", "payload"],
+  "properties": {
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "pipeline.started",
+        "pipeline.spec_resolved",
+        "pipeline.finished",
+        "pipeline.failed",
+        "spec.started",
+        "spec.blocked",
+        "spec.completed",
+        "phase.started",
+        "phase.completed",
+        "packet.started",
+        "packet.review_requested",
+        "packet.review_approved",
+        "packet.changes_requested",
+        "packet.completed",
+        "packet.failed",
+        "verification.passed",
+        "verification.failed"
+      ],
+      "description": "The closed taxonomy of event types. Phase 6 (recovery) and Phase 5.7 (cost) extend this list."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp (UTC) for when the event was emitted."
+    },
+    "provenance": {
+      "type": "string",
+      "enum": ["live_run", "test", "healthcheck", "replay", "dry_run"],
+      "description": "Origin of this event. Consumers filter by provenance: recovery operates on live_run, the future memory write-side ingests live_run only, tests stay isolated."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique id for the pipeline invocation that produced this event. Format: ISO timestamp (filesystem-safe) + 8-hex-char random suffix."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Per-event-type payload. Discriminated by `event_type`, which is also present at this level. See tools/pipeline/events.ts for the per-type payload shapes.",
+      "required": ["event_type"],
+      "properties": {
+        "event_type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
