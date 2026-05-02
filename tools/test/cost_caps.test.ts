@@ -45,6 +45,12 @@ interface QueuedInvoke {
   dollars: number | null;
   tokens_in?: number | null;
   tokens_out?: number | null;
+  /**
+   * Side-effect hook run BEFORE the mock returns. Used by the planner-
+   * cost test to materialise a feature artifact on disk so plan_phase's
+   * post-invocation re-read sees it. Round-2 round.
+   */
+  sideEffect?: () => void;
 }
 
 const __invokeQueue: QueuedInvoke[] = [];
@@ -56,6 +62,7 @@ vi.mock('../pipeline/agent_invoke.js', () => ({
   invokeAgent: (provider: string, _prompt: string, _config: unknown, _modelTier?: string) => {
     __invokeCallCount += 1;
     const next = __invokeQueue.shift();
+    if (next?.sideEffect) next.sideEffect();
     const exitCode = next?.exit_code ?? 0;
     const dollars = next?.dollars ?? 0;
     const tokens_in = next?.tokens_in ?? 0;
@@ -599,5 +606,104 @@ describe('cost recording (no caps)', () => {
     expect(rows[0]!.packet_id).toBe('pkt-A');
     expect(rows[0]!.spec_id).toBe('spec-A');
     expect(rows[0]!.provider).toBe('codex');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Planner invocation writes a CostRecord
+//
+// Round-2 fix (Issue 1): the planner is the most expensive single
+// invocation in the pipeline. Before this fix, plan_phase invoked
+// the agent without recording cost — undermining the architectural
+// decision that "every agent invocation records cost" and breaking
+// per-run cap accounting (planner-heavy runs underreported).
+// ---------------------------------------------------------------------------
+
+describe('planner cost recording (round-2 issue 1)', () => {
+  it('runPlanPhase writes a CostRecord with packet_id:null and spec_id:<intent>', () => {
+    const root = mkRoot();
+    const config = makeBaseConfig({} as unknown as FactoryConfig['pipeline']);
+    writeConfig(root, config);
+
+    // Intent and packet exist; the FEATURE is intentionally NOT
+    // pre-created so plan_phase falls through past the
+    // "feature already exists" short-circuit and actually invokes
+    // the planner. The mocked invokeAgent uses its sideEffect hook
+    // to materialise the feature artifact BEFORE returning, so
+    // plan_phase's post-invocation re-read picks it up and the
+    // pipeline proceeds normally.
+    if (!existsSync(join(root, 'intents'))) mkdirSync(join(root, 'intents'), { recursive: true });
+    if (!existsSync(join(root, 'features'))) mkdirSync(join(root, 'features'), { recursive: true });
+    if (!existsSync(join(root, 'packets'))) mkdirSync(join(root, 'packets'), { recursive: true });
+    writeFileSync(
+      join(root, 'intents', 'spec-P.json'),
+      JSON.stringify({
+        id: 'spec-P',
+        title: 'Planner-cost test',
+        spec: 'Planner-cost test intent.',
+        status: 'planned',
+      }, null, 2),
+      'utf-8',
+    );
+    writeFileSync(
+      join(root, 'packets', 'pkt-P.json'),
+      JSON.stringify({
+        id: 'pkt-P',
+        title: 'Dev pkt-P',
+        kind: 'dev',
+        status: 'ready',
+        feature_id: 'feat-P',
+        intent_id: 'spec-P',
+        dependencies: [],
+        acceptance_criteria: [],
+        review_iteration: 0,
+        created_at: '2026-05-01T00:00:00.000Z',
+      }, null, 2),
+      'utf-8',
+    );
+
+    // Planner: $0.40, with a sideEffect that writes the feature
+    // artifact (simulating "planner produced a feature.json"). Then
+    // the dev invocation: $0.05.
+    pushInvocation({
+      exit_code: 0,
+      dollars: 0.40,
+      tokens_in: 5000,
+      tokens_out: 2000,
+      sideEffect: () => {
+        writeFileSync(
+          join(root, 'features', 'feat-P.json'),
+          JSON.stringify({
+            id: 'feat-P',
+            title: 'Feature P',
+            status: 'planned',
+            intent_id: 'spec-P',
+            packets: ['pkt-P'],
+            created_at: '2026-05-01T00:00:00.000Z',
+          }, null, 2),
+          'utf-8',
+        );
+      },
+    });
+    pushInvocation({ exit_code: 0, dollars: 0.05, tokens_in: 100, tokens_out: 200 });
+
+    const result = runOrchestrator({
+      args: ['spec-P'],
+      config,
+      projectRoot: root,
+      artifactRoot: root,
+      dryRun: false,
+    });
+
+    const rows = readCostRecords(result.run_id, root);
+    // Planner row: packet_id null, spec_id matches intent id.
+    const plannerRow = rows.find((r) => r.packet_id === null);
+    expect(plannerRow).toBeDefined();
+    expect(plannerRow!.spec_id).toBe('spec-P');
+    expect(plannerRow!.provider).toBe('claude');
+    expect(plannerRow!.dollars).toBe(0.40);
+    expect(plannerRow!.tokens_in).toBe(5000);
+    expect(plannerRow!.tokens_out).toBe(2000);
+    expect(plannerRow!.run_id).toBe(result.run_id);
   });
 });
