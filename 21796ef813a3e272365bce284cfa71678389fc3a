@@ -27,3 +27,68 @@ All four round-1 findings are fixed in production code:
 ## Round budget remaining
 
 1 round. None expected — this is APPROVE.
+
+# Phase 5.5 QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-02
+**Verdict:** APPROVE
+
+## Acceptance criteria results
+
+All 14 acceptance criteria PASS, all 13 specific checks PASS.
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | 17 typed event types | PASS — `events.ts:95-117` closed union |
+| 2 | Provenance from invocation, not caller | PASS — `BaseInputs` has no `provenance` field; envelope derives via `deriveProvenance({ dryRun })` |
+| 3 | JSONL stream at `<artifactRoot>/events/<runId>.jsonl` | PASS — append-only via `appendFileSync` |
+| 4 | Best-effort writes | PASS — try/catch swallow |
+| 5 | Defensive reads | PASS — per-line try/catch around `JSON.parse` |
+| 6 | Pure/I-O boundary | PASS — zero fs imports in `pipeline/events.ts` |
+| 7 | Lifecycle scripts no-op when FACTORY_RUN_ID unset | PASS |
+| 8 | FACTORY_RUN_ID try/finally | PASS — restored/deleted on every exit path |
+| 9 | `pipeline.failed` always emitted on failure | PASS — top-level + per-spec + catch handler |
+| 10 | Dry-run plan emits `outcome:'ok'` | PASS — three-way decision in `plan_phase.ts:160-163` |
+| 11 | Schema documentation only | PASS — not wired into validate.ts/integrity.ts |
+| 12 | No new dependencies | PASS |
+| 13 | 410 tests pass | PASS — 31 files |
+| 14 | validate.ts PASS | PASS |
+
+## Facade-risk investigation (CLAUDE.md §3.4)
+
+`__R2_FORCE_PLAN_THROW` env var is read ONLY inside the `vi.mock` factory in `event_round2_invariants.test.ts:313`. NOT read in any production code. The mock is created at module-load time inside the test file — fully test-only, impossible to ship.
+
+## Round-2 contract tests are not tautological
+
+- Provenance test: pins both compile-time (BaseInputs shape) and runtime (every make* returns provenance:'test' under VITEST regardless of dry_run hint).
+- FACTORY_RUN_ID test: invokes orchestrator, inspects `process.env` after — covers BOTH unset-before→deletion and set-before→restoration branches plus the early-return failure path.
+- Dry-run plan test: reads actual JSONL via `readEvents`, asserts `outcome === 'ok'`.
+- Exception test: triggers real exception via vi.mock, asserts `pipeline.failed` written to JSONL AND `pipeline.finished` is absent.
+
+## Strongest parts (independent assessment)
+
+- Provenance is genuinely unspoofable — the API surface (no `provenance` field on `BaseInputs`) plus the hardwired `VITEST > dryRun > live_run` rule makes "tests cannot lie" a TYPE-level constraint.
+- Orchestrator's try/catch/finally is symmetric: every exit path (success, top-level fail, per-spec fail, exception) closes the event stream with `pipeline.finished` or `pipeline.failed` AND restores `FACTORY_RUN_ID`.
+
+# Phase 5.5 Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-02
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 5.5 ships event observability — the substrate Phase 6 recovery will operate on.
+
+- 4 commits: ed0374b, bfeced5, 9850eac, 6d347d9
+- New files: `tools/pipeline/events.ts` (582 lines, pure), `tools/events.ts` (179 lines, I/O), `schemas/event.schema.json` (60 lines, doc-only)
+- Modified: orchestrator.ts (+198), 3 phase modules (+147 total), 4 lifecycle scripts (+102 total), run.ts (+15 top-level catch)
+- tests: 358 → 410 (+52 across two rounds)
+- validate.ts: PASS, package.json unchanged, schemas only added (not wired)
+- 1 round of REQUEST-CHANGES (4 findings: spoofable provenance, FACTORY_RUN_ID leak, dry-run plan outcome, missing pipeline.failed on exceptions), 1 round of APPROVE
+- Independent QA verification: APPROVE on all 14 criteria, facade-risk check confirms no production code touches the test env-var seam
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
