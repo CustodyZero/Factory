@@ -240,27 +240,36 @@ The phases below are listed in the order they should land. Each phase is a candi
 - 2 review rounds used (codex GPT-5.5): Round 1 REQUEST-CHANGES (legacy `--dry-run` exit-code regression and `--json` shape regression for single-arg); Round 2 APPROVE after a focused 12-line shim in `runSingleSpec` and a new `formatJsonOutput` helper in `run.ts`.
 - Independent QA verification (separate Opus identity, FI-7) APPROVE on all 10 acceptance criteria.
 
-### Phase 5.5 — Event observability
+### Phase 5.5 — Event observability ✅ COMPLETE
+
+**Status:** Merged in commit `86e647c` (2026-05-02). Phase 6 recovery now has its event substrate.
 
 **Goal:** Implement [`event_observability`](../docs/decisions/event_observability.md). Add typed events emitted during pipeline execution with provenance labels. Foundational for Phase 6 (recovery operates on events) and the future memory write-side.
 
-**Specifically:**
+**What shipped:**
 
-- New `tools/pipeline/events.ts` (pure logic): event-type definitions (TypeScript union of `event_type` string literals), `Event` interface (`{ event_type, timestamp, provenance, payload }`), pure helpers for constructing events from typed inputs, event-payload schemas per type.
-- New `tools/events.ts` (I/O wrapper): `appendEvent(event, runId, artifactRoot)` that writes to `factory/events/<runId>.jsonl`. Uses append-only writes; no mid-run rewrites.
-- Provenance values: `live_run | test | healthcheck | replay | dry_run`. Defaults are derived from invocation context (e.g., `--dry-run` → `dry_run`, vitest test environment → `test`).
-- Initial event taxonomy (closed enum): `pipeline.started`, `pipeline.spec_resolved`, `pipeline.finished`, `pipeline.failed`, `spec.started`, `spec.blocked`, `spec.completed`, `phase.started`, `phase.completed`, `packet.started`, `packet.review_requested`, `packet.review_approved`, `packet.changes_requested`, `packet.completed`, `packet.failed`, `verification.passed`, `verification.failed`. Recovery and cost events arrive in Phase 6 / Phase 5.7 respectively.
-- Each phase from Phase 4.5 emits events at its key transitions. Implementation is consistent: phases call `appendEvent(...)` after each meaningful transition; events are not blocking (best-effort write).
-- Tests cover: event schema, provenance filtering, write-to-disk under tmpdir fixtures, recovery-from-truncated-jsonl reads (defensive).
+- New `tools/pipeline/events.ts` (582 lines, pure): closed `EventType` string-literal union (17 variants); `EventPayload` discriminated union keyed on `event_type`; `Event<P>` envelope; `BaseInputs` accepts `{ run_id, dry_run?, timestamp? }` — provenance is computed inside `envelope` via `deriveProvenance({ dryRun })` and is **unspoofable** from caller input. `make*` constructors per event type; `newRunId(clock?)` with injectable clock for tests.
+- New `tools/events.ts` (179 lines, I/O): `appendEvent` (append-only via `appendFileSync`, best-effort — errors swallowed); `readEvents` (per-line `JSON.parse` try/catch — tolerates truncated/corrupt last lines); `appendLifecycleEvent` (no-op when `FACTORY_RUN_ID` env var unset).
+- New `schemas/event.schema.json` — documentation only, NOT wired into `validate.ts` (per the Phase 4.6 schemas-as-documentation decision).
+- Orchestrator + 3 phase modules + 4 lifecycle scripts emit events at every meaningful transition. Provenance derived once at orchestrator entry (`VITEST > dryRun > live_run`). Tests get `provenance: 'test'` automatically — they cannot lie.
+- `FACTORY_RUN_ID` is scoped to the orchestrator's lifetime via try/finally (captured before set; restored or deleted on exit, including early returns and exception paths). Lifecycle scripts read it from env; emit nothing when unset; never invent a run_id.
+- Try/catch around the orchestrator body ensures `pipeline.failed` is always emitted on failure — including unexpected exceptions. `run.ts` top-level catch translates rethrows to a clean non-zero exit without leaking raw stacks.
+- Dry-run planning emits `phase.completed(plan)` with `outcome: 'ok'` (successful preview) — distinct from a real planning failure (`outcome: 'failed'`).
 
-**Acceptance:**
+**Iteration record:**
 
-- All existing tests pass.
-- A live run produces a JSONL file under `factory/events/<runId>.jsonl` with at least the lifecycle events.
-- Vitest test runs use `provenance: "test"` so they don't pollute live event streams (verifiable by inspecting test fixtures).
-- Schema added at `schemas/event.schema.json` validates the event format.
-- run.ts emits `pipeline.started` and `pipeline.finished` minimum.
-- The implementation is small enough that Phase 6 can extend it cleanly (recovery scenarios become events without restructuring).
+- 2 review rounds used (codex GPT-5.5):
+  - Round 1 REQUEST-CHANGES: 4 findings — provenance was spoofable through `BaseInputs.provenance`; `FACTORY_RUN_ID` leaked after orchestrator return; dry-run plan emitted `outcome:'failed'` inside a successful spec; `pipeline.failed` was not guaranteed on unexpected exceptions.
+  - Round 2 APPROVE after a single fixup commit (`6d347d9`) addressing all four findings + 7 contract tests.
+- Independent QA verification (separate Opus identity, FI-7) APPROVE on all 14 acceptance criteria. Facade-risk check: the test-only `__R2_FORCE_PLAN_THROW` env var is read only inside `vi.mock` factory, never in production code — not a facade.
+- One operational note: round-2 codex invocation hung once (6 hours, 0 CPU time, stalled network handshake). Killed and re-dispatched with a tighter timeout — completed cleanly.
+
+**What this does NOT include (still deferred):**
+
+- Recovery events (`recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated`) — Phase 6 will extend the closed enum.
+- Cost events (`cost.cap_crossed`) — Phase 5.7 will extend the closed enum.
+- Provider events (`provider.unavailable`, `provider.failover_attempted`) — Phase 7.
+- Event compaction / rotation — out of scope per the decision doc.
 
 ### Phase 5.7 — Cost visibility
 
