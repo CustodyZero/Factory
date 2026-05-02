@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cost_record.schema.json",
+  "title": "Factory Pipeline Cost Record",
+  "description": "One line of the JSONL cost stream emitted by the factory pipeline (Phase 5.7). Reference artifact for human readers and future tooling. NOT wired into validate.ts; the pure TypeScript types in tools/pipeline/cost.ts are the authoritative contract today (Phase 4.6 schemas-as-documentation decision).",
+  "type": "object",
+  "required": [
+    "run_id",
+    "packet_id",
+    "spec_id",
+    "provider",
+    "model",
+    "tokens_in",
+    "tokens_out",
+    "dollars",
+    "timestamp"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique id for the pipeline invocation that produced this row. Matches the run_id in the events stream."
+    },
+    "packet_id": {
+      "type": ["string", "null"],
+      "description": "Packet under which this invocation was made, or null when the invocation was outside a packet context (e.g. orchestrator-level planner calls)."
+    },
+    "spec_id": {
+      "type": ["string", "null"],
+      "description": "Spec under which this invocation was made, or null when outside a spec context."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider name (codex / claude / copilot / other)."
+    },
+    "model": {
+      "type": ["string", "null"],
+      "description": "Resolved model id, or null when no model was resolved."
+    },
+    "tokens_in": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Input tokens reported by the provider, or null if the provider does not report token counts."
+    },
+    "tokens_out": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Output tokens reported by the provider, or null if not reported."
+    },
+    "dollars": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Derived dollar cost from rate-card lookup, or null when token counts are null OR no rate-card entry exists for (provider, model). Null is the honest 'we do not know' signal — null-dollar records are NOT counted toward caps."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp (UTC) when the invocation was recorded."
+    }
+  },
+  "additionalProperties": false
+}

@@ -114,7 +114,9 @@ export type EventType =
   | 'packet.failed'
   // Verification
   | 'verification.passed'
-  | 'verification.failed';
+  | 'verification.failed'
+  // Cost (Phase 5.7)
+  | 'cost.cap_crossed';
 
 // ---------------------------------------------------------------------------
 // Payload variants — discriminated union keyed on `event_type`.
@@ -240,6 +242,30 @@ export interface VerificationFailedPayload {
   readonly failed_checks: ReadonlyArray<VerificationKind>;
 }
 
+/**
+ * Cost-cap-crossed event (Phase 5.7).
+ *
+ *   - `scope` distinguishes the three cap kinds (per-run / per-packet /
+ *     per-day). Consumers (display, recovery) branch on this field.
+ *   - `cap_dollars` is the configured cap that was crossed.
+ *   - `running_total` is the dollar total at-or-above the cap that
+ *     triggered emission. With `>=` semantics (see `checkCap`), the
+ *     invocation that ties the cap is the one that crosses it.
+ *   - `packet_id` is non-null only for `scope: 'per_packet'`; null for
+ *     `per_run` and `per_day`.
+ *   - `spec_id` is non-null when the crossing fired during a per-spec
+ *     loop; null otherwise.
+ */
+export interface CostCapCrossedPayload {
+  readonly event_type: 'cost.cap_crossed';
+  readonly scope: 'per_run' | 'per_packet' | 'per_day';
+  readonly cap_dollars: number;
+  readonly running_total: number;
+  readonly run_id: string;
+  readonly packet_id: string | null;
+  readonly spec_id: string | null;
+}
+
 export type EventPayload =
   | PipelineStartedPayload
   | PipelineSpecResolvedPayload
@@ -257,7 +283,8 @@ export type EventPayload =
   | PacketCompletedPayload
   | PacketFailedPayload
   | VerificationPassedPayload
-  | VerificationFailedPayload;
+  | VerificationFailedPayload
+  | CostCapCrossedPayload;
 
 // ---------------------------------------------------------------------------
 // Event envelope
@@ -578,5 +605,34 @@ export function makeVerificationFailed(
     event_type: 'verification.failed',
     packet_id: fields.packet_id,
     failed_checks: [...fields.failed_checks],
+  });
+}
+
+/**
+ * Construct a `cost.cap_crossed` event (Phase 5.7).
+ *
+ * Emit BEFORE aborting — the events stream must close cleanly. The
+ * orchestrator / phase modules pair this with a subsequent
+ * `pipeline.failed` (per-run / per-day scopes) or with marking the
+ * packet failed (per-packet scope).
+ */
+export function makeCostCapCrossed(
+  base: BaseInputs,
+  fields: {
+    readonly scope: 'per_run' | 'per_packet' | 'per_day';
+    readonly cap_dollars: number;
+    readonly running_total: number;
+    readonly packet_id: string | null;
+    readonly spec_id: string | null;
+  },
+): Event<CostCapCrossedPayload> {
+  return envelope(base, {
+    event_type: 'cost.cap_crossed',
+    scope: fields.scope,
+    cap_dollars: fields.cap_dollars,
+    running_total: fields.running_total,
+    run_id: base.run_id,
+    packet_id: fields.packet_id,
+    spec_id: fields.spec_id,
   });
 }
