@@ -25,6 +25,8 @@ import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from '../config.js';
 import type { FactoryConfig } from '../config.js';
+import { appendLifecycleEvent } from '../events.js';
+import { makePacketReviewRequested } from '../pipeline/events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -197,6 +199,16 @@ export function requestReview(options: RequestReviewOptions): RequestReviewOutco
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
   const newIteration = typeof packet['review_iteration'] === 'number' ? packet['review_iteration'] : 0;
+
+  // Phase 5.5 — emit packet.review_requested. No-op outside an
+  // orchestrator session (FACTORY_RUN_ID unset).
+  appendLifecycleEvent(
+    (base) => makePacketReviewRequested(base, {
+      packet_id: packetId,
+      review_iteration: newIteration,
+    }),
+    artifactRoot,
+  );
 
   return {
     kind: 'recorded',

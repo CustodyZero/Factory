@@ -29,6 +29,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from '../config.js';
 import type { FactoryConfig } from '../config.js';
+import { appendLifecycleEvent } from '../events.js';
+import { makePacketStarted } from '../pipeline/events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -114,6 +116,13 @@ export function startPacket(options: StartPacketOptions): StartPacketResult {
   packet['started_at'] = now;
   packet['status'] = 'implementing';
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+
+  // Phase 5.5 — emit packet.started. No-op when FACTORY_RUN_ID is
+  // unset (lifecycle script invoked outside an orchestrator session).
+  appendLifecycleEvent(
+    (base) => makePacketStarted(base, { packet_id: packetId }),
+    artifactRoot,
+  );
 
   return {
     packet_id: packetId,

@@ -28,6 +28,14 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, findProjectRoot, resolveArtifactRoot } from '../config.js';
+import { appendLifecycleEvent } from '../events.js';
+import {
+  makeVerificationPassed,
+  makeVerificationFailed,
+  makePacketCompleted,
+  makePacketFailed,
+  type VerificationKind,
+} from '../pipeline/events.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -176,6 +184,54 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   // Update packet status
   packet['status'] = 'completed';
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
+
+  // Phase 5.5 — emit verification + packet outcome events. Two
+  // distinct events because verification and packet lifecycle are
+  // separable concerns (recovery in Phase 6 acts on verification.*
+  // independently of the packet state machine). All no-ops outside
+  // an orchestrator session.
+  const passedChecks: VerificationKind[] = [];
+  const failedChecks: VerificationKind[] = [];
+  for (const [name, ok] of [
+    ['build', buildPass] as const,
+    ['lint', lintPass] as const,
+    ['tests', testsPass] as const,
+  ]) {
+    (ok ? passedChecks : failedChecks).push(name);
+  }
+  if (ciPass) {
+    appendLifecycleEvent(
+      (base) => makeVerificationPassed(base, {
+        packet_id: packetId,
+        checks: [...passedChecks, 'ci'],
+      }),
+      artifactRoot,
+    );
+    appendLifecycleEvent(
+      (base) => makePacketCompleted(base, { packet_id: packetId }),
+      artifactRoot,
+    );
+  } else {
+    appendLifecycleEvent(
+      (base) => makeVerificationFailed(base, {
+        packet_id: packetId,
+        failed_checks: failedChecks,
+      }),
+      artifactRoot,
+    );
+    // packet.failed: verification failure means the packet did not
+    // pass its acceptance gate. The on-disk packet status is still
+    // 'completed' (existing behavior — complete.ts records the
+    // attempt regardless), but the event taxonomy distinguishes
+    // pass from fail.
+    appendLifecycleEvent(
+      (base) => makePacketFailed(base, {
+        packet_id: packetId,
+        reason: verificationNotes,
+      }),
+      artifactRoot,
+    );
+  }
 
   return {
     packet_id: packetId,

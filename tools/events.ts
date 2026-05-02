@@ -27,11 +27,70 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Event } from './pipeline/events.js';
+import type { Event, EventPayload, Provenance } from './pipeline/events.js';
 
 // Re-export newRunId from the pure module so callers can take a single
 // dependency on `tools/events.ts` without also importing the pure side.
 export { newRunId } from './pipeline/events.js';
+
+// ---------------------------------------------------------------------------
+// Lifecycle event hook
+//
+// Lifecycle scripts (start.ts, request_review.ts, review.ts,
+// complete.ts) need to emit packet.* / verification.* events but they
+// don't take a runId/provenance parameter — they're invoked both as
+// CLI subprocesses (when an agent calls them) and as in-process
+// library calls (when the phases call them). The orchestrator pins
+// the run_id into process.env.FACTORY_RUN_ID at the start of every
+// pipeline invocation; this helper consults that env var, derives
+// provenance from VITEST, and emits.
+//
+// CONTRACT
+//
+//   - If FACTORY_RUN_ID is not set, the helper is a no-op. This is
+//     the safe default for a lifecycle script run outside an
+//     orchestrator session: do not invent a run_id, do not emit.
+//   - Provenance is `test` under vitest, else `live_run`. Lifecycle
+//     scripts have no notion of dry-run (the phase modules already
+//     short-circuit before invoking lifecycle on dry-run paths).
+//   - Best-effort: any failure is swallowed by appendEvent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the BaseInputs contract from process.env + vitest detection,
+ * or return null when FACTORY_RUN_ID is unset (no event to emit).
+ */
+function lifecycleEventContext(): { run_id: string; provenance: Provenance } | null {
+  const runId = process.env['FACTORY_RUN_ID'];
+  if (runId === undefined || runId.length === 0) return null;
+  const provenance: Provenance = process.env['VITEST'] !== undefined ? 'test' : 'live_run';
+  return { run_id: runId, provenance };
+}
+
+/**
+ * Emit a lifecycle-originated event (packet.* / verification.*).
+ *
+ * `build` is a closure that constructs the Event from a BaseInputs
+ * record. Returning a closure (rather than taking a partially-built
+ * Event) lets the caller use the typed make<Name> constructors from
+ * `tools/pipeline/events.ts` without paying the run-id detection
+ * cost when no env var is set.
+ *
+ * Examples:
+ *
+ *   appendLifecycleEvent(
+ *     (base) => makePacketStarted(base, { packet_id: 'p1' }),
+ *     artifactRoot,
+ *   );
+ */
+export function appendLifecycleEvent<P extends EventPayload>(
+  build: (base: { run_id: string; provenance: Provenance }) => Event<P>,
+  artifactRoot: string,
+): void {
+  const ctx = lifecycleEventContext();
+  if (ctx === null) return;
+  appendEvent(build(ctx), artifactRoot);
+}
 
 /**
  * Resolve the directory and file path that hold the JSONL stream for
