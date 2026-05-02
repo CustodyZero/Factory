@@ -1,0 +1,58 @@
+# Phase 5.5 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-02
+**Branch:** phase-5.5-event-observability (commits ed0374b, bfeced5, 9850eac)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. Provenance is spoofable through public constructors and `appendEvent`
+
+**Files:** `tools/pipeline/events.ts:322` (BaseInputs), `tools/pipeline/events.ts:337` (envelope), `tools/events.ts:121` (appendEvent)
+
+Every `make*` constructor takes `base: BaseInputs` where `BaseInputs.provenance: Provenance` is caller-supplied. `appendEvent` writes whatever provenance the caller put on the event. Tests demonstrate the misuse path: `base = { run_id, provenance: 'test' }` is explicit caller normalization.
+
+The Phase 5.5 brief requires: "Provenance must come from invocation context, not from a free-form parameter callers can spoof." That guarantee is not enforced by the API.
+
+**Fix:** Remove `provenance` from public constructor inputs. Have constructors (or a single envelope helper) derive it once at the boundary via `deriveProvenance({ dryRun })`. Lifecycle emission derives the same way with `dryRun: false`. Add a regression test that proves test-environment events cannot be tagged anything other than `'test'` through the supported API.
+
+### 2. `FACTORY_RUN_ID` leaks after `runOrchestrator` returns
+
+**File:** `tools/pipeline/orchestrator.ts:544`
+
+`process.env['FACTORY_RUN_ID'] = runId` is set without `try/finally` to restore. The comment in the code acknowledges the leak: "We do NOT clear it on exit: ... a leak would only affect tests that explicitly call lifecycle CLIs after runOrchestrator (none do)."
+
+That is the dishonest-system pattern from CLAUDE.md §3 — the code knows the leak exists and tolerates it on a "no current caller hits it" basis. Phase 6 (recovery) and Phase 5.7 (cost) will both add re-entrant flows. An in-process caller running a lifecycle function after the orchestrator returns silently appends to the prior run's stream.
+
+**Fix:** Capture the prior value before assignment and restore it (or `delete`) in a `finally` block around the orchestrator body. Add a test: run the orchestrator, then call a lifecycle function, assert no event is emitted unless `FACTORY_RUN_ID` is explicitly set again.
+
+### 3. Dry-run planning emits `phase.completed` with `outcome: 'failed'` inside a successful spec
+
+**Files:** `tools/pipeline/plan_phase.ts:138/149`
+
+`outcome: result.feature_id !== null ? 'ok' : 'failed'` collapses two distinct cases (planner-genuinely-failed vs dry-run-stops-early) into the same `failed` label. The orchestrator then emits `spec.completed` (success) and `pipeline.finished` (success) for the same run. Phase 6 will read this stream and see "phase failed inside a successful spec" — internally inconsistent.
+
+**Fix:** Treat `dryRun && result.feature_id === null` as `outcome: 'ok'`. Or carry a third explicit value like `'preview'` if the distinction matters to consumers. Keep `spec.completed` for this branch.
+
+### 4. `pipeline.failed` is not guaranteed on unexpected exceptions after `pipeline.started`
+
+**File:** `tools/pipeline/orchestrator.ts` (no try/catch around the post-start body)
+
+Modeled top-level failures (resolution, cycle, missing-dep) emit `pipeline.failed` correctly. But an exception from `runSingleSpec` or from a phase function leaves the event stream open — `pipeline.started` has no closing event. Phase 6 recovery cannot rely on the stream being well-formed.
+
+**Fix:** Wrap the post-`pipeline.started` body in `try/catch`. On catch, emit `pipeline.failed` with current totals and the error message, then rethrow (or return an OrchestratorResult envelope describing the crash; pick one and document it).
+
+## What this change does well
+
+- Pure/I/O boundary is genuinely clean: `tools/pipeline/events.ts` has zero fs imports.
+- Append/read layer is append-only, best-effort, tolerant of corrupt JSONL lines (the defensive-read tests pin this).
+- Lifecycle idempotency paths correctly avoid duplicate events on already-started/already-requested/already-completed transitions.
+
+## Dev interpretation accepted
+
+`pipeline.finished` / `pipeline.failed` moved from `run.ts` into `orchestrator.ts` is fine in principle (orchestrator owns success determination + run_id; run.ts stays the thin entry layer). Issue #4's exception-guard is the prerequisite for that placement to be correct.
+
+## Round budget remaining
+
+2 rounds.
