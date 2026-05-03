@@ -26,6 +26,9 @@ import type { IntentArtifact, RawIntentArtifact } from '../plan.js';
 import * as fmt from '../output.js';
 import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
+import type { InvokeResult } from './agent_invoke.js';
+import type { CostRecord } from './cost.js';
+import { recordCost } from '../cost.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
@@ -109,6 +112,47 @@ function patchJson(
       writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     }
   } catch { /* best-effort */ }
+}
+
+// ---------------------------------------------------------------------------
+// recordPlanCost — round-2 fix for the planner-not-in-cost-stream bug
+//
+// Per docs/decisions/cost_visibility.md, every agent invocation must
+// produce a CostRecord. The planner is the most expensive single
+// invocation in the pipeline; missing it would underreport per-run
+// totals and break Phase 6's retry-budget assumptions.
+//
+// Why a separate helper from develop_phase / verify_phase: the planner
+// has no per-packet cap to enforce (planner runs are spec-scoped, not
+// packet-scoped) and no per-packet tracker. The shape is just "write
+// a row when runId is supplied; otherwise no-op". The two phase
+// helpers fold cap accounting into the same helper because they need
+// it; the planner doesn't.
+//
+// runId-undefined gate: same convention as the other phases — when no
+// orchestrator supplied a run id (unit-test invocations), recording
+// is a no-op.
+// ---------------------------------------------------------------------------
+
+function recordPlanCost(
+  invokeResult: InvokeResult,
+  runId: string | undefined,
+  specId: string | null,
+  artifactRoot: string,
+): void {
+  if (runId === undefined) return;
+  const record: CostRecord = {
+    run_id: runId,
+    packet_id: null,
+    spec_id: specId,
+    provider: invokeResult.cost.provider,
+    model: invokeResult.cost.model,
+    tokens_in: invokeResult.cost.tokens_in,
+    tokens_out: invokeResult.cost.tokens_out,
+    dollars: invokeResult.cost.dollars,
+    timestamp: new Date().toISOString(),
+  };
+  recordCost(record, artifactRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +252,16 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
   const result = invokeAgent(provider, prompt, config, plannerTier);
+
+  // Round-2 fix (Issue 1): persist a CostRecord for the planner
+  // invocation so the run/day cost streams are complete. The record is
+  // written regardless of whether the planner succeeded — a failed
+  // planner still consumed tokens. The orchestrator's per-run cap
+  // check after each spec reads aggregateRunCost (which sums all
+  // records, including this one), so no additional cap-check at the
+  // plan boundary is required.
+  recordPlanCost(result, opts.runId, opts.specId ?? intent.id, artifactRoot);
+
   if (result.exit_code !== 0) {
     fmt.log('plan', fmt.error(`Planner failed (exit ${result.exit_code})`));
     if (result.stderr) fmt.log('plan', fmt.muted(result.stderr.slice(0, 500)));

@@ -146,6 +146,15 @@ describe('invokeAgent — configuration-error early returns', () => {
     const result = invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/pipeline config/i);
+    // Phase 5.7 — InvokeResult.cost is always populated. Early-return
+    // paths use nulls because no spawn ever happened.
+    expect(result.cost).toEqual({
+      provider: 'claude',
+      model: null,
+      tokens_in: null,
+      tokens_out: null,
+      dollars: null,
+    });
   });
 
   it('returns exit_code 1 with a clear stderr when the requested provider is not configured', () => {
@@ -164,6 +173,8 @@ describe('invokeAgent — configuration-error early returns', () => {
     const result = invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/not configured/i);
+    expect(result.cost.provider).toBe('claude');
+    expect(result.cost.dollars).toBeNull();
   });
 
   it('returns exit_code 1 with a clear stderr when the provider is configured but disabled', () => {
@@ -184,5 +195,7 @@ describe('invokeAgent — configuration-error early returns', () => {
     const result = invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/disabled/i);
+    expect(result.cost.provider).toBe('claude');
+    expect(result.cost.dollars).toBeNull();
   });
 });

@@ -36,8 +36,13 @@ import { completePacket } from '../lifecycle/complete.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
+  makeCostCapCrossed,
 } from './events.js';
 import { appendEvent } from '../events.js';
+import type { InvokeResult } from './agent_invoke.js';
+import type { CostRecord } from './cost.js';
+import { checkCap } from './cost.js';
+import { recordCost } from '../cost.js';
 
 // ---------------------------------------------------------------------------
 // Resume points
@@ -203,6 +208,95 @@ function readJsonDir<T>(dir: string): T[] {
     .filter((x): x is T => x !== null);
 }
 
+// ---------------------------------------------------------------------------
+// Cost recording + per-packet cap enforcement (Phase 5.7)
+//
+// recordInvocationCost writes one CostRecord JSONL row per invokeAgent
+// call (best-effort) AND maintains a running per-packet dollar total.
+// When the per-packet cap is configured and the running total crosses
+// it (>= semantics), the helper emits cost.cap_crossed(per_packet) on
+// the event stream and returns capCrossed: true. The caller stops
+// invoking the packet's agents and marks the packet failed.
+//
+// Null-dollar invocations are NOT counted toward the cap (operator
+// has no way to police what the provider didn't report); they ARE
+// recorded as rows, and the run summary surfaces the unknown-cost
+// invocation count separately.
+//
+// runId-undefined gate: develop_phase.test.ts drives the phase
+// directly without an orchestrator and therefore has no runId. In
+// that mode the helper is a no-op (cost recording AND cap checks
+// require a run context).
+// ---------------------------------------------------------------------------
+
+interface PacketCostTracker {
+  /** Dollars accumulated across this packet's invocations so far. */
+  total: number;
+  /**
+   * True once the per-packet cap has been crossed and the
+   * cost.cap_crossed event has been emitted. The caller branches on
+   * this to stop the inner state machine. The flag is sticky to
+   * prevent emitting the event twice if the loop re-enters.
+   */
+  crossed: boolean;
+}
+
+function newPacketCostTracker(): PacketCostTracker {
+  return { total: 0, crossed: false };
+}
+
+function recordInvocationCost(
+  invokeResult: InvokeResult,
+  runId: string | undefined,
+  packetId: string | null,
+  specId: string | null,
+  artifactRoot: string,
+  perPacketCap: number | undefined,
+  tracker: PacketCostTracker,
+  dryRun: boolean,
+): { capCrossed: boolean } {
+  if (runId === undefined) return { capCrossed: false };
+  const record: CostRecord = {
+    run_id: runId,
+    packet_id: packetId,
+    spec_id: specId,
+    provider: invokeResult.cost.provider,
+    model: invokeResult.cost.model,
+    tokens_in: invokeResult.cost.tokens_in,
+    tokens_out: invokeResult.cost.tokens_out,
+    dollars: invokeResult.cost.dollars,
+    timestamp: new Date().toISOString(),
+  };
+  recordCost(record, artifactRoot);
+
+  // Per-packet cap accounting. Null-dollar rows are tracked as
+  // "unknown" (they never increment `total`); the cap is only
+  // tested against the known-dollar running total.
+  if (invokeResult.cost.dollars !== null) {
+    tracker.total += invokeResult.cost.dollars;
+  }
+  if (!tracker.crossed && checkCap(tracker.total, perPacketCap)) {
+    tracker.crossed = true;
+    // Emit BEFORE returning so the events stream is well-formed
+    // before the caller aborts the packet. Best-effort via appendEvent.
+    appendEvent(
+      makeCostCapCrossed(
+        { run_id: runId, dry_run: dryRun },
+        {
+          scope: 'per_packet',
+          cap_dollars: perPacketCap as number,
+          running_total: tracker.total,
+          packet_id: packetId,
+          spec_id: specId,
+        },
+      ),
+      artifactRoot,
+    );
+    return { capCrossed: true };
+  }
+  return { capCrossed: false };
+}
+
 /**
  * Run the develop phase for a feature: implement / review / rework /
  * finalize each dev packet in topological order. Returns the lists
@@ -299,6 +393,13 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
       continue;
     }
 
+    // Phase 5.7 — per-packet cost cap. Tracker is fresh per packet.
+    // The recordInvocationCost helper accumulates dollars and emits
+    // cost.cap_crossed(per_packet) the first time the running total
+    // crosses (>=) the configured cap.
+    const perPacketCap = config.pipeline?.cost_caps?.per_packet;
+    const packetCostTracker = newPacketCostTracker();
+
     // State machine: I/O per step, then a pure transition function from
     // above decides where to go next. `null` = failed.
     let currentPoint: DevResumePoint | null = resumePoint;
@@ -309,6 +410,15 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
           fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
           const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
+          const { capCrossed: implCapCrossed } = recordInvocationCost(
+            devResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+            perPacketCap, packetCostTracker, dryRun,
+          );
+          if (implCapCrossed) {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
+            currentPoint = null;
+            break;
+          }
           const devOk = devResult.exit_code === 0;
           fmt.log('develop', devOk
             ? `  ${fmt.sym.ok} Implementation done`
@@ -340,6 +450,15 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
+          const { capCrossed: reviewCapCrossed } = recordInvocationCost(
+            reviewResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+            perPacketCap, packetCostTracker, dryRun,
+          );
+          if (reviewCapCrossed) {
+            fmt.log('review', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
+            currentPoint = null;
+            break;
+          }
           if (reviewResult.exit_code !== 0) {
             fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
             currentPoint = nextPointAfterReview(false, null);
@@ -365,6 +484,15 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
           const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config, devTier);
+          const { capCrossed: reworkCapCrossed } = recordInvocationCost(
+            reworkResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+            perPacketCap, packetCostTracker, dryRun,
+          );
+          if (reworkCapCrossed) {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
+            currentPoint = null;
+            break;
+          }
           if (reworkResult.exit_code !== 0) fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
           currentPoint = nextPointAfterRework(reworkResult.exit_code === 0);
           break;

@@ -40,6 +40,7 @@ import type {
   PipelineProvider,
   PipelineProviderConfig,
 } from '../config.js';
+import { computeCost, extractTokens, mergeRateCard } from './cost.js';
 
 // ---------------------------------------------------------------------------
 // resolveModelId
@@ -138,10 +139,35 @@ export function buildProviderArgs(
 // invokeAgent — imperative I/O leaf (spawnSync)
 // ---------------------------------------------------------------------------
 
+/**
+ * Cost data attached to every invocation result (Phase 5.7).
+ *
+ * Always populated. Null fields are the honest "we do not know"
+ * signal — see tools/pipeline/cost.ts for the rationale. The early-
+ * return error paths (missing pipeline config, unknown provider,
+ * disabled provider) populate this with the caller-supplied
+ * provider name and null tokens/dollars; downstream callers can
+ * still record the row if they want, but `recordCost` only fires
+ * after a real spawn so the early-return rows are not persisted.
+ */
+export interface InvokeCost {
+  readonly provider: string;
+  readonly model: string | null;
+  readonly tokens_in: number | null;
+  readonly tokens_out: number | null;
+  readonly dollars: number | null;
+}
+
 export interface InvokeResult {
   readonly exit_code: number;
   readonly stdout: string;
   readonly stderr: string;
+  /**
+   * Phase 5.7 — provider/model/tokens/dollars for this invocation.
+   * Always present; null fields when the provider does not report
+   * tokens or no rate-card entry exists.
+   */
+  readonly cost: InvokeCost;
 }
 
 /**
@@ -167,16 +193,35 @@ export function invokeAgent(
   config: FactoryConfig,
   modelTier?: ModelTier,
 ): InvokeResult {
+  // Phase 5.7: every early-return path returns a populated cost field
+  // (null tokens/dollars). The cost shape is part of the contract
+  // even on configuration errors — downstream callers may still want
+  // to surface the provider name in logs.
   const pipelineConfig = config.pipeline;
   if (pipelineConfig === undefined) {
-    return { exit_code: 1, stdout: '', stderr: 'Pipeline config not found' };
+    return {
+      exit_code: 1,
+      stdout: '',
+      stderr: 'Pipeline config not found',
+      cost: nullCost(provider, null),
+    };
   }
   const providerConfig = pipelineConfig.providers[provider];
   if (providerConfig === undefined) {
-    return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' not configured` };
+    return {
+      exit_code: 1,
+      stdout: '',
+      stderr: `Provider '${provider}' not configured`,
+      cost: nullCost(provider, null),
+    };
   }
   if (!providerConfig.enabled) {
-    return { exit_code: 1, stdout: '', stderr: `Provider '${provider}' is disabled` };
+    return {
+      exit_code: 1,
+      stdout: '',
+      stderr: `Provider '${provider}' is disabled`,
+      cost: nullCost(provider, null),
+    };
   }
 
   const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
@@ -191,9 +236,47 @@ export function invokeAgent(
     shell: true,
     ...(useStdin ? { input: prompt } : {}),
   });
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+
+  // Phase 5.7 — extract tokens, then compute dollars. The rate card
+  // is the merged DEFAULT_RATE_CARD with any per-run overrides from
+  // config.pipeline.rate_card. Both extractTokens and computeCost
+  // are pure and tolerate every missing-data shape with null.
+  const tokens = extractTokens(provider, stdout, stderr);
+  const rateCard = mergeRateCard(pipelineConfig.rate_card);
+  const { dollars } = computeCost(
+    provider,
+    modelId,
+    tokens.tokens_in,
+    tokens.tokens_out,
+    rateCard,
+  );
   return {
     exit_code: result.status ?? 1,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+    stdout,
+    stderr,
+    cost: {
+      provider,
+      model: modelId ?? null,
+      tokens_in: tokens.tokens_in,
+      tokens_out: tokens.tokens_out,
+      dollars,
+    },
+  };
+}
+
+/**
+ * Build a null-cost record for early-return paths. Centralised so the
+ * shape stays consistent across the three configuration-error
+ * branches above.
+ */
+function nullCost(provider: string, model: string | null): InvokeCost {
+  return {
+    provider,
+    model,
+    tokens_in: null,
+    tokens_out: null,
+    dollars: null,
   };
 }

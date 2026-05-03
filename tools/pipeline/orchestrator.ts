@@ -56,8 +56,17 @@ import {
   makeSpecStarted,
   makeSpecBlocked,
   makeSpecCompleted,
+  makeCostCapCrossed,
 } from './events.js';
 import { appendEvent } from '../events.js';
+import { checkCap } from './cost.js';
+import {
+  aggregateRunCost,
+  isDayCapBlocked,
+  localDateString,
+  readDayCost,
+  recordDayCapBlock,
+} from '../cost.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -536,6 +545,27 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
   const runId = newRunId();
   const eventBase = { run_id: runId, dry_run: dryRun };
 
+  // Phase 5.7 — per-day cap pre-flight gate. If today's local date
+  // is recorded as cap-blocked, emit pipeline.failed and return
+  // BEFORE any other event (no pipeline.started). The brief calls
+  // this out explicitly: it is a hard pre-flight gate, not a normal
+  // failure mode.
+  const today = localDateString();
+  if (isDayCapBlocked(today, artifactRoot)) {
+    const msg = `Per-day cost cap previously blocked for ${today}; no further runs permitted today.`;
+    appendEvent(
+      makePipelineFailed(eventBase, {
+        message: msg,
+        specs_completed: 0,
+        specs_failed: 0,
+        specs_blocked: 0,
+      }),
+      artifactRoot,
+    );
+    fmt.log('error', fmt.error(msg));
+    return { specs: [], success: false, message: msg, run_id: runId };
+  }
+
   // Phase 5.5 round 2: scope FACTORY_RUN_ID strictly to the
   // orchestrator's lifetime. Capture the prior value, set the new one,
   // and restore (or delete) it in `finally` below. This prevents an
@@ -626,6 +656,21 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
       fmt.log('plan', `Multi-spec run: ${order.map((s) => s.id).join(' -> ')}`);
     }
 
+    // Phase 5.7 — per-run / per-day cap state. The caps are checked
+    // AFTER each spec completes (the per-packet cap inside the phase
+    // modules already stops over-budget packets). When a cap is
+    // crossed, we record `runCapCrossed`/`dayCapCrossed`, emit the
+    // cost.cap_crossed event, and break out of the per-spec loop.
+    // The post-loop bracket-close branch on these flags emits a
+    // pipeline.failed (instead of the usual finished/failed
+    // bracketing) and, for the day cap, records the cap-block date
+    // so subsequent same-day runs are rejected at the pre-flight
+    // gate above.
+    const perRunCap = config.pipeline?.cost_caps?.per_run;
+    const perDayCap = config.pipeline?.cost_caps?.per_day;
+    let runCapCrossed: { running_total: number } | null = null;
+    let dayCapCrossed: { running_total: number } | null = null;
+
     // 5. Sequential per-spec execution. Track outcomes so dependents
     //    can be marked blocked.
     for (const spec of order) {
@@ -713,6 +758,56 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
       );
       outcomeById.set(spec.id, outcome);
       collected.push(outcome);
+
+      // Phase 5.7 — per-run cost cap. After each spec, aggregate the
+      // run's cost rows (every invocation in develop/verify wrote one)
+      // and check against the configured per_run cap. >= semantics.
+      // On crossing: emit cost.cap_crossed(per_run), set the flag,
+      // break out of the per-spec loop. Subsequent specs are not
+      // attempted. The bracket-close emits pipeline.failed.
+      if (perRunCap !== undefined) {
+        const runAgg = aggregateRunCost(runId, artifactRoot);
+        if (checkCap(runAgg.total, perRunCap)) {
+          runCapCrossed = { running_total: runAgg.total };
+          appendEvent(
+            makeCostCapCrossed(eventBase, {
+              scope: 'per_run',
+              cap_dollars: perRunCap,
+              running_total: runAgg.total,
+              packet_id: null,
+              spec_id: spec.id,
+            }),
+            artifactRoot,
+          );
+          break;
+        }
+      }
+
+      // Phase 5.7 — per-day cost cap. We sum across every run-file
+      // for the local date and compare. On crossing: emit
+      // cost.cap_crossed(per_day), recordDayCapBlock(today, ...),
+      // set the flag, break the loop. The day-cap is NOT a per-run
+      // boundary — it crosses the run-level boundary and so it must
+      // also persist (subsequent same-day runs are rejected at the
+      // pre-flight gate above).
+      if (perDayCap !== undefined) {
+        const dayAgg = readDayCost(today, artifactRoot);
+        if (checkCap(dayAgg.total, perDayCap)) {
+          dayCapCrossed = { running_total: dayAgg.total };
+          appendEvent(
+            makeCostCapCrossed(eventBase, {
+              scope: 'per_day',
+              cap_dollars: perDayCap,
+              running_total: dayAgg.total,
+              packet_id: null,
+              spec_id: spec.id,
+            }),
+            artifactRoot,
+          );
+          recordDayCapBlock(today, artifactRoot);
+          break;
+        }
+      }
     }
 
     // 6. Aggregate.
@@ -722,6 +817,45 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
       failed: collected.filter((o) => o.status === 'failed').length,
       blocked: collected.filter((o) => o.status === 'blocked').length,
     };
+
+    // Phase 5.7 — total cost across the run, surfaced both in the
+    // pipeline.finished event and in the OrchestratorResult message
+    // (run.ts uses the message line as the summary). Aggregated once
+    // here so the `success` and `cost-cap-crossed` branches both see
+    // the same number.
+    const runAgg = aggregateRunCost(runId, artifactRoot);
+
+    // Cap-crossed branch: the per-spec loop broke early. The result
+    // is always pipeline.failed regardless of the per-spec outcomes.
+    // The message names the cap that crossed so the operator can
+    // spot it in the summary line.
+    if (runCapCrossed !== null) {
+      const message = `Per-run cost cap crossed at $${runCapCrossed.running_total.toFixed(4)} (cap $${perRunCap}); aborted after ${totals.completed} of ${order.length} spec(s).`;
+      appendEvent(
+        makePipelineFailed(eventBase, {
+          message,
+          specs_completed: totals.completed,
+          specs_failed: totals.failed,
+          specs_blocked: totals.blocked,
+        }),
+        artifactRoot,
+      );
+      return { specs: collected, success: false, message, run_id: runId };
+    }
+    if (dayCapCrossed !== null) {
+      const message = `Per-day cost cap crossed at $${dayCapCrossed.running_total.toFixed(4)} (cap $${perDayCap}); subsequent same-day runs blocked.`;
+      appendEvent(
+        makePipelineFailed(eventBase, {
+          message,
+          specs_completed: totals.completed,
+          specs_failed: totals.failed,
+          specs_blocked: totals.blocked,
+        }),
+        artifactRoot,
+      );
+      return { specs: collected, success: false, message, run_id: runId };
+    }
+
     const message = allCompleted
       ? `All ${totals.completed} spec(s) completed`
       : `${totals.completed} completed, ${totals.failed} failed, ${totals.blocked} blocked`;
@@ -734,8 +868,19 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
     // run.ts continues to own the exit-code decision via
     // result.success.
     if (allCompleted) {
+      // Phase 5.7 — include total_cost_dollars only when at least one
+      // invocation produced a known dollar value. When every invocation
+      // returned null dollars, omit the field rather than report a
+      // misleading `0`. The run.ts summary still reports the unknown-
+      // count separately, so the operator sees the full picture.
       appendEvent(
-        makePipelineFinished(eventBase, { message, specs_completed: totals.completed }),
+        makePipelineFinished(eventBase, {
+          message,
+          specs_completed: totals.completed,
+          ...(runAgg.count > 0 && (runAgg.count - runAgg.unknown_count) > 0
+            ? { total_cost_dollars: runAgg.total }
+            : {}),
+        }),
         artifactRoot,
       );
     } else {

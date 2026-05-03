@@ -25,9 +25,10 @@
         "packet.completed",
         "packet.failed",
         "verification.passed",
-        "verification.failed"
+        "verification.failed",
+        "cost.cap_crossed"
       ],
-      "description": "The closed taxonomy of event types. Phase 6 (recovery) and Phase 5.7 (cost) extend this list."
+      "description": "The closed taxonomy of event types. Phase 6 (recovery) extends this list further; Phase 5.7 added cost.cap_crossed."
     },
     "timestamp": {
       "type": "string",
