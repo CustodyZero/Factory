@@ -49,3 +49,28 @@ For the bug-specific test (record's local date = today, run-id filename = differ
 ## Round budget remaining
 
 1 round. Fix is narrow (test fixtures only); APPROVE expected after round 3.
+
+# Phase 5.7 Code Review — Round 3
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-03 (after one hang+retry on the codex side, fourth in this session's review chain)
+**Branch:** worktree-agent-a0b554550bc724180 (round-3 commit 25ed976)
+**Verdict:** APPROVE
+
+## Summary
+
+Round 3 is clean. Fixup touches only `tools/test/cost_io.test.ts` and `tools/test/cost_caps.test.ts`; production code is unchanged.
+
+- Grep for UTC-anchored fixture literals is clean (zero remain).
+- `new Date(y, m, d, h).toISOString()` constructs instants anchored to local wall-clock time, so `localDateFromTimestamp()` round-trips to the intended local day across TZs.
+- Bug-specific tests now derive `localDay` from the fixture timestamp and explicitly assert the chosen UTC filename prefix differs from that local date — pinning the property, not a specific UTC date.
+- The mixed run-file test's `windowA ∩ windowB \ {dayA}` selection is correct: run-file B is visited for both day queries while still exercising the non-matching prefix case.
+
+## Strongest parts
+
+- Tests now pin the intended property instead of a specific UTC date.
+- The intersection fix closes the extreme-east timezone hole without touching production code.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
