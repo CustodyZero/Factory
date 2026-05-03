@@ -1,0 +1,67 @@
+# Phase 6 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only, after one hang+retry; the retry used a `perl alarm 360` wrapper after diagnosing that ScheduleWakeup is /loop-only and macOS lacks `timeout`)
+**Date:** 2026-05-03
+**Branch:** phase-6-recovery (commits 597e16f, 5daef4e, 2e7f637, 5532601, 8b2acd9)
+**Verdict:** REQUEST-CHANGES
+
+## Summary
+
+Three correctness gaps, all the same shape: recipe action labels propagate through the system but the actions themselves never execute. Tests pinned the labels, not the behavior. CLAUDE.md §3.5 facade pattern.
+
+## Issues
+
+### 1. `ProviderUnavailable` is unreachable in the classifier
+
+**Files:** `tools/pipeline/recovery.ts:323` (classifier), `tools/test/recovery_loop.test.ts:270` (test that pins "NOT as ProviderUnavailable")
+
+The recipe (`recipeProviderUnavailable` at line 417) is registered in the RECIPES map (line 470) but the classifier never returns `ProviderUnavailable`. No input path leads to the recipe. This breaks the Phase 7 forward-compat seam: Phase 7 plans to swap only the recipe, but if no failure can reach the recipe, the cascade never runs.
+
+**Fix:** Add explicit `ProviderUnavailable` classification for cases that mean "provider down at the CLI layer rather than transient":
+- "Provider 'X' is disabled" / "Provider 'X' not configured" stderr (already produced by `agent_invoke.ts` early-return paths).
+- "model not found" / "model unavailable" stderr patterns.
+- Whatever exit code / stderr signature actually means "the CLI itself is unavailable" vs "the call timed out."
+
+Add tests that prove these inputs classify as `ProviderUnavailable` and dispatch to the Phase 6 immediate-escalate recipe. Remove or narrow the test expectation that "persistent transient failures must not surface as `ProviderUnavailable`."
+
+### 2. `BuildFailed` recovery at `completePacket` boundaries doesn't invoke the dev-agent remediation step
+
+**Files:** `tools/pipeline/develop_phase.ts:657`, `tools/pipeline/verify_phase.ts:326`, `tools/pipeline/recovery_loop.ts:408`
+
+The `BuildFailed` recipe returns `attempt = { action: 'retry_with_guardrail_prompt', guardrail_prompt: '...' }`. The loop passes the attempt through, but the `completePacket` closures ignore `attempt.action` — they just re-run `completePacket` directly. So a deterministic build failure re-runs the same verification once and escalates without ever invoking the dev agent with the guardrail prompt.
+
+The integration test only fakes second-attempt success, which doesn't catch the wiring gap.
+
+**Fix:** When `attempt.action === 'retry_with_guardrail_prompt'`, the closure must FIRST invoke the appropriate remediation agent with `attempt.guardrail_prompt`, record the cost, then re-run `completePacket`. Either:
+- **(A)** Extend the operation closure signature to accept `attempt` on retry (`(attempt: RecoveryAttempt | null) => Result`); each closure dispatches on `attempt.action`.
+- **(B)** `recovery_loop.ts` accepts a separate "remediation callback" alongside the operation.
+
+I lean (A) — keeps phase-specific knowledge in phases.
+
+Add a phase-level test where `completePacket` first returns `build_pass: false`, confirm the remediation agent is invoked exactly once with the guardrail prompt, then the second `completePacket` succeeds.
+
+### 3. `StaleBranch` recipe never actually runs `git fetch && git rebase origin/main`
+
+**Files:** `tools/pipeline/recovery.ts:450`, `tools/pipeline/recovery_loop.ts:224`
+
+The recipe returns `attempt = { action: 'git_rebase_then_retry' }`. No code anywhere in the recovery layer executes git. The loop just re-invokes the operation closure, which has no rebase logic. So "stale branch recovery" is currently just retrying the same operation — guaranteed to fail again.
+
+The current tests assert only that the action label is passed, not that the rebase happens.
+
+**Fix:** Execute the stale-branch action in the impure recovery layer (`recovery_loop.ts`) — pure git, no per-phase customization needed. On conflict: run `git rebase --abort` and escalate without retrying the original operation. On clean rebase: retry the original operation.
+
+Add tests that assert:
+- Command order: `git fetch origin` → `git rebase origin/main` → operation retry.
+- Successful rebase → original operation retried.
+- Rebase conflict → `git rebase --abort` → escalation, NO operation retry.
+
+## What this change does well
+
+- Pure/I/O boundary is clean (`tools/pipeline/recovery.ts` zero fs imports).
+- LintFailed / TestFailed / CompletionGateBlocked correctly budgeted at zero retries; the immediate-escalate path is rigorously enforced.
+- Cap-block path emits `cost.cap_crossed` BEFORE `recovery.escalated`.
+- Per-packet budget placement in phase modules matches packet lifecycle scope better than threading through `spec_runner.ts`.
+
+## Round budget remaining
+
+2 rounds.
