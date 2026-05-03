@@ -1,0 +1,42 @@
+# Orchestrator Decomposition Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only, after one hang+retry)
+**Date:** 2026-05-03
+**Branch:** worktree-agent-af5e0e02206859f65 (commits 2f1d33c, 1947de7, 8fd2e96, 478cf29)
+**Verdict:** APPROVE
+
+## Summary
+
+No behavior-preservation blocker. Critical event ordering intact:
+- Day-cap pre-flight returns before `pipeline.started` (index.ts:185).
+- Top-level gates close via `failTopLevel` (index.ts:228).
+- Spec bracketing remains around `runSingleSpec`.
+- Cap-cross branches emit `cost.cap_crossed` before abort propagation via the helpers (cost_caps.ts:63 / cost_caps.ts:101).
+- catch/finally still emits synthetic `pipeline.failed` and restores/deletes `FACTORY_RUN_ID` (index.ts:516).
+
+## Module boundaries
+
+- `resolution.ts` has no direct fs/event/config imports; `_resolveAll` is indirectly I/O-bound through `resolveRunArg` (matches the old responsibility).
+- `spec_runner.ts` is self-contained, does NOT call back into `index.ts`.
+- `cost_caps.ts` owns both aggregation and cap-cross side effects; same boundary the inline code crossed, but reduces caller knowledge because the day-cap event/write/break ordering is encapsulated.
+
+## On `index.ts` size (551 lines)
+
+> I would not request another extraction from `index.ts`. Pulling out the per-spec loop or post-loop close would require a large context object carrying event state, maps, caps, totals, root paths, run id, and display behavior. That would mostly move complexity sideways and make the event ordering less obvious. The 551-line driver is still long, but the remaining substance is the orchestration transaction itself.
+
+The developer's "no further pull-out" judgment is endorsed.
+
+## Public API preservation
+
+- `runOrchestrator`, `OrchestratorOptions`, `SpecOutcome`, `OrchestratorResult`, plus underscore test exports — all reachable from `orchestrator/index.ts`.
+- Seven importers point at the new path; regex assertion in `run.test.ts` matches the new structural invariant.
+- No remaining test imports of the old `orchestrator.js` path.
+
+## Strongest parts
+
+- `spec_runner.ts` is the right Phase 6 hook point for per-packet recovery.
+- The cost-cap extraction preserves the fragile event-before-abort ordering while making that ordering much easier to audit.
+
+## Round budget remaining
+
+2 rounds. None expected — this is APPROVE.
