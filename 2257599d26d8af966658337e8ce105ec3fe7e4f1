@@ -1,0 +1,37 @@
+# Phase 6 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-03
+**Branch:** phase-6-recovery (round-2 commits 0d66682, 4ccc28b, 2257599)
+**Verdict:** REQUEST-CHANGES
+
+## Issues remaining
+
+### 1. `StaleBranch` is still production-unreachable
+
+**Files:** `tools/pipeline/recovery.ts:371` (the classifier check), various production code (none of which produce `kind: 'git'`)
+
+Round 2 fixed the rebase execution — `runGitRebase` now correctly runs `git fetch origin → git rebase origin/main → retry op` (or `git rebase --abort` on conflict). But the gate is `context.kind === 'git'` at `recovery.ts:371`, and no production code path produces a failure with that kind. Searching the whole worktree: only test code and recovery_loop's own comments reference `kind: 'git'`.
+
+So even though the recovery is wired, no real-world stale-branch condition triggers it. The Phase 6 acceptance "stale branch is detected, rebased, and original action retried" is still not exercised by production flow. Round 1's bug was "rebase doesn't run." Round 2's remaining bug is "rebase never gets called from real code paths."
+
+**Fix:** Add a stale-branch detection boundary at request-review and/or complete (the natural points where a behind-main branch shows up — git push fails, pre-commit hook detects). When the branch-behind / non-fast-forward condition is detected, emit a `failureFromSubprocess({ kind: 'git', ... })` so it classifies as StaleBranch and dispatches to the rebase recipe. Add a phase-level test that drives request-review with a stale-branch fixture and observes the rebase + retry.
+
+### 2. QA completion BuildFailed remediation passes the wrong packet to the dev agent
+
+**File:** `tools/pipeline/verify_phase.ts:341`
+
+When QA completion fails with a build error, the remediation invokes the dev agent via `buildDevPrompt(packet, config)`. But `packet` here is the QA packet, not the dev packet that produced the implementation. The dev agent gets a prompt asking it to implement the QA work, not fix the implementation under test.
+
+QA packets carry `packet.verifies` referencing the dev packet (already used correctly elsewhere in verify_phase, e.g. line 237 dependency check).
+
+**Fix:** Resolve `packet.verifies` to the dev `RawPacket` and use that for `buildDevPrompt`. The QA packet context can be appended for visibility but the prompt's primary subject is the dev packet. Add a test pinning that the remediation prompt names the dev packet (or asserts the dev packet was passed to `buildDevPrompt`).
+
+## What round 2 did well
+
+- ProviderUnavailable now genuinely classified before transient rules.
+- Git rebase action tests assert real command order plus correct no-retry behavior on conflict and fetch failure.
+
+## Round budget remaining
+
+**1 round.** This is the final budget round — round 3 fixes must satisfy or we RECOMMEND-REVERT.
