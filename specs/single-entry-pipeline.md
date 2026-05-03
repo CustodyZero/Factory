@@ -345,7 +345,10 @@ Per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md),
 - Recovery emits events: `recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated` (per Phase 5.5's event taxonomy)
 - Recovery checks cost caps before each retry attempt (per Phase 5.7); if a retry would cross a cap, recovery escalates immediately with the cap-block reason
 - Implement escalation: write `factory/escalations/<spec-id>-<timestamp>.json` with structured failure context
-- Recovery budget: 1 attempt per scenario per packet per phase; 3 total recovery attempts per packet across all scenarios
+- Recovery budget: per-scenario, per-packet (no cross-scenario cap):
+  - **2 retries** for non-deterministic scenarios (`ProviderTransient`, `AgentNonResponsive`) — repeated transient failures should be tried again before declaring the provider unavailable
+  - **1 retry** for semi-/fully-deterministic scenarios (`BuildFailed` with guardrail prompt, `StaleBranch` with rebase) — re-running with the same context is unlikely to succeed beyond the first retry
+  - **0 retries (immediate escalate)** for always-escalate scenarios (`LintFailed`, `TestFailed`, `CompletionGateBlocked`) and for Phase-7-deferred (`ProviderUnavailable`)
 
 **Acceptance:**
 
