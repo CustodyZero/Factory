@@ -1,0 +1,41 @@
+# Phase 6 Code Review — Round 3 (FINAL)
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-03
+**Branch:** phase-6-recovery (round-3 commits 74373b2, 53cf8f5)
+**Verdict:** RECOMMEND-REVERT
+
+## The remaining defect
+
+`StaleBranch` escalation at `request_review` is **observable but not controlling**.
+
+**File:** `tools/pipeline/develop_phase.ts:582-586`
+
+After `runWithRecovery` returns an escalation result, the code logs it — then the state machine unconditionally advances to `review`. A stale-branch rebase conflict emits `recovery.escalated` and still proceeds into review/finalize. Since `completePacket` only requires `started_at` (not `review_approved`), the packet can complete after a failed request-review/rebase path.
+
+This violates the Phase 6 contract: "rebase conflict escalates without retry" must STOP the packet, not just write an escalation event and continue.
+
+## Why the test missed it
+
+`tools/test/recovery_round3.test.ts:329` asserts:
+- `requestReview` was not retried ✓
+- `recovery.escalated` event exists ✓
+
+But it does NOT assert:
+- `runDevelopPhase` failed the packet
+- The state machine stopped before finalize
+
+The test even queues a successful `completePacket`, which masks the bad fallthrough.
+
+## What's actually working (preserve in any retry)
+
+- Production phase calls correctly set `checkStaleBranch: true` for `requestReview` and both `completePacket` boundaries.
+- QA BuildFailed remediation correctly resolves `packet.verifies` and calls `buildDevPrompt` with the dev packet.
+- The cross-layer pattern test (`git_check.test.ts > "every pattern it matches is also matched by the pipeline classifier"`) performs real assertions and is a good drift guard.
+- Boundary preservation intact: `pipeline/recovery.ts` zero fs/spawn imports; new git I/O lives in lifecycle/recovery_loop boundaries.
+
+## Verdict reasoning
+
+Round budget exhausted. The state-machine integration concern wasn't surfaced in the original brief or in rounds 1-2; it took round 3's "is StaleBranch reachable from production?" question to expose round 2's miss, and round 3's fix made the path observable but didn't go the next step (escalation as a stopping signal).
+
+This is the same architectural shape as Phase 4.6's ajv migration: the implementation premise was correct, the per-round verdicts were correct, but the architecture didn't fully land. Per the bounded-iteration contract, that's a revert signal — not a "push to round 4" signal.
