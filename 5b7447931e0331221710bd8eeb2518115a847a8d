@@ -74,3 +74,69 @@ Round 3 is clean. Fixup touches only `tools/test/cost_io.test.ts` and `tools/tes
 ## Round budget
 
 3 of 3 rounds used. Bounded-iteration model honored.
+
+# Phase 5.7 QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-03
+**Verdict:** APPROVE
+
+## Acceptance criteria results
+
+All 14 acceptance criteria PASS, all 16 specific checks PASS.
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Per-invocation cost capture (planner + dev + reviewer + QA) | PASS — recordCost at plan_phase.ts:155, develop_phase.ts:270, verify_phase.ts:134; null tokens/dollars where provider doesn't report |
+| 2 | 3 cap scopes optional in factory.config | PASS — schema has per_run/per_packet/per_day, all optional |
+| 3 | cost.cap_crossed emitted before abort | PASS — develop_phase.ts:282-294 and orchestrator.ts:772-781 both emit BEFORE break/return |
+| 4 | Per-run / per-packet / per-day escalation correct | PASS — per-packet sets currentPoint=null & continues; per-run breaks spec loop & emits pipeline.failed; per-day records block file |
+| 5 | Per-day uses LOCAL date | PASS — localDateString uses getFullYear/getMonth/getDate; orchestrator pre-flight at :553 |
+| 6 | Pure/I/O boundary | PASS — zero fs imports in pipeline/cost.ts |
+| 7 | Provider-agnostic | PASS — extractTokens covers codex/claude/copilot/default with null fallback |
+| 8 | Test coverage | PASS — cost.test.ts + cost_caps.test.ts + cost_io.test.ts |
+| 9 | Schema doc-only | PASS — cost_record.schema.json not wired into validate.ts |
+| 10 | InvokeResult shape preserved | PASS — 485 tests still pass |
+| 11 | All tests pass | PASS — 485 tests, 34 files |
+| 12 | validate.ts PASS | PASS |
+| 13 | No new deps | PASS — package.json identical |
+| 14 | Forward-compat for Phase 6 | PASS — CostRecord carries run_id, packet_id, spec_id at every call site |
+
+## Facade-risk check (CLAUDE.md §3.1, §3.5)
+
+**No silent zeros.** Null-dollar records sum into `unknown_count` (not 0) at `aggregateDollars` (cost.ts:313-318), surface in `run.ts:120/124` ("N unknown-cost invocations"), and are excluded from cap accounting at `develop_phase.ts:275-277` via explicit `if (cost.dollars !== null)` guard. Honest unknowns throughout the chain.
+
+## TZ-invariance independent verification
+
+`TZ=Pacific/Kiritimati npx vitest run` → 485/485 pass. The bug-protection contract holds in extreme east TZs.
+
+## Strongest parts (independent assessment)
+
+- Pure/I/O boundary is genuinely clean: `pipeline/cost.ts` zero fs imports, with `localDateFromTimestamp` and `utcDateWindow` in the pure layer composed by I/O-side `readDayCost`.
+- TZ-invariance hardened in two layers: round 2 fixed the silent under-reporting bug; round 3 made the regression tests immune to system TZ. `TZ=Pacific/Kiritimati` clean.
+
+# Phase 5.7 Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-03
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 5.7 ships per-invocation cost tracking + 3-scope caps. Phase 6 recovery now has its retry budget substrate.
+
+- 7 commits: 09f1998, 8ce487f, 1fa21fc, c3f5c3f, 41d2950, bd5763c, 25ed976
+- New files: tools/pipeline/cost.ts (340 lines pure + 101 added in round 2), tools/cost.ts (270 + 52 added round 2 = 322 I/O), schemas/cost_record.schema.json (doc-only)
+- Modified: events.ts (+98), agent_invoke.ts (+93), develop_phase.ts (+128), verify_phase.ts (+85), orchestrator.ts (+147), run.ts (+27), config.ts (+54), plan_phase.ts (+54 round 2), factory-config.schema.json (+28), event.schema.json (+5)
+- tests: 410 → 485 (+75 across three rounds)
+- validate.ts: PASS, package.json unchanged, schemas additive (not wired)
+- 2 rounds of REQUEST-CHANGES (round 1: planner cost gap + day-cap UTC bug; round 2: TZ-fragile fixtures), 1 round of APPROVE
+- Independent QA (separate Opus, FI-7) APPROVE on all 14 criteria with TZ-invariance independently verified under UTC+14
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored. Ship.
+
+## Operational note
+
+Codex CLI hung 4 of 6 times during the review chain (process startup network stall — 0% CPU, 0 bytes output, never times out client-side). Kill+retry succeeded every time. This is external (codex CLI/network reliability), not factory. The post-5.7 orchestrator review checkpoint is the right place to consider whether the review workflow should add a wrapper/timeout discipline.
