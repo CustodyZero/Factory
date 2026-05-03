@@ -46,8 +46,9 @@ export interface ResolveAllError {
 /**
  * Resolve every CLI arg via `resolveRunArg`, deduping repeated args by
  * id. Bails on the first resolution error. Results are returned in the
- * order each unique id first appeared in `args` (the topo sort below
- * is order-independent, but we want a stable trace).
+ * order each unique id first appeared in `args` (the orchestrator's
+ * downstream topo sort is order-independent, but we want a stable
+ * trace).
  *
  * Exported for testing.
  */

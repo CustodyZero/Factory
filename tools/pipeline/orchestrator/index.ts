@@ -2,7 +2,9 @@
  * Factory — Pipeline / Orchestrator (driver layer)
  *
  * Phase 5 of specs/single-entry-pipeline.md. Multi-spec dependency-
- * aware sequencing.
+ * aware sequencing. Composes the resolution gates, per-spec
+ * executor, and cost-cap helpers from sibling modules into a single
+ * top-level driver.
  *
  *   npx tsx tools/run.ts <spec-1> <spec-2> <spec-3>
  *
@@ -11,17 +13,23 @@
  * sorts the resolved set and runs each spec's pipeline (plan ->
  * develop -> verify) in dependency order.
  *
- * RESPONSIBILITIES (driver layer per docs/decisions/single_entry_pipeline.md):
+ * MODULES (post-Phase-5.7 decomposition):
  *
- *   - Resolve every CLI arg to a spec/intent (reuse resolveRunArg).
- *   - Build the dependency graph from spec frontmatter (intents have
- *     no depends_on by definition; treat as []).
- *   - Detect missing-target deps before any agent invocation.
- *   - Detect cycles before any agent invocation.
- *   - Topologically sort using the existing topoSort primitive.
- *   - Run each spec sequentially via runPlanPhase / runDevelopPhase /
- *     runVerifyPhase. The orchestrator does NOT re-implement per-
- *     spec execution; it sequences the existing phase functions.
+ *   - ./resolution.ts — pre-execution gates (resolve args, detect
+ *     missing transitive deps, detect cycles) and their types.
+ *     Re-exported here so importers see one entry point.
+ *   - ./spec_runner.ts — runSingleSpec: load+hydrate intent, drive
+ *     plan/develop/verify, update feature status, return outcome.
+ *   - ./cost_caps.ts — checkPerRunCap and checkPerDayCap helpers.
+ *
+ * RESPONSIBILITIES OF THIS DRIVER:
+ *
+ *   - Bracket the run with try/catch/finally (FACTORY_RUN_ID
+ *     scoping; pipeline.failed-on-exception; pre-flight day-cap
+ *     gate).
+ *   - Order: resolution gates -> topo sort -> per-spec loop with
+ *     cap checks after each spec -> aggregation -> bracket-close
+ *     event (pipeline.finished or pipeline.failed).
  *   - Propagate spec failures: if any depends_on of a spec failed
  *     or was blocked, the spec is itself blocked and not attempted.
  *   - Aggregate per-spec outcomes for the caller to render.
@@ -32,7 +40,6 @@
  *   - Parallel execution — deferred per the spec.
  *   - Transitive-dep auto-resolution — the user passes all needed
  *     spec IDs explicitly; missing transitive deps are an error.
- *   - Recovery / event emission / cost — later phases.
  */
 
 import type { FactoryConfig } from '../../config.js';
