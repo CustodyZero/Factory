@@ -195,6 +195,17 @@ interface SpecFixtureOpts {
 }
 
 /**
+ * Build a fixture `created_at` value anchored to local noon on a fixed
+ * date. The factory's validators only check ISO-8601 syntax for these
+ * fields (no local-date classification), but we keep all fixture
+ * timestamps locally anchored for consistency with the round-3
+ * TZ-invariance fix in cost_io.test.ts (CLAUDE.md §4).
+ */
+function fixtureCreatedAt(): string {
+  return new Date(2026, 4, 1, 12).toISOString();
+}
+
+/**
  * Wire up a complete spec/intent/feature/packets layout that the
  * orchestrator will pick up. We bypass the planner by writing the
  * intent/feature/packets directly. The intent file uses the legacy
@@ -236,7 +247,7 @@ function writeSpec(root: string, id: string, opts: SpecFixtureOpts = {}): void {
       status: featureStatus,
       intent_id: intentId,
       packets: [...devPackets, ...qaPackets],
-      created_at: '2026-05-01T00:00:00.000Z',
+      created_at: fixtureCreatedAt(),
     }, null, 2),
     'utf-8',
   );
@@ -255,7 +266,7 @@ function writeSpec(root: string, id: string, opts: SpecFixtureOpts = {}): void {
         dependencies: [],
         acceptance_criteria: [],
         review_iteration: 0,
-        created_at: '2026-05-01T00:00:00.000Z',
+        created_at: fixtureCreatedAt(),
       }, null, 2),
       'utf-8',
     );
@@ -273,7 +284,7 @@ function writeSpec(root: string, id: string, opts: SpecFixtureOpts = {}): void {
         dependencies: [],
         acceptance_criteria: [],
         verifies: devPackets[0],
-        created_at: '2026-05-01T00:00:00.000Z',
+        created_at: fixtureCreatedAt(),
       }, null, 2),
       'utf-8',
     );
@@ -660,7 +671,7 @@ describe('planner cost recording (round-2 issue 1)', () => {
         dependencies: [],
         acceptance_criteria: [],
         review_iteration: 0,
-        created_at: '2026-05-01T00:00:00.000Z',
+        created_at: fixtureCreatedAt(),
       }, null, 2),
       'utf-8',
     );
@@ -682,7 +693,7 @@ describe('planner cost recording (round-2 issue 1)', () => {
             status: 'planned',
             intent_id: 'spec-P',
             packets: ['pkt-P'],
-            created_at: '2026-05-01T00:00:00.000Z',
+            created_at: fixtureCreatedAt(),
           }, null, 2),
           'utf-8',
         );

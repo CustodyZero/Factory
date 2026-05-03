@@ -57,6 +57,20 @@ function mkTmp(): string {
   return d;
 }
 
+/**
+ * Build a fixture timestamp anchored to LOCAL noon on the given
+ * (year, monthIndex, day). `new Date(y, m, d, h)` interprets its
+ * arguments as local time; `.toISOString()` then returns the UTC
+ * encoding of that local instant. Feeding the result back through
+ * `localDateFromTimestamp` therefore always yields `YYYY-MM-DD` for
+ * the input local date, regardless of the host's TZ. Tests must use
+ * this helper in place of UTC-anchored ISO literals so that fixture
+ * classification stays TZ-invariant (CLAUDE.md §4).
+ */
+function localNoonTs(year: number, monthIndex: number, day: number): string {
+  return new Date(year, monthIndex, day, 12).toISOString();
+}
+
 function rec(overrides: Partial<CostRecord>): CostRecord {
   return {
     run_id: 'run-1',
@@ -67,7 +81,10 @@ function rec(overrides: Partial<CostRecord>): CostRecord {
     tokens_in: 1000,
     tokens_out: 1000,
     dollars: 0.09,
-    timestamp: '2026-05-01T00:00:00.000Z',
+    // Default fixture timestamp: local noon on 2026-05-01 in whatever
+    // TZ the test runs in. Round-3 fix: previously used a UTC literal,
+    // which is TZ-fragile in extreme east zones (UTC+12..+14).
+    timestamp: localNoonTs(2026, 4, 1),
     ...overrides,
   };
 }
@@ -192,83 +209,102 @@ describe('aggregateRunCost', () => {
 // ---------------------------------------------------------------------------
 
 describe('readDayCost', () => {
-  // Round-2 note: readDayCost classifies records by their `timestamp`
-  // field converted to local date — NOT by run-id filename prefix.
-  // Tests in this block use mid-day UTC timestamps (T12:00:00.000Z)
-  // so the local-date interpretation is unambiguous in any earth-bound
-  // timezone (mid-day UTC stays inside the same calendar day for
-  // every offset in -12..+14).
+  // Round-3 note: readDayCost classifies records by their `timestamp`
+  // field converted to local date — NOT by run-id filename prefix. The
+  // fixtures here build timestamps via `localNoonTs(...)` so the
+  // local-date interpretation is the SAME `YYYY-MM-DD` we ask about,
+  // in ANY earth-bound timezone (including UTC+14 and UTC-11). The
+  // requested local-date string itself is derived from the fixture
+  // timestamp via `localDateFromTimestamp` to keep the test self-
+  // consistent with whatever the host TZ produces.
   it('sums across all records whose local-date matches the requested date', () => {
     const root = mkTmp();
-    // Two run-ids stamped 2026-05-01, one 2026-05-02. Format mirrors
-    // newRunId: YYYY-MM-DDTHH-MM-SSZ-<8hex>.
+    // Two records on local-day-A, one on the next local day. The
+    // run-id prefixes use the timestamp's UTC date — the per-record
+    // local-date check is what classifies, not the filename.
+    const tsA = localNoonTs(2026, 4, 1); // local noon, May 1
+    const tsB = localNoonTs(2026, 4, 2); // local noon, May 2
+    const dayA = localDateFromTimestamp(tsA);
+    const dayB = localDateFromTimestamp(tsB);
     recordCost(rec({
-      run_id: '2026-05-01T10-00-00Z-deadbeef', dollars: 0.50,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${dayA}T10-00-00Z-deadbeef`, dollars: 0.50,
+      timestamp: tsA,
     }), root);
     recordCost(rec({
-      run_id: '2026-05-01T11-00-00Z-cafebabe', dollars: 1.25,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${dayA}T11-00-00Z-cafebabe`, dollars: 1.25,
+      timestamp: tsA,
     }), root);
     recordCost(rec({
-      run_id: '2026-05-02T09-00-00Z-feedface', dollars: 5.00,
-      timestamp: '2026-05-02T12:00:00.000Z',
+      run_id: `${dayB}T09-00-00Z-feedface`, dollars: 5.00,
+      timestamp: tsB,
     }), root);
 
-    const may1 = readDayCost('2026-05-01', root);
-    expect(may1.total).toBe(1.75);
-    expect(may1.unknown_count).toBe(0);
+    const sumA = readDayCost(dayA, root);
+    expect(sumA.total).toBe(1.75);
+    expect(sumA.unknown_count).toBe(0);
 
-    const may2 = readDayCost('2026-05-02', root);
-    expect(may2.total).toBe(5);
-    expect(may2.unknown_count).toBe(0);
+    const sumB = readDayCost(dayB, root);
+    expect(sumB.total).toBe(5);
+    expect(sumB.unknown_count).toBe(0);
   });
 
   it('aggregates unknown_count across run files', () => {
     const root = mkTmp();
+    const ts = localNoonTs(2026, 4, 1);
+    const day = localDateFromTimestamp(ts);
     recordCost(rec({
-      run_id: '2026-05-01T10-00-00Z-aaaaaaaa', dollars: 0.50,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${day}T10-00-00Z-aaaaaaaa`, dollars: 0.50,
+      timestamp: ts,
     }), root);
     recordCost(rec({
-      run_id: '2026-05-01T10-00-00Z-aaaaaaaa', dollars: null,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${day}T10-00-00Z-aaaaaaaa`, dollars: null,
+      timestamp: ts,
     }), root);
     recordCost(rec({
-      run_id: '2026-05-01T11-00-00Z-bbbbbbbb', dollars: null,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${day}T11-00-00Z-bbbbbbbb`, dollars: null,
+      timestamp: ts,
     }), root);
 
-    const out = readDayCost('2026-05-01', root);
+    const out = readDayCost(day, root);
     expect(out.total).toBe(0.5);
     expect(out.unknown_count).toBe(2);
   });
 
   it('returns zeroes when the cost dir does not exist', () => {
     const root = mkTmp();
-    expect(readDayCost('2026-05-01', root)).toEqual({ total: 0, unknown_count: 0 });
+    // No records exist; readDayCost returns zeroes regardless of the
+    // requested date. We use a derived date string for symmetry with
+    // the other tests in this block.
+    const day = localDateFromTimestamp(localNoonTs(2026, 4, 1));
+    expect(readDayCost(day, root)).toEqual({ total: 0, unknown_count: 0 });
   });
 
   it('returns zeroes when no records match the local date', () => {
     const root = mkTmp();
+    const tsRecord = localNoonTs(2026, 3, 30); // local noon, Apr 30
+    const tsQuery = localNoonTs(2026, 4, 1);   // local noon, May 1
+    const dayRecord = localDateFromTimestamp(tsRecord);
+    const dayQuery = localDateFromTimestamp(tsQuery);
     recordCost(rec({
-      run_id: '2026-04-30T10-00-00Z-deadbeef', dollars: 5,
-      timestamp: '2026-04-30T12:00:00.000Z',
+      run_id: `${dayRecord}T10-00-00Z-deadbeef`, dollars: 5,
+      timestamp: tsRecord,
     }), root);
-    expect(readDayCost('2026-05-01', root)).toEqual({ total: 0, unknown_count: 0 });
+    expect(readDayCost(dayQuery, root)).toEqual({ total: 0, unknown_count: 0 });
   });
 
   it('ignores non-jsonl entries in the cost directory', () => {
     const root = mkTmp();
+    const ts = localNoonTs(2026, 4, 1);
+    const day = localDateFromTimestamp(ts);
     // Bootstrap by writing one valid record (to create the dir).
     recordCost(rec({
-      run_id: '2026-05-01T10-00-00Z-aaaaaaaa', dollars: 1,
-      timestamp: '2026-05-01T12:00:00.000Z',
+      run_id: `${day}T10-00-00Z-aaaaaaaa`, dollars: 1,
+      timestamp: ts,
     }), root);
     // Drop a non-jsonl file in there; it must not be included.
     appendFileSync(join(root, 'cost', 'README.md'), 'not a JSONL', 'utf-8');
 
-    const out = readDayCost('2026-05-01', root);
+    const out = readDayCost(day, root);
     expect(out.total).toBe(1);
   });
 });
@@ -332,9 +368,12 @@ describe('recordDayCapBlock / isDayCapBlocked', () => {
 
 describe('localDateString', () => {
   it('formats a fixed Date as YYYY-MM-DD using local time', () => {
-    // Use a Date that is unambiguously the same local-date as UTC for
-    // any reasonable timezone. Mid-day UTC works for all -12..+14 zones.
-    const fixed = new Date('2026-05-15T12:00:00.000Z');
+    // Round-3: anchor to local noon on 2026-05-15 in the host's TZ so
+    // the assertion is TZ-invariant. The expected string is computed
+    // from the same Date instance using its local components — that
+    // pins the contract (output uses LOCAL components) without
+    // hard-coding a specific date.
+    const fixed = new Date(2026, 4, 15, 12);
     const s = localDateString(() => fixed);
     expect(s).toBe(
       `${fixed.getFullYear()}-${String(fixed.getMonth() + 1).padStart(2, '0')}-${String(fixed.getDate()).padStart(2, '0')}`,
@@ -358,21 +397,28 @@ describe('localDateString', () => {
 // ---------------------------------------------------------------------------
 
 describe('localDateFromTimestamp', () => {
-  it('round-trips a mid-day UTC timestamp to the same local date in any TZ', () => {
-    // Mid-day UTC stays inside the same calendar day for any offset
-    // in -12..+14, so the local date equals the UTC date for these.
-    expect(localDateFromTimestamp('2026-05-01T12:00:00.000Z')).toBe('2026-05-01');
-    expect(localDateFromTimestamp('2026-12-31T12:00:00.000Z')).toBe('2026-12-31');
+  it('round-trips a local-anchored timestamp to its local date in any TZ', () => {
+    // Round-3: build the timestamps via the local-time `Date`
+    // constructor so the assertion is TZ-invariant. UTC ISO literals
+    // were fragile in extreme east zones (UTC+12..+14) — local-noon
+    // anchoring sidesteps the ambiguity entirely.
+    const ts1 = new Date(2026, 4, 1, 12).toISOString();   // local noon May 1
+    const ts2 = new Date(2026, 11, 31, 12).toISOString(); // local noon Dec 31
+    expect(localDateFromTimestamp(ts1)).toBe('2026-05-01');
+    expect(localDateFromTimestamp(ts2)).toBe('2026-12-31');
   });
 
   it('matches what localDateString returns for the same Date instance', () => {
     // Pin the contract: localDateFromTimestamp(t) === localDateString(() => new Date(t)).
     // (Round-2 invariant: the two helpers must agree on classification.)
+    // Round-3: timestamps are derived from local-time `Date`
+    // constructors covering several local hours of the day to exercise
+    // the agreement across the daily boundary in any TZ.
     const samples = [
-      '2026-05-01T00:00:00.000Z',
-      '2026-05-01T12:00:00.000Z',
-      '2026-05-01T23:59:59.000Z',
-      '2026-12-31T20:00:00.000Z',
+      new Date(2026, 4, 1, 0).toISOString(),
+      new Date(2026, 4, 1, 12).toISOString(),
+      new Date(2026, 4, 1, 23, 59, 59).toISOString(),
+      new Date(2026, 11, 31, 20).toISOString(),
     ];
     for (const ts of samples) {
       const d = new Date(ts);
@@ -462,33 +508,40 @@ describe('utcDateWindow', () => {
 // ---------------------------------------------------------------------------
 
 describe('readDayCost — local-date classification (round-2 issue 2)', () => {
-  it('includes a record whose run-id filename is UTC-tomorrow when the record\'s local date is today', () => {
+  it('includes a record whose run-id filename UTC date differs from the record\'s local date', () => {
     // The bug-specific case. We construct:
-    //   - a run-id filename whose UTC date is the day AFTER the
-    //     requested local date (`2026-05-03T...`),
-    //   - a record inside that file whose `timestamp` falls on the
-    //     requested local date (`2026-05-02`).
+    //   - a record whose `timestamp` resolves to a known LOCAL date,
+    //   - and place it inside a run-file whose filename UTC-prefix is
+    //     a DIFFERENT calendar date than that local date.
     //
-    // We need a timestamp that is unambiguously local 2026-05-02 in
-    // ANY earth-bound timezone, while still having a UTC date of
-    // 2026-05-03. That's impossible to satisfy in every TZ at once —
-    // a timestamp that maps to local 2026-05-02 in a positive-offset
-    // zone may map to a different date in a negative-offset zone.
+    // Round-3: we build the timestamp via the local-time `Date`
+    // constructor (anchors local noon on the target local day) so the
+    // local-date string is invariant across host TZ. The filename
+    // UTC-prefix is then chosen from the utcDateWindow members that
+    // are NOT the local day — guaranteed to exist because the window
+    // spans three UTC dates (`yesterday`, `today`, `tomorrow`) and
+    // local noon never lands on all three at once.
     //
-    // What we CAN pin in any TZ: the timestamp's UTC and local dates
-    // agree (mid-day UTC), so we use a mid-day UTC stamp on the
-    // requested local date, and we deliberately MISMATCH the
-    // filename's UTC prefix to a different date. The filename-prefix
-    // candidate filter must still consider this file (because the
-    // utcDateWindow pre-filter spans ±1 UTC day around the local
-    // date), and the per-record check must include it (because the
-    // timestamp's local date matches).
+    // The pin: the file IS visited (because utcDateWindow includes
+    // its UTC prefix) and the record IS counted (because its
+    // timestamp's local date matches the query). Without the round-2
+    // fix, the prefix-only filter would have either missed the file
+    // entirely (if it filtered on local-day prefix) or counted it on
+    // the wrong day (if it took the prefix as authority). The test
+    // proves "filename prefix is NOT authority for membership".
     const root = mkTmp();
-    const utcNextDay = '2026-05-03';
-    // Mid-day UTC on the local-target day so local-date matches in
-    // every reasonable host TZ.
-    const recordTs = '2026-05-02T12:00:00.000Z';
-    const runId = `${utcNextDay}T01-00-00Z-deadbeef`;
+    const recordTs = localNoonTs(2026, 4, 2); // local noon, May 2
+    const localDay = localDateFromTimestamp(recordTs);
+    const window = utcDateWindow(localDay);
+    // Pick a window member that differs from localDay. In every TZ,
+    // at least one of `yesterday`/`tomorrow` differs (and often both).
+    const utcPrefix = window.find((d) => d !== '' && d !== localDay);
+    if (utcPrefix === undefined) {
+      throw new Error(
+        `expected at least one window member to differ from ${localDay}, got ${JSON.stringify(window)}`,
+      );
+    }
+    const runId = `${utcPrefix}T01-00-00Z-deadbeef`;
 
     recordCost(rec({
       run_id: runId,
@@ -496,23 +549,31 @@ describe('readDayCost — local-date classification (round-2 issue 2)', () => {
       dollars: 0.42,
     }), root);
 
-    const out = readDayCost('2026-05-02', root);
+    const out = readDayCost(localDay, root);
     // The bug-specific assertion: the record IS included because its
-    // timestamp resolves to local 2026-05-02, even though its run-id
-    // filename starts with 2026-05-03.
+    // timestamp resolves to localDay, even though its run-id filename
+    // starts with a different UTC date.
     expect(out.total).toBe(0.42);
     expect(out.unknown_count).toBe(0);
+    // Sanity: the prefix really IS different from the local date —
+    // otherwise this test would not be exercising the bug.
+    expect(utcPrefix).not.toBe(localDay);
   });
 
   it('excludes a record whose timestamp falls on a different local date than the requested one', () => {
-    // The dual: a run-id filename matching the requested local date
-    // PREFIX, but whose record timestamp resolves to a different
-    // local date — must be EXCLUDED. (The filename prefix is no
-    // longer the authority.)
+    // The dual: a record whose timestamp resolves to a different
+    // local date than the query — must be EXCLUDED, regardless of
+    // what the filename UTC-prefix says. We deliberately put the
+    // filename UTC-prefix at the QUERY date so a prefix-authority
+    // implementation would (wrongly) include it.
     const root = mkTmp();
-    // A record timestamped local 2026-05-03 mid-day.
-    const runId = '2026-05-02T22-00-00Z-cafebabe';
-    const recordTs = '2026-05-03T12:00:00.000Z';
+    const queryTs = localNoonTs(2026, 4, 2);  // local noon, May 2
+    const recordTs = localNoonTs(2026, 4, 3); // local noon, May 3
+    const queryDay = localDateFromTimestamp(queryTs);
+    const recordDay = localDateFromTimestamp(recordTs);
+    // Filename prefix matches the QUERY's local day so we can prove
+    // that timestamp wins over filename prefix.
+    const runId = `${queryDay}T22-00-00Z-cafebabe`;
 
     recordCost(rec({
       run_id: runId,
@@ -520,44 +581,77 @@ describe('readDayCost — local-date classification (round-2 issue 2)', () => {
       dollars: 9.99,
     }), root);
 
-    const out = readDayCost('2026-05-02', root);
+    const out = readDayCost(queryDay, root);
     expect(out.total).toBe(0);
     expect(out.unknown_count).toBe(0);
+    // Sanity: the dates really are different.
+    expect(recordDay).not.toBe(queryDay);
   });
 
   it('mixes records across run-files with different UTC date prefixes; aggregation matches local-date classification', () => {
     // Three records spread across two run-files; the local-date
     // classification (not filename) is what determines membership.
+    // Round-3: all timestamps are local-anchored so the per-day
+    // partition is TZ-invariant. The run-file B prefix must lie in
+    // BOTH the dayA window and the dayB window so both queries visit
+    // it; we pick the intersection member explicitly. For local noon
+    // anchors on consecutive days, that intersection is non-empty in
+    // every host TZ — local noon on day X always yields a UTC date
+    // in {X-1, X}, and local noon on day X+1 always yields a UTC
+    // date in {X, X+1}, so X is always a member of dayA's "tomorrow"
+    // slot or dayB's "yesterday" slot at minimum.
     const root = mkTmp();
-    // run-file A: filename UTC 2026-05-02; one record on local
-    // 2026-05-02 (mid-day UTC).
+    const tsA = localNoonTs(2026, 4, 2); // local noon, May 2
+    const tsB = localNoonTs(2026, 4, 3); // local noon, May 3
+    const dayA = localDateFromTimestamp(tsA);
+    const dayB = localDateFromTimestamp(tsB);
+    const windowA = utcDateWindow(dayA);
+    const windowB = utcDateWindow(dayB);
+    // Pick a prefix that is (a) in windowA, (b) in windowB, (c) not
+    // equal to dayA. Choosing one in BOTH windows ensures both
+    // queries visit run-file B; choosing != dayA ensures the
+    // filename prefix does not match dayA's local-day prefix (so a
+    // naive prefix-only filter would have missed it on the dayA
+    // query).
+    const utcPrefixB = windowA.find(
+      (d) => d !== '' && d !== dayA && windowB.includes(d),
+    );
+    if (utcPrefixB === undefined) {
+      throw new Error(
+        `expected windowA ∩ windowB \\ {dayA} non-empty; windowA=${JSON.stringify(windowA)} windowB=${JSON.stringify(windowB)} dayA=${dayA}`,
+      );
+    }
+
+    // run-file A: filename prefix matches dayA's local day; one
+    // record on local-day-A.
     recordCost(rec({
-      run_id: '2026-05-02T08-00-00Z-aaaaaaaa',
-      timestamp: '2026-05-02T12:00:00.000Z',
+      run_id: `${dayA}T08-00-00Z-aaaaaaaa`,
+      timestamp: tsA,
       dollars: 1.00,
     }), root);
-    // run-file B: filename UTC 2026-05-03 (UTC-tomorrow); one record
-    // on local 2026-05-02 (mid-day UTC) — would have been MISSED
-    // by the pre-fix prefix filter.
+    // run-file B: filename UTC-prefix is a DIFFERENT date than dayA
+    // (would have been missed by a naive prefix-only filter). One
+    // record inside B is on local-day-A and must be counted in dayA's
+    // total.
     recordCost(rec({
-      run_id: '2026-05-03T01-00-00Z-bbbbbbbb',
-      timestamp: '2026-05-02T12:00:00.000Z',
+      run_id: `${utcPrefixB}T01-00-00Z-bbbbbbbb`,
+      timestamp: tsA,
       dollars: 2.00,
     }), root);
-    // Same run-file B: another record on local 2026-05-03 — must be
-    // EXCLUDED from the 2026-05-02 query.
+    // Same run-file B: another record on local-day-B — must be
+    // EXCLUDED from the dayA query and INCLUDED in the dayB query.
     recordCost(rec({
-      run_id: '2026-05-03T01-00-00Z-bbbbbbbb',
-      timestamp: '2026-05-03T12:00:00.000Z',
+      run_id: `${utcPrefixB}T01-00-00Z-bbbbbbbb`,
+      timestamp: tsB,
       dollars: 4.00,
     }), root);
 
-    const out = readDayCost('2026-05-02', root);
+    const out = readDayCost(dayA, root);
     expect(out.total).toBe(3.00);
     expect(out.unknown_count).toBe(0);
 
     // And the next day correctly gets just the one record.
-    const next = readDayCost('2026-05-03', root);
+    const next = readDayCost(dayB, root);
     expect(next.total).toBe(4.00);
     expect(next.unknown_count).toBe(0);
   });
