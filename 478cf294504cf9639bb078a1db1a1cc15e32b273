@@ -40,3 +40,73 @@ The developer's "no further pull-out" judgment is endorsed.
 ## Round budget remaining
 
 2 rounds. None expected — this is APPROVE.
+
+# Orchestrator Decomposition QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-03
+**Verdict:** APPROVE
+
+## All 10 acceptance criteria PASS, all 17 specific checks PASS
+
+| # | Criterion | Evidence |
+|---|-----------|----------|
+| 1 | Old file deleted | `tools/pipeline/orchestrator.ts` no longer exists |
+| 2 | New directory with exactly 4 files | cost_caps, index, resolution, spec_runner |
+| 3 | All 7 importers updated | All reference `pipeline/orchestrator/index.js`; zero references to old path |
+| 4 | Public API reachable | runOrchestrator, OrchestratorOptions, SpecOutcome, OrchestratorResult at index.ts:78/86/109/164 |
+| 5 | Underscore test exports reachable | re-exported at index.ts:130-139 from `./resolution.js` |
+| 6 | Test count unchanged | 485 → 485 |
+| 7 | validate.ts PASS | confirmed |
+| 8 | package.json unchanged | empty diff vs main |
+| 9 | Module boundaries clean | resolution.ts has zero fs imports; spec_runner + cost_caps don't import index (no circular) |
+| 10 | Behavior preservation | combined post-split content matches pre-split modulo expected diff (imports, signatures, headers, helper extraction) |
+
+## Cap-helper encapsulation honest
+
+`cost_caps.ts:CapCheckResult = { crossed: boolean, running_total: number | null }`:
+- When `cap === undefined` → returns `{ crossed: false, running_total: null }` (no aggregation work)
+- When cap configured but not crossed → returns `running_total: number`
+- When cap crossed → emits `cost.cap_crossed` event THEN (for day-cap) calls `recordDayCapBlock` THEN returns `{ crossed: true, running_total: number }`
+
+Consumer guards (`crossed && running_total !== null`) defensively reject null rather than coercing to 0 — no-facade pattern per CLAUDE.md §3.
+
+## try/finally bracket complete
+
+`priorRunId` captured at index.ts:207. `try` at :218, `catch` at :516, `finally` at :541. Every return path (success, top-level via `failTopLevel`, cap-crossed early returns, exception rethrow) hits the finally. Day-cap pre-flight at :185-198 is intentionally OUTSIDE the try (env not yet set there).
+
+## Strongest parts (independent assessment)
+
+1. Cap-helper encapsulation makes "we crossed cap N" a single atomic transaction (event-emit + day-cap block-write all inside the helper). Caller knowledge actually decreases.
+2. The `running_total: number | null` discriminator preserves the original "no aggregation when no cap" semantics honestly — exactly the no-facade pattern §3 requires.
+
+# Orchestrator Decomposition Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-03
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Pure architectural refactor: `tools/pipeline/orchestrator.ts` (934 lines, 4 mixed concerns) decomposed into a 4-file directory `tools/pipeline/orchestrator/`. Phase 6 recovery now has clean hook points (`spec_runner.ts` for per-packet recovery; the driver loop in `index.ts` for cross-spec recovery insertion).
+
+- 4 commits: 2f1d33c, 1947de7, 8fd2e96, 478cf29
+- Final structure: index.ts (551), resolution.ts (169), spec_runner.ts (267), cost_caps.ts (113) = 1,100 lines vs 934 inline (+166 overhead from headers/re-imports/types)
+- tests: 485 (unchanged — pure refactor as required)
+- validate.ts PASS, package.json unchanged
+- 1 round of APPROVE (no REQUEST-CHANGES)
+- Independent QA APPROVE on all 10 criteria + 17 checks
+
+## On the 551-line index.ts
+
+Codex's verdict: "the 551-line driver is still long, but the remaining substance is the orchestration transaction itself. Pulling out the per-spec loop or post-loop close would require a large context object carrying event state, maps, caps, totals, root paths, run id, and display behavior. That would mostly move complexity sideways and make the event ordering less obvious."
+
+QA confirmed via independent diff: no behavior change, just structural split. The driver is what it does.
+
+## Operational note (continued from Phase 5.7)
+
+Codex hung 5/8 times in this overall session (stalled at process startup). Kill+retry succeeded every time. External issue (codex CLI/network), not factory. Worth carrying into a future workflow-reliability discussion separate from the pipeline architecture.
+
+## Round budget
+
+1 of 3 rounds used. Bounded-iteration model honored.
