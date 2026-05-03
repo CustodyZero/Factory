@@ -2,7 +2,9 @@
  * Factory — Pipeline / Orchestrator (driver layer)
  *
  * Phase 5 of specs/single-entry-pipeline.md. Multi-spec dependency-
- * aware sequencing.
+ * aware sequencing. Composes the resolution gates, per-spec
+ * executor, and cost-cap helpers from sibling modules into a single
+ * top-level driver.
  *
  *   npx tsx tools/run.ts <spec-1> <spec-2> <spec-3>
  *
@@ -11,17 +13,23 @@
  * sorts the resolved set and runs each spec's pipeline (plan ->
  * develop -> verify) in dependency order.
  *
- * RESPONSIBILITIES (driver layer per docs/decisions/single_entry_pipeline.md):
+ * MODULES (post-Phase-5.7 decomposition):
  *
- *   - Resolve every CLI arg to a spec/intent (reuse resolveRunArg).
- *   - Build the dependency graph from spec frontmatter (intents have
- *     no depends_on by definition; treat as []).
- *   - Detect missing-target deps before any agent invocation.
- *   - Detect cycles before any agent invocation.
- *   - Topologically sort using the existing topoSort primitive.
- *   - Run each spec sequentially via runPlanPhase / runDevelopPhase /
- *     runVerifyPhase. The orchestrator does NOT re-implement per-
- *     spec execution; it sequences the existing phase functions.
+ *   - ./resolution.ts — pre-execution gates (resolve args, detect
+ *     missing transitive deps, detect cycles) and their types.
+ *     Re-exported here so importers see one entry point.
+ *   - ./spec_runner.ts — runSingleSpec: load+hydrate intent, drive
+ *     plan/develop/verify, update feature status, return outcome.
+ *   - ./cost_caps.ts — checkPerRunCap and checkPerDayCap helpers.
+ *
+ * RESPONSIBILITIES OF THIS DRIVER:
+ *
+ *   - Bracket the run with try/catch/finally (FACTORY_RUN_ID
+ *     scoping; pipeline.failed-on-exception; pre-flight day-cap
+ *     gate).
+ *   - Order: resolution gates -> topo sort -> per-spec loop with
+ *     cap checks after each spec -> aggregation -> bracket-close
+ *     event (pipeline.finished or pipeline.failed).
  *   - Propagate spec failures: if any depends_on of a spec failed
  *     or was blocked, the spec is itself blocked and not attempted.
  *   - Aggregate per-spec outcomes for the caller to render.
@@ -32,21 +40,11 @@
  *   - Parallel execution — deferred per the spec.
  *   - Transitive-dep auto-resolution — the user passes all needed
  *     spec IDs explicitly; missing transitive deps are an error.
- *   - Recovery / event emission / cost — later phases.
  */
 
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { FactoryConfig } from '../config.js';
-import type { Feature, RawPacket } from '../execute.js';
-import type { RawIntentArtifact } from '../plan.js';
-import { hydrateIntent } from '../plan.js';
-import * as fmt from '../output.js';
-import { resolveRunArg } from './resolve_arg.js';
-import { runPlanPhase } from './plan_phase.js';
-import { runDevelopPhase } from './develop_phase.js';
-import { runVerifyPhase } from './verify_phase.js';
-import { topoSort } from './topo.js';
+import type { FactoryConfig } from '../../config.js';
+import * as fmt from '../../output.js';
+import { topoSort } from '../topo.js';
 import {
   newRunId,
   makePipelineStarted,
@@ -56,17 +54,22 @@ import {
   makeSpecStarted,
   makeSpecBlocked,
   makeSpecCompleted,
-  makeCostCapCrossed,
-} from './events.js';
-import { appendEvent } from '../events.js';
-import { checkCap } from './cost.js';
+} from '../events.js';
+import { appendEvent } from '../../events.js';
 import {
   aggregateRunCost,
   isDayCapBlocked,
   localDateString,
-  readDayCost,
-  recordDayCapBlock,
-} from '../cost.js';
+} from '../../cost.js';
+import {
+  _resolveAll,
+  _detectCycles,
+  _findMissingDeps,
+  formatCycle,
+  type ResolvedSpec,
+} from './resolution.js';
+import { runSingleSpec } from './spec_runner.js';
+import { checkPerRunCap, checkPerDayCap } from './cost_caps.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -118,394 +121,22 @@ export interface OrchestratorResult {
 }
 
 // ---------------------------------------------------------------------------
-// Module-private fs helpers (mirror of the originals in run.ts and the
-// phase modules; see plan_phase.ts for the rationale on why these are
-// duplicated rather than centralised).
+// Re-exports of resolution-layer types and underscore-test exports.
+// Kept on the public module surface so importers (run.ts and the
+// orchestrator test suite) continue resolving these names from this
+// entry point after the post-Phase-5.7 decomposition.
 // ---------------------------------------------------------------------------
 
-function readJson<T>(path: string): T | null {
-  try { return JSON.parse(readFileSync(path, 'utf-8')) as T; }
-  catch { return null; }
-}
-
-function readJsonDir<T>(dir: string): T[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => readJson<T>(join(dir, f)))
-    .filter((x): x is T => x !== null);
-}
-
-function timestamp(): string {
-  return new Date().toISOString();
-}
-
-/**
- * Best-effort JSON patch: applies the mutator to the parsed file
- * contents and writes back only when the mutator returns true (the
- * dirty-flag contract pinned by run.test.ts).
- */
-function patchJson(
-  path: string,
-  mutator: (data: Record<string, unknown>) => boolean,
-): void {
-  try {
-    const data = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-    const dirty = mutator(data);
-    if (dirty) {
-      writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-    }
-  } catch { /* best-effort */ }
-}
-
-// ---------------------------------------------------------------------------
-// Resolution: each CLI arg -> ResolvedSpec node for the topo graph
-//
-// Internal helpers below are exported with a leading underscore so the
-// orchestrator's public surface stays narrow (runOrchestrator + types)
-// while still letting unit tests pin the resolution / cycle / missing-
-// dep behaviors that the public function relies on. Renaming or
-// removing an underscore-prefixed export still requires a matching
-// test update — they are NOT private to this file.
-// ---------------------------------------------------------------------------
-
-export interface ResolvedSpec {
-  readonly id: string;
-  /** depends_on as declared in the spec (always [] for legacy intent inputs). */
-  readonly dependsOn: ReadonlyArray<string>;
-  readonly intentPath: string;
-  readonly source: 'spec' | 'intent';
-}
-
-export interface ResolveAllOk {
-  readonly ok: true;
-  readonly resolved: ReadonlyArray<ResolvedSpec>;
-}
-
-export interface ResolveAllError {
-  readonly ok: false;
-  readonly error: string;
-}
-
-/**
- * Resolve every CLI arg via `resolveRunArg`, deduping repeated args by
- * id. Bails on the first resolution error. Results are returned in the
- * order each unique id first appeared in `args` (the topo sort below
- * is order-independent, but we want a stable trace).
- *
- * Exported for testing.
- */
-export function _resolveAll(
-  args: ReadonlyArray<string>,
-  artifactRoot: string,
-  projectRoot: string,
-): ResolveAllOk | ResolveAllError {
-  if (args.length === 0) {
-    return { ok: false, error: 'No spec or intent ids supplied' };
-  }
-  const seen = new Set<string>();
-  const out: ResolvedSpec[] = [];
-  for (const arg of args) {
-    if (seen.has(arg)) continue;
-    seen.add(arg);
-    const r = resolveRunArg(arg, artifactRoot, projectRoot);
-    if (!r.ok) {
-      return { ok: false, error: r.error };
-    }
-    out.push({
-      id: arg,
-      dependsOn: r.dependsOn ?? [],
-      intentPath: r.intentPath,
-      source: r.source,
-    });
-  }
-  return { ok: true, resolved: out };
-}
-
-// ---------------------------------------------------------------------------
-// Cycle detection — runs BEFORE any agent invocation.
-//
-// Pattern adapted from the validateSpecCycles helper in
-// pipeline/integrity.ts. The integrity layer reports cycles for spec-
-// validation purposes; here we need a yes/no answer that lets the
-// orchestrator bail before doing any work.
-// ---------------------------------------------------------------------------
-
-export interface CycleReport {
-  readonly cycles: ReadonlyArray<ReadonlyArray<string>>;
-}
-
-/** Exported for testing — pin cycle-detection behavior independently of runOrchestrator. */
-export function _detectCycles(
-  resolved: ReadonlyArray<ResolvedSpec>,
-): CycleReport {
-  const graph = new Map<string, ReadonlyArray<string>>();
-  for (const s of resolved) graph.set(s.id, s.dependsOn);
-
-  const visited = new Set<string>();
-  const onStack = new Set<string>();
-  const stack: string[] = [];
-  const cycles: string[][] = [];
-  const reported = new Set<string>();
-
-  function dfs(node: string): void {
-    visited.add(node);
-    onStack.add(node);
-    stack.push(node);
-    for (const dep of graph.get(node) ?? []) {
-      if (!graph.has(dep)) continue; // missing target — handled elsewhere
-      if (!visited.has(dep)) {
-        dfs(dep);
-      } else if (onStack.has(dep)) {
-        // Back-edge: dep is somewhere on the current DFS stack.
-        const cycleStart = stack.indexOf(dep);
-        const cycleMembers = stack.slice(cycleStart);
-        // Self-loop: stack has [..., dep]; cycleStart finds dep, members = [dep].
-        // We still report this as a cycle.
-        const cycleKey = cycleMembers.slice().sort().join('|');
-        if (!reported.has(cycleKey)) {
-          reported.add(cycleKey);
-          cycles.push([...cycleMembers, dep]);
-        }
-      }
-    }
-    onStack.delete(node);
-    stack.pop();
-  }
-
-  for (const id of graph.keys()) {
-    if (!visited.has(id)) dfs(id);
-  }
-
-  return { cycles };
-}
-
-function formatCycle(cycle: ReadonlyArray<string>): string {
-  return cycle.join(' -> ');
-}
-
-// ---------------------------------------------------------------------------
-// Missing transitive dependency detection
-// ---------------------------------------------------------------------------
-
-export interface MissingDep {
-  readonly specId: string;
-  readonly missingId: string;
-}
-
-/** Exported for testing — pin missing-dep detection independently of runOrchestrator. */
-export function _findMissingDeps(
-  resolved: ReadonlyArray<ResolvedSpec>,
-): ReadonlyArray<MissingDep> {
-  const ids = new Set(resolved.map((s) => s.id));
-  const missing: MissingDep[] = [];
-  for (const s of resolved) {
-    for (const dep of s.dependsOn) {
-      if (!ids.has(dep)) missing.push({ specId: s.id, missingId: dep });
-    }
-  }
-  return missing;
-}
-
-// ---------------------------------------------------------------------------
-// Per-spec execution
-//
-// Internally this is the same logic that lived in run.ts before Phase 5
-// — load + hydrate the intent, call runPlanPhase / runDevelopPhase /
-// runVerifyPhase, update feature status, return outcome. Extracting it
-// here is what enables the multi-arg outer loop above.
-// ---------------------------------------------------------------------------
-
-type RunSpecOutcome =
-  | {
-      readonly status: 'completed';
-      readonly feature_id: string | null;
-      readonly packets_completed: ReadonlyArray<string>;
-      readonly packets_failed: ReadonlyArray<string>;
-    }
-  | {
-      readonly status: 'failed';
-      readonly feature_id: string | null;
-      readonly packets_completed: ReadonlyArray<string>;
-      readonly packets_failed: ReadonlyArray<string>;
-      readonly reason: string;
-    };
-
-interface RunSingleSpecContext {
-  readonly runId: string;
-  /**
-   * Whether the surrounding pipeline invocation is a dry-run. Threaded
-   * through to the phase modules as the BaseInputs hint that
-   * deriveProvenance consumes. Provenance itself is NEVER carried by
-   * this context — it is derived once, inside the envelope helper, on
-   * every `make*` call. (Round-2 invariant pin.)
-   */
-  readonly dryRun: boolean;
-}
-
-function runSingleSpec(
-  spec: ResolvedSpec,
-  config: FactoryConfig,
-  projectRoot: string,
-  artifactRoot: string,
-  dryRun: boolean,
-  ctx: RunSingleSpecContext,
-): RunSpecOutcome {
-  if (!existsSync(spec.intentPath)) {
-    const msg = `Intent not found: ${spec.id}`;
-    fmt.log('error', fmt.error(msg));
-    return { status: 'failed', feature_id: null, packets_completed: [], packets_failed: [], reason: msg };
-  }
-  const rawIntent = readJson<RawIntentArtifact>(spec.intentPath);
-  if (rawIntent === null) {
-    const msg = `Failed to parse intent: ${spec.id}`;
-    fmt.log('error', fmt.error(msg));
-    return { status: 'failed', feature_id: null, packets_completed: [], packets_failed: [], reason: msg };
-  }
-  const hydrated = hydrateIntent(rawIntent, projectRoot, (p) => readFileSync(p, 'utf-8'));
-  if (!hydrated.ok) {
-    fmt.log('error', fmt.error(hydrated.error));
-    return { status: 'failed', feature_id: null, packets_completed: [], packets_failed: [], reason: hydrated.error };
-  }
-
-  // Phase 1: Plan.
-  process.stderr.write('\n');
-  fmt.log('phase', fmt.bold('PLANNING'));
-  const planResult = runPlanPhase({
-    intent: hydrated.intent,
-    config,
-    artifactRoot,
-    dryRun,
-    runId: ctx.runId,
-    specId: spec.id,
-  });
-  if (planResult.feature_id === null) {
-    // Pre-Phase-5 contract: --dry-run that stops at planning is a
-    // non-failing preview (exit 0). Pre-Phase-5 tools/run.ts:183 set
-    // success = dryRun for exactly this branch. We preserve that by
-    // mapping dry-run-stops-at-planning to a `completed` outcome with
-    // a null feature_id; non-dry-run is the real planning failure.
-    if (dryRun) {
-      return {
-        status: 'completed',
-        feature_id: null,
-        packets_completed: [],
-        packets_failed: [],
-      };
-    }
-    return {
-      status: 'failed',
-      feature_id: null,
-      packets_completed: [],
-      packets_failed: [],
-      reason: 'Planning failed',
-    };
-  }
-
-  // Load the planned feature.
-  const featurePath = join(artifactRoot, 'features', `${planResult.feature_id}.json`);
-  const feature = readJson<Feature>(featurePath);
-  if (feature === null) {
-    const msg = `Failed to load feature: ${planResult.feature_id}`;
-    fmt.log('error', fmt.error(msg));
-    return {
-      status: 'failed',
-      feature_id: planResult.feature_id,
-      packets_completed: [],
-      packets_failed: [],
-      reason: msg,
-    };
-  }
-
-  // Early exit: feature already fully done.
-  if (feature.status === 'completed' || feature.status === 'delivered') {
-    const msg = `Feature '${feature.id}' is already ${feature.status}. Nothing to do.`;
-    fmt.log('done', fmt.success(msg));
-    return {
-      status: 'completed',
-      feature_id: feature.id,
-      packets_completed: [...feature.packets],
-      packets_failed: [],
-    };
-  }
-
-  // Bump feature status to executing on first transition (best-effort).
-  patchJson(featurePath, (d) => {
-    if (d['status'] === 'planned') {
-      d['status'] = 'executing';
-      return true;
-    }
-    return false;
-  });
-
-  // Operator banner.
-  const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
-  const featurePackets = packets.filter((p) => feature.packets.includes(p.id));
-  const devCount = featurePackets.filter((p) => p.kind === 'dev').length;
-  const qaCount = featurePackets.filter((p) => p.kind === 'qa').length;
-  const existingCompletions = readJsonDir<{ packet_id: string }>(join(artifactRoot, 'completions'));
-  const existingCompletionIds = new Set(existingCompletions.map((c) => c.packet_id));
-  const alreadyDone = featurePackets.filter((p) => existingCompletionIds.has(p.id)).length;
-  fmt.log('plan', `Feature ${fmt.bold(feature.id)}: ${devCount} dev + ${qaCount} qa packets (${alreadyDone} already complete)`);
-
-  // Phase 2: Develop.
-  process.stderr.write('\n');
-  fmt.log('phase', fmt.bold('DEVELOPMENT'));
-  const devResult = runDevelopPhase({
-    feature,
-    config,
-    artifactRoot,
-    projectRoot,
-    dryRun,
-    runId: ctx.runId,
-    specId: spec.id,
-  });
-
-  // Phase 3: Verify.
-  process.stderr.write('\n');
-  fmt.log('phase', fmt.bold('VERIFICATION'));
-  const qaResult = runVerifyPhase({
-    feature,
-    config,
-    artifactRoot,
-    projectRoot,
-    dryRun,
-    runId: ctx.runId,
-    specId: spec.id,
-  });
-
-  // Update feature status if all packets completed.
-  const allCompleted = [...devResult.completed, ...qaResult.completed];
-  const allFailed = [...devResult.failed, ...qaResult.failed];
-  const allSkipped = qaResult.skipped;
-  if (allFailed.length === 0 && allSkipped.length === 0 && !dryRun && allCompleted.length === feature.packets.length) {
-    patchJson(featurePath, (d) => {
-      d['status'] = 'completed';
-      d['completed_at'] = timestamp();
-      return true;
-    });
-  }
-
-  const success = allFailed.length === 0 && allSkipped.length === 0;
-  if (success) {
-    return {
-      status: 'completed',
-      feature_id: feature.id,
-      packets_completed: allCompleted,
-      packets_failed: [],
-    };
-  }
-  const reasonParts: string[] = [];
-  if (allFailed.length > 0) reasonParts.push(`${allFailed.length} packet(s) failed: ${allFailed.join(', ')}`);
-  if (allSkipped.length > 0) reasonParts.push(`${allSkipped.length} QA packet(s) skipped`);
-  return {
-    status: 'failed',
-    feature_id: feature.id,
-    packets_completed: allCompleted,
-    packets_failed: allFailed,
-    reason: reasonParts.join('; ') || 'Pipeline did not complete cleanly',
-  };
-}
+export {
+  _resolveAll,
+  _detectCycles,
+  _findMissingDeps,
+  type ResolvedSpec,
+  type ResolveAllOk,
+  type ResolveAllError,
+  type CycleReport,
+  type MissingDep,
+} from './resolution.js';
 
 // ---------------------------------------------------------------------------
 // Public driver
@@ -759,54 +390,40 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
       outcomeById.set(spec.id, outcome);
       collected.push(outcome);
 
-      // Phase 5.7 — per-run cost cap. After each spec, aggregate the
-      // run's cost rows (every invocation in develop/verify wrote one)
-      // and check against the configured per_run cap. >= semantics.
-      // On crossing: emit cost.cap_crossed(per_run), set the flag,
-      // break out of the per-spec loop. Subsequent specs are not
-      // attempted. The bracket-close emits pipeline.failed.
-      if (perRunCap !== undefined) {
-        const runAgg = aggregateRunCost(runId, artifactRoot);
-        if (checkCap(runAgg.total, perRunCap)) {
-          runCapCrossed = { running_total: runAgg.total };
-          appendEvent(
-            makeCostCapCrossed(eventBase, {
-              scope: 'per_run',
-              cap_dollars: perRunCap,
-              running_total: runAgg.total,
-              packet_id: null,
-              spec_id: spec.id,
-            }),
-            artifactRoot,
-          );
-          break;
-        }
+      // Phase 5.7 — per-run cost cap. After each spec, the helper
+      // aggregates the run's cost rows and checks against the
+      // configured per_run cap. On crossing it emits the
+      // cost.cap_crossed(per_run) event and returns crossed=true; we
+      // record the running total, break the loop, and let the
+      // post-loop bracket emit pipeline.failed.
+      const runCapCheck = checkPerRunCap({
+        runId,
+        artifactRoot,
+        cap: perRunCap,
+        eventBase,
+        specId: spec.id,
+      });
+      if (runCapCheck.crossed && runCapCheck.running_total !== null) {
+        runCapCrossed = { running_total: runCapCheck.running_total };
+        break;
       }
 
-      // Phase 5.7 — per-day cost cap. We sum across every run-file
-      // for the local date and compare. On crossing: emit
-      // cost.cap_crossed(per_day), recordDayCapBlock(today, ...),
-      // set the flag, break the loop. The day-cap is NOT a per-run
-      // boundary — it crosses the run-level boundary and so it must
-      // also persist (subsequent same-day runs are rejected at the
-      // pre-flight gate above).
-      if (perDayCap !== undefined) {
-        const dayAgg = readDayCost(today, artifactRoot);
-        if (checkCap(dayAgg.total, perDayCap)) {
-          dayCapCrossed = { running_total: dayAgg.total };
-          appendEvent(
-            makeCostCapCrossed(eventBase, {
-              scope: 'per_day',
-              cap_dollars: perDayCap,
-              running_total: dayAgg.total,
-              packet_id: null,
-              spec_id: spec.id,
-            }),
-            artifactRoot,
-          );
-          recordDayCapBlock(today, artifactRoot);
-          break;
-        }
+      // Phase 5.7 — per-day cost cap. The helper sums across every
+      // run-file for the local date, compares against the configured
+      // per_day cap, and on crossing both emits the
+      // cost.cap_crossed(per_day) event AND records the cap-block
+      // marker so subsequent same-day runs are rejected at the
+      // pre-flight gate above.
+      const dayCapCheck = checkPerDayCap({
+        today,
+        artifactRoot,
+        cap: perDayCap,
+        eventBase,
+        specId: spec.id,
+      });
+      if (dayCapCheck.crossed && dayCapCheck.running_total !== null) {
+        dayCapCrossed = { running_total: dayCapCheck.running_total };
+        break;
       }
     }
 

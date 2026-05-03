@@ -38,7 +38,7 @@ import {
   _detectCycles,
   _findMissingDeps,
   type ResolvedSpec,
-} from '../pipeline/orchestrator.js';
+} from '../pipeline/orchestrator/index.js';
 import type { FactoryConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------

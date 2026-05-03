@@ -32,7 +32,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runOrchestrator } from '../pipeline/orchestrator.js';
+import { runOrchestrator } from '../pipeline/orchestrator/index.js';
 import { readEvents } from '../events.js';
 import type { FactoryConfig } from '../config.js';
 
