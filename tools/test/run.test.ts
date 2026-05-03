@@ -31,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { patchJson, formatJsonOutput } from '../run.js';
-import type { OrchestratorResult } from '../pipeline/orchestrator.js';
+import type { OrchestratorResult } from '../pipeline/orchestrator/index.js';
 import { refreshCompletionId } from '../pipeline/lifecycle_helpers.js';
 
 function makeTempJson(initial: Record<string, unknown>): { dir: string; path: string } {
@@ -287,7 +287,7 @@ describe('run.ts — Phase 3 + 4.5 structural invariants', () => {
     // imports the driver. A regression that re-inlined the per-spec
     // body would either drop this import or pull the phase imports
     // back into run.ts.
-    expect(code).toMatch(/from\s+['"]\.\/pipeline\/orchestrator\.js['"]/);
+    expect(code).toMatch(/from\s+['"]\.\/pipeline\/orchestrator\/index\.js['"]/);
     // The phase-function imports moved to the orchestrator; run.ts
     // itself should not import them anymore.
     expect(code).not.toMatch(/from\s+['"]\.\/pipeline\/plan_phase\.js['"]/);

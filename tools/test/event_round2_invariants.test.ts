@@ -34,7 +34,7 @@ import {
   makePacketStarted,
   makeVerificationPassed,
 } from '../pipeline/events.js';
-import { runOrchestrator } from '../pipeline/orchestrator.js';
+import { runOrchestrator } from '../pipeline/orchestrator/index.js';
 import { readEvents } from '../events.js';
 import type { FactoryConfig } from '../config.js';
 

@@ -27,7 +27,7 @@
  * of this file. Phase 3 library-ized the lifecycle scripts. Phase 4
  * added spec→intent translation. Phase 4.5 extracted the imperative
  * phase loops into pipeline/{plan,develop,verify}_phase.ts. Phase 5
- * extracted the multi-spec sequencing into pipeline/orchestrator.ts.
+ * extracted the multi-spec sequencing into pipeline/orchestrator/.
  *
  * What's left here is the entry layer described in
  * docs/decisions/single_entry_pipeline.md: parse argv, build the
@@ -41,7 +41,7 @@ import {
   resolveArtifactRoot,
 } from './config.js';
 import * as fmt from './output.js';
-import { runOrchestrator, type OrchestratorResult, type SpecOutcome } from './pipeline/orchestrator.js';
+import { runOrchestrator, type OrchestratorResult, type SpecOutcome } from './pipeline/orchestrator/index.js';
 import { aggregateRunCost } from './cost.js';
 
 // ---------------------------------------------------------------------------

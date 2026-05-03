@@ -105,7 +105,7 @@ vi.mock('../lifecycle/complete.js', () => ({
 // vitest hoists vi.mock factories, but importing the SUT alongside
 // would otherwise risk loading the real module first under some
 // resolution orders.
-import { runOrchestrator } from '../pipeline/orchestrator.js';
+import { runOrchestrator } from '../pipeline/orchestrator/index.js';
 import { readEvents } from '../events.js';
 import {
   costPathFor,
