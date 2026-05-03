@@ -47,16 +47,12 @@ import {
   makeSpecStarted,
   makeSpecBlocked,
   makeSpecCompleted,
-  makeCostCapCrossed,
 } from '../events.js';
 import { appendEvent } from '../../events.js';
-import { checkCap } from '../cost.js';
 import {
   aggregateRunCost,
   isDayCapBlocked,
   localDateString,
-  readDayCost,
-  recordDayCapBlock,
 } from '../../cost.js';
 import {
   _resolveAll,
@@ -66,6 +62,7 @@ import {
   type ResolvedSpec,
 } from './resolution.js';
 import { runSingleSpec } from './spec_runner.js';
+import { checkPerRunCap, checkPerDayCap } from './cost_caps.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -386,54 +383,40 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
       outcomeById.set(spec.id, outcome);
       collected.push(outcome);
 
-      // Phase 5.7 — per-run cost cap. After each spec, aggregate the
-      // run's cost rows (every invocation in develop/verify wrote one)
-      // and check against the configured per_run cap. >= semantics.
-      // On crossing: emit cost.cap_crossed(per_run), set the flag,
-      // break out of the per-spec loop. Subsequent specs are not
-      // attempted. The bracket-close emits pipeline.failed.
-      if (perRunCap !== undefined) {
-        const runAgg = aggregateRunCost(runId, artifactRoot);
-        if (checkCap(runAgg.total, perRunCap)) {
-          runCapCrossed = { running_total: runAgg.total };
-          appendEvent(
-            makeCostCapCrossed(eventBase, {
-              scope: 'per_run',
-              cap_dollars: perRunCap,
-              running_total: runAgg.total,
-              packet_id: null,
-              spec_id: spec.id,
-            }),
-            artifactRoot,
-          );
-          break;
-        }
+      // Phase 5.7 — per-run cost cap. After each spec, the helper
+      // aggregates the run's cost rows and checks against the
+      // configured per_run cap. On crossing it emits the
+      // cost.cap_crossed(per_run) event and returns crossed=true; we
+      // record the running total, break the loop, and let the
+      // post-loop bracket emit pipeline.failed.
+      const runCapCheck = checkPerRunCap({
+        runId,
+        artifactRoot,
+        cap: perRunCap,
+        eventBase,
+        specId: spec.id,
+      });
+      if (runCapCheck.crossed && runCapCheck.running_total !== null) {
+        runCapCrossed = { running_total: runCapCheck.running_total };
+        break;
       }
 
-      // Phase 5.7 — per-day cost cap. We sum across every run-file
-      // for the local date and compare. On crossing: emit
-      // cost.cap_crossed(per_day), recordDayCapBlock(today, ...),
-      // set the flag, break the loop. The day-cap is NOT a per-run
-      // boundary — it crosses the run-level boundary and so it must
-      // also persist (subsequent same-day runs are rejected at the
-      // pre-flight gate above).
-      if (perDayCap !== undefined) {
-        const dayAgg = readDayCost(today, artifactRoot);
-        if (checkCap(dayAgg.total, perDayCap)) {
-          dayCapCrossed = { running_total: dayAgg.total };
-          appendEvent(
-            makeCostCapCrossed(eventBase, {
-              scope: 'per_day',
-              cap_dollars: perDayCap,
-              running_total: dayAgg.total,
-              packet_id: null,
-              spec_id: spec.id,
-            }),
-            artifactRoot,
-          );
-          recordDayCapBlock(today, artifactRoot);
-          break;
-        }
+      // Phase 5.7 — per-day cost cap. The helper sums across every
+      // run-file for the local date, compares against the configured
+      // per_day cap, and on crossing both emits the
+      // cost.cap_crossed(per_day) event AND records the cap-block
+      // marker so subsequent same-day runs are rejected at the
+      // pre-flight gate above.
+      const dayCapCheck = checkPerDayCap({
+        today,
+        artifactRoot,
+        cap: perDayCap,
+        eventBase,
+        specId: spec.id,
+      });
+      if (dayCapCheck.crossed && dayCapCheck.running_total !== null) {
+        dayCapCrossed = { running_total: dayCapCheck.running_total };
+        break;
       }
     }
 
