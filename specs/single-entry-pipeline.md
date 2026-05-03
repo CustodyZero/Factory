@@ -271,28 +271,37 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Provider events (`provider.unavailable`, `provider.failover_attempted`) — Phase 7.
 - Event compaction / rotation — out of scope per the decision doc.
 
-### Phase 5.7 — Cost visibility
+### Phase 5.7 — Cost visibility ✅ COMPLETE
 
-**Goal:** Implement [`cost_visibility`](../docs/decisions/cost_visibility.md). Per-invocation cost tracking with caps. Lands before Phase 6 because recovery retry budgets need cost visibility to operate safely.
+**Status:** Merged in commit `192b172` (2026-05-03). Phase 6 recovery now has its retry-budget substrate.
 
-**Specifically:**
+**Goal:** Implement [`cost_visibility`](../docs/decisions/cost_visibility.md). Per-invocation cost tracking with caps.
 
-- New `tools/pipeline/cost.ts` (pure logic): `computeCost(provider, model, tokens_in, tokens_out, rateCard): CostRecord` returning `{ tokens_in, tokens_out, dollars: number | null, provider, model }`. Pure function over rate cards (loaded from a config table) and reported tokens.
-- New `tools/cost.ts` (I/O wrapper): `recordCost(record, runId, packetId, artifactRoot)`, `aggregateCost(runId, artifactRoot)`. Writes to `factory/cost/<runId>.jsonl`.
-- `tools/pipeline/agent_invoke.ts` updated to capture token counts from each agent's response (provider-specific extraction logic — codex/claude/copilot each report differently or not at all). Where a provider does not report tokens, record `tokens_in: null, tokens_out: null` and `dollars: null`.
-- Caps configurable in `factory.config.json` under `pipeline.cost_caps`: `{ per_run, per_packet, per_day }` (each optional, in dollars). Defaults: disabled (no caps).
-- Cap-crossing emits a `cost.cap_crossed` event (per Phase 5.5's event system) and triggers escalation: per-run cap aborts the entire run; per-packet cap fails just that packet (continuing to the next independent packet); per-day cap aborts the run AND records the cap-block date so subsequent runs that day are blocked.
-- run.ts reports aggregate cost in the final summary output (e.g., "completed; total cost: $0.42").
-- Tests cover: cost computation per provider, cap detection at each scope, escalation behavior, no-token-data handling, rate card lookup.
+**What shipped:**
 
-**Acceptance:**
+- New `tools/pipeline/cost.ts` (441 lines, pure): `RateCard` + `DEFAULT_RATE_CARD` per provider/model; `computeCost` (returns `dollars: null` when tokens are null OR rate-card entry missing — never silent zero); `extractTokens` (provider-specific parsers for codex / claude / copilot; null on unrecognized format; defensive — never throws on garbage input); `aggregateDollars`, `checkCap`, `mergeRateCard`, `localDateFromTimestamp`, `utcDateWindow`, `CostRecord` interface.
+- New `tools/cost.ts` (322 lines, I/O): `recordCost` (append-only JSONL); `readCostRecords` (defensive — tolerates truncated final line); `aggregateRunCost`; `readDayCost` (filters records by `localDateFromTimestamp(record.timestamp) === date` after a bounded UTC-window candidate scan — fixes silent under-reporting in non-UTC timezones); `recordDayCapBlock`/`isDayCapBlocked` for the per-day cap state file.
+- New `schemas/cost_record.schema.json` — documentation only, NOT wired into `validate.ts`.
+- `InvokeResult` extended with `cost: { provider, model: string | null, tokens_in, tokens_out, dollars: number | null }`. Token extraction + dollar computation happen in the spawn path of `agent_invoke.ts`. All early-return paths use `nullCost` so the field is always populated.
+- Cost recording wired at every agent invocation: planner (1×), developer/reviewer/rework (3×), QA verifier (1×). All call sites pass `run_id`, `packet_id` (or null for planner), `spec_id`.
+- Cap enforcement: `cost.cap_crossed` events emitted BEFORE the abort propagates. Per-run cap aborts the entire run with `pipeline.failed`. Per-packet cap fails just that packet (orchestrator continues to the next independent packet, no `pipeline.failed`). Per-day cap aborts the run AND calls `recordDayCapBlock(today, ...)` so subsequent same-day runs are rejected at orchestrator entry (no `pipeline.started`).
+- Per-day cap uses **local date** (operator's wall clock) consistently: `localDateString` and `localDateFromTimestamp` both use local-time accessors. Documented at every reference so future contributors don't assume UTC.
+- `run.ts` summary line includes `total cost: $X.XX` and `(N unknown-cost invocations)` when any invocation reported null dollars. Honest unknowns surface to the operator.
+- `factory.config.json` schema adds optional `pipeline.cost_caps: { per_run?, per_packet?, per_day? }` and optional `pipeline.rate_card` partial override.
 
-- All existing tests pass.
-- Cost records produced by any live run; null fields when provider doesn't report.
-- Per-run cap of $1 with a fixture that consumes >$1 triggers an abort with the structured event.
-- Per-packet cap of $0.50 with a fixture aborts only that packet.
-- Provider-agnostic: codex, claude, copilot all produce normalized records.
-- Schema added at `schemas/cost_record.schema.json`.
+**Iteration record:**
+
+- 3 review rounds used (codex GPT-5.5):
+  - Round 1 REQUEST-CHANGES: planner invocations not in cost stream (violates "every agent invocation"); `readDayCost` filtered by filename UTC prefix instead of record local date (silent under-reporting in non-UTC TZs).
+  - Round 2 REQUEST-CHANGES: round-2 regression tests still TZ-fragile in extreme east timezones (UTC+14 hole — `T12:00:00.000Z` literals map to next local day in Pacific/Kiritimati).
+  - Round 3 APPROVE after fixture-only commit replacing 25 UTC-anchored timestamp literals with local-time `Date(y, m, d, h)` constructors and deriving `localDay` from each fixture rather than hardcoding.
+- Independent QA verification (separate Opus identity, FI-7) APPROVE on all 14 acceptance criteria. TZ-invariance independently verified under `TZ=Pacific/Kiritimati` (UTC+14): 485/485 pass.
+- Operational note: codex CLI hung 4 of 6 times during the review chain (process startup network stall — 0% CPU, 0 bytes output). Kill+retry succeeded every time. External issue (codex CLI/network), not factory. Worth flagging at the post-5.7 orchestrator review checkpoint.
+
+**What this does NOT include (still deferred):**
+
+- Manager-Executor tiering (claurst's `ManagedAgentConfig` budget splitting) — natural follow-up after cost tracking is operational; deferred to a separate decision.
+- Cost persistence and consolidation into long-term memory — follows from the future memory-write-side spec.
 
 ### Checkpoint after Phase 5.7 — Orchestrator review
 
