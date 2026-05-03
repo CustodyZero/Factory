@@ -303,15 +303,30 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Manager-Executor tiering (claurst's `ManagedAgentConfig` budget splitting) — natural follow-up after cost tracking is operational; deferred to a separate decision.
 - Cost persistence and consolidation into long-term memory — follows from the future memory-write-side spec.
 
-### Checkpoint after Phase 5.7 — Orchestrator review
+### Checkpoint after Phase 5.7 — Orchestrator review ✅ COMPLETE
 
-**Trigger:** all Phase 5-series work merged (5, 5.5, 5.7) before Phase 6 begins.
+**Status:** Merged in commit `6a30b26` (2026-05-03). The orchestrator was decomposed before Phase 6 begins.
 
-**Why:** Phase 5 shipped `tools/pipeline/orchestrator.ts` at 591 lines. Phase 5.5 will add event emission at orchestrator transitions; Phase 5.7 will add cost-cap enforcement in the orchestrator's per-spec loop. By the end of 5.7 the orchestrator will have grown materially, and that is the right moment to look for decomposition opportunities — not earlier (premature abstraction without knowing the final shape) and not later (Phase 6 recovery lands on top of whatever shape it has, so any orchestrator restructuring should precede it).
+**Why this happened:** by end of Phase 5.7 the orchestrator was 934 lines spanning 4 mixed concerns from Phase 5 (multi-spec sequencing) + Phase 5.5 (event emission) + Phase 5.7 (cost-cap enforcement) layered together. The user called for decomposition (not just minor refactor) before Phase 6 lands recovery on top.
 
-**Scope:** read-only review pass. Possible outcomes: no change needed; minor refactor (likely along event/cost emission seams); decomposition into sub-modules. Any structural change goes through normal process classification (cross-cutting if it touches phase contracts, local otherwise).
+**What shipped:**
 
-**Out of scope at this checkpoint:** recovery integration (Phase 6's job), parallel execution.
+`tools/pipeline/orchestrator.ts` (934 lines, single file) → `tools/pipeline/orchestrator/` directory containing 4 single-concern files:
+
+| File | Lines | Concern |
+|------|-------|---------|
+| `index.ts` | 551 | Slim driver: try/catch/finally bracket, day-cap pre-flight, gate sequencing, per-spec loop, aggregation, exception handler. Public types re-exported. |
+| `resolution.ts` | 169 (pure) | `_resolveAll`, `_detectCycles`, `_findMissingDeps` + types. Underscore-prefixed for test pinning, retained. |
+| `spec_runner.ts` | 267 | `runSingleSpec` + `RunSingleSpecContext` + `RunSpecOutcome` + 4 fs helpers. **Phase 6's natural hook point for per-packet recovery.** |
+| `cost_caps.ts` | 113 | `checkPerRunCap`, `checkPerDayCap`. Atomic encapsulation of event-emit + (for day-cap) `recordDayCapBlock`. Returns `{ crossed: boolean, running_total: number \| null }`; the driver guards with `crossed && running_total !== null` to defensively reject "no aggregation work" from "$0 crossed." |
+
+Pure refactor. Behavior unchanged at every event/cap/gate site. Tests 485 (no count delta). `package.json` unchanged. All 7 importers updated to `./pipeline/orchestrator/index.js`. Regex assertion in `run.test.ts:290` updated to match.
+
+**Iteration record:** 1 review round (codex APPROVE on round 1). Independent QA (separate Opus, FI-7) APPROVE on all 10 acceptance criteria + 17 specific checks including behavior-preservation diff.
+
+**On `index.ts` at 551 lines:** codex's verdict — "the 551-line driver is still long, but the remaining substance is the orchestration transaction itself. Pulling out the per-spec loop or post-loop close would require a large context object carrying event state, maps, caps, totals, root paths, run id, and display behavior. That would mostly move complexity sideways and make the event ordering less obvious." Endorsed.
+
+**Operational note across the Phase 5-series + this checkpoint:** codex CLI hung 5 of 8 review dispatches in this session (process startup network stall — 0% CPU, 0 bytes output, never times out client-side). Kill+retry succeeded every time. External issue (codex CLI/network reliability), not factory. Worth carrying into a future workflow-reliability discussion separate from the pipeline architecture itself.
 
 ### Phase 6 — Recovery layer
 
