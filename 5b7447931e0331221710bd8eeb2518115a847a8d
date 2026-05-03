@@ -1,0 +1,51 @@
+# Phase 5.7 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-03 (after one hang+retry on the codex side)
+**Branch:** worktree-agent-a0b554550bc724180 (round-2 commits 41d2950, bd5763c)
+**Verdict:** REQUEST-CHANGES
+
+## Summary
+
+Production fixes are structurally correct:
+- Planner cost is recorded immediately after `invokeAgent` with `packet_id: null` and `spec_id` set.
+- `readDayCost` now filters by record timestamp via `localDateFromTimestamp` after a bounded UTC-window candidate scan.
+
+But one finding remains in the regression test fixtures.
+
+## Issues
+
+### 1. Round-2 regression tests still TZ-fragile in extreme east timezones
+
+**File:** `tools/test/cost_io.test.ts:364` and similar fixtures.
+
+The developer's `T00:00:00.000Z → T12:00:00.000Z` shift improved robustness for most TZs (UTC noon is unambiguous for UTC-12 through UTC+11). But at UTC+12 through UTC+14 (e.g., Pacific/Kiritimati), UTC noon already maps to the *next* local calendar day. So:
+
+- `localDateFromTimestamp('2026-05-01T12:00:00.000Z')` returns `'2026-05-01'` in Phoenix/UTC/etc., but `'2026-05-02'` in Kiritimati.
+- The regression test for the non-UTC day-cap bug therefore breaks in Kiritimati — exactly the kind of environment it claims to protect against.
+
+Per CLAUDE.md §4 ("Behavior must not depend on locale, timezone..." — applies equally to tests since CI is just another environment, §4.5), the regression test must be TZ-invariant.
+
+**Fix:** Build fixture timestamps from local calendar-date constructors so they anchor to local noon on the target date, regardless of TZ:
+
+```ts
+// Before (TZ-fragile in UTC+12..+14):
+const ts = '2026-05-01T12:00:00.000Z';
+
+// After (TZ-invariant):
+const ts = new Date(2026, 4, 1, 12).toISOString();  // local noon on 2026-05-01
+
+// And for the queried day:
+const localDay = localDateFromTimestamp(ts);  // derive, don't hardcode
+```
+
+For the bug-specific test (record's local date = today, run-id filename = different UTC date), pick the run-id prefix from `utcDateWindow(localDay)` and explicitly assert the prefix is NOT equal to `localDay`. That makes the test prove the actual property without depending on a specific TZ.
+
+## What this round did well
+
+- Planner-cost fix exercises a real orchestrator planning path, not a direct `recordCost` call — the test pins the wire-up, not just the helper.
+- Production `readDayCost` now uses the same local-date model as the orchestrator's day-cap gate, so the gate and the aggregator agree about which records belong to "today."
+
+## Round budget remaining
+
+1 round. Fix is narrow (test fixtures only); APPROVE expected after round 3.
