@@ -262,7 +262,11 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
     return { feature_id: null };
   }
 
-  const provider = config.pipeline?.persona_providers.planner ?? 'claude';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI; the rest form
+  // the cross-CLI failover order. Read [0] for the initial attempt;
+  // the cascade is consulted only on failure (via the recovery layer).
+  const provider = config.pipeline?.persona_providers.planner[0] ?? 'claude';
   const plannerTier = config.personas.planner.model ?? 'high';
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 

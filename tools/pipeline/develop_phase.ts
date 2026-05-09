@@ -440,10 +440,16 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
   fmt.log('develop', `${sorted.length} dev packet(s) to process`);
 
   const maxReviewIterations = config.pipeline?.max_review_iterations ?? 3;
-  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI for the persona;
+  // the rest form the cross-CLI failover order consumed by the
+  // ProviderUnavailable cascade. We read [0] here so the initial
+  // invocation targets the primary; the cascade is consulted only on
+  // failure (via the recovery layer).
+  const devProvider = config.pipeline?.persona_providers.developer[0] ?? 'codex';
   const devTier: ModelTier = config.personas.developer.model ?? 'high';
   const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
-  const reviewProvider = config.pipeline?.persona_providers.code_reviewer ?? 'claude';
+  const reviewProvider = config.pipeline?.persona_providers.code_reviewer[0] ?? 'claude';
   const reviewTier: ModelTier = config.personas.code_reviewer.model ?? 'medium';
 
   for (const packet of sorted) {

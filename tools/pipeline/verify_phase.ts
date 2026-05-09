@@ -277,13 +277,17 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
 
   fmt.log('verify', `${qaPackets.length} QA packet(s) to process`);
 
-  const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI; the rest form
+  // the cross-CLI failover order consumed by the ProviderUnavailable
+  // cascade. Read [0] for the initial invocation.
+  const qaProvider = config.pipeline?.persona_providers.qa[0] ?? 'claude';
   const qaTier: ModelTier = config.personas.qa.model ?? 'medium';
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
   // For BuildFailed remediation in the QA flow, the dev agent must
   // be invoked against the DEV packet (the `verifies` target), NOT
   // the QA packet. Resolve the developer config up front.
-  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  const devProvider = config.pipeline?.persona_providers.developer[0] ?? 'codex';
   const devTier: ModelTier = config.personas.developer.model ?? 'high';
 
   for (const packet of qaPackets) {

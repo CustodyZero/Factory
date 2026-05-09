@@ -41,7 +41,33 @@ export interface PipelineProviderConfig {
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
   readonly model_map?: ModelMap;
+  /**
+   * Phase 7 of single-entry-pipeline — optional within-CLI model
+   * failover order for ABSTRACTION providers (those that route to
+   * multiple underlying models, e.g. copilot). Each element is a
+   * model id; the first is tried first, then the next on failure.
+   *
+   * Direct providers (codex, claude — one CLI maps to one upstream
+   * provider) do NOT set this field. Absence means "on failure, fall
+   * through to the next CLI in `persona_providers` without trying
+   * alternate models".
+   *
+   * See `tools/pipeline/cascade.ts` for how the cascade is computed.
+   */
+  readonly model_failover?: ReadonlyArray<string>;
 }
+
+/**
+ * The raw on-disk shape of a `persona_providers.<persona>` value.
+ * Operators may write either a single string (legacy single-string
+ * form, kept for backward compatibility) or an ordered list of
+ * provider names (cross-CLI failover order).
+ *
+ * The loader normalizes the single-string form to a one-element
+ * array; the internal `PipelineConfig` shape always sees arrays. See
+ * `normalizePersonaProvider`.
+ */
+export type PersonaProviderRawValue = PipelineProvider | ReadonlyArray<PipelineProvider>;
 
 /**
  * Per-scope dollar budgets (Phase 5.7).
@@ -80,11 +106,24 @@ export interface PipelineConfig {
   readonly providers: {
     readonly [key: string]: PipelineProviderConfig;
   };
+  /**
+   * Per-persona provider list. After loader normalization (see
+   * `normalizePersonaProvider`), each persona maps to a non-empty
+   * `ReadonlyArray<PipelineProvider>`:
+   *
+   *   - Index 0 is the primary CLI for the persona.
+   *   - Subsequent entries form the cross-CLI failover order.
+   *
+   * The on-disk shape may be a single string (legacy form); the
+   * loader normalizes single strings to a one-element array so
+   * internal callers always see arrays. The shape is enforced at
+   * load time; downstream code does NOT branch on string vs array.
+   */
   readonly persona_providers: {
-    readonly planner: PipelineProvider;
-    readonly developer: PipelineProvider;
-    readonly code_reviewer: PipelineProvider;
-    readonly qa: PipelineProvider;
+    readonly planner: ReadonlyArray<PipelineProvider>;
+    readonly developer: ReadonlyArray<PipelineProvider>;
+    readonly code_reviewer: ReadonlyArray<PipelineProvider>;
+    readonly qa: ReadonlyArray<PipelineProvider>;
   };
   readonly completion_identities: {
     readonly developer: string;
@@ -149,6 +188,36 @@ export function findProjectRoot(): string {
 }
 
 /**
+ * Phase 7 — normalize a `persona_providers.<persona>` raw value
+ * (string | string[] | undefined) to a non-empty
+ * `ReadonlyArray<PipelineProvider>`.
+ *
+ *   - `undefined`           -> `defaults` (already a non-empty array)
+ *   - `"<provider>"`        -> `["<provider>"]`
+ *   - `["<a>", "<b>", ...]` -> the array as-is (frozen)
+ *
+ * The empty-array case (`[]`) is rejected: it would mean "this
+ * persona has no provider," which the rest of the pipeline cannot
+ * handle. We fall back to `defaults` rather than crash so a
+ * misconfigured file still loads. (Honest behavior per CLAUDE.md
+ * §3.5: a real validation pass — Phase 4.6 ajv check or the next
+ * call to `validate.ts` — surfaces the misconfiguration; the loader
+ * does not silently invent a value beyond falling back to the
+ * documented default.)
+ *
+ * Exported for unit tests and for the cascade-computation module.
+ */
+export function normalizePersonaProvider(
+  raw: PersonaProviderRawValue | undefined,
+  defaults: ReadonlyArray<PipelineProvider>,
+): ReadonlyArray<PipelineProvider> {
+  if (raw === undefined) return defaults;
+  if (typeof raw === 'string') return [raw];
+  if (Array.isArray(raw) && raw.length > 0) return raw;
+  return defaults;
+}
+
+/**
  * Loads factory.config.json from the project root.
  * Exits with an error if the config file is missing or invalid.
  */
@@ -194,10 +263,10 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
     const defaultPipeline: PipelineConfig = {
       providers: defaultProviders,
       persona_providers: {
-        planner: 'claude',
-        developer: 'codex',
-        code_reviewer: 'claude',
-        qa: 'claude',
+        planner: ['claude'],
+        developer: ['codex'],
+        code_reviewer: ['claude'],
+        qa: ['claude'],
       },
       completion_identities: {
         developer: 'codex-dev',
@@ -206,7 +275,20 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       },
       max_review_iterations: 3,
     };
-    const rawPipeline = (parsed as Record<string, unknown>)['pipeline'] as Partial<PipelineConfig> | undefined;
+    // The on-disk shape of `pipeline` may use the legacy single-string
+    // form for `persona_providers.<persona>`. We type the raw view
+    // permissively here and normalize below; the resulting
+    // `PipelineConfig` always carries arrays (see `normalizePersonaProvider`).
+    const rawPipeline = (parsed as Record<string, unknown>)['pipeline'] as
+      | (Omit<Partial<PipelineConfig>, 'persona_providers'> & {
+          readonly persona_providers?: Partial<{
+            readonly planner: PersonaProviderRawValue;
+            readonly developer: PersonaProviderRawValue;
+            readonly code_reviewer: PersonaProviderRawValue;
+            readonly qa: PersonaProviderRawValue;
+          }>;
+        })
+      | undefined;
     const rawProviders = rawPipeline?.providers as Record<string, Partial<PipelineProviderConfig>> | undefined;
     const mergedProviders: Record<string, PipelineProviderConfig> = {};
     for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
@@ -219,14 +301,35 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
     // forward whatever the user wrote (or nothing).
     const rawCostCaps = rawPipeline?.cost_caps;
     const rawRateCard = rawPipeline?.rate_card;
+
+    // Phase 7 — normalize persona_providers entries from
+    // (string | string[]) on disk to ReadonlyArray<PipelineProvider>
+    // internally. Defaults already use the array form. Any persona
+    // missing from the raw config falls through to the default.
+    const rawPersonaProviders = rawPipeline?.persona_providers ?? {};
+    const personaProviders = {
+      planner: normalizePersonaProvider(
+        rawPersonaProviders.planner,
+        defaultPipeline.persona_providers.planner,
+      ),
+      developer: normalizePersonaProvider(
+        rawPersonaProviders.developer,
+        defaultPipeline.persona_providers.developer,
+      ),
+      code_reviewer: normalizePersonaProvider(
+        rawPersonaProviders.code_reviewer,
+        defaultPipeline.persona_providers.code_reviewer,
+      ),
+      qa: normalizePersonaProvider(
+        rawPersonaProviders.qa,
+        defaultPipeline.persona_providers.qa,
+      ),
+    };
     const pipeline: PipelineConfig = {
       ...defaultPipeline,
       ...rawPipeline,
       providers: mergedProviders,
-      persona_providers: {
-        ...defaultPipeline.persona_providers,
-        ...rawPipeline?.persona_providers,
-      },
+      persona_providers: personaProviders,
       completion_identities: {
         ...defaultPipeline.completion_identities,
         ...rawPipeline?.completion_identities,

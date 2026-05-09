@@ -162,7 +162,7 @@ describe('invokeAgent — configuration-error early returns', () => {
       pipeline: {
         providers: {},
         persona_providers: {
-          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          planner: ['claude'], developer: ['claude'], code_reviewer: ['claude'], qa: ['claude'],
         },
         completion_identities: {
           developer: 'claude', code_reviewer: 'claude', qa: 'claude',
@@ -184,7 +184,7 @@ describe('invokeAgent — configuration-error early returns', () => {
           claude: { enabled: false, command: 'claude' },
         },
         persona_providers: {
-          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          planner: ['claude'], developer: ['claude'], code_reviewer: ['claude'], qa: ['claude'],
         },
         completion_identities: {
           developer: 'claude', code_reviewer: 'claude', qa: 'claude',
