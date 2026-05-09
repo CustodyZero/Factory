@@ -1,0 +1,66 @@
+# Phase 6 (revised) Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** worktree-agent-ae1b27e7f8caf42df (commits c8bb722, a2eacc6, 3f32cf6, 4dfa02a, 4af500d, 884d7c1, f7fb04a)
+**Verdict:** REQUEST-CHANGES
+
+## Summary
+
+The `RecoveryResult<T>` discriminator architecture is correct — wrap sites mostly dispatch on it explicitly, and the round-3 "logged but advances" bug class IS gone. But two new substantive bugs surfaced, plus the testing gap that allowed them to slip through.
+
+## Issues
+
+### 1. `status: "failed"` is written but not in the packet schema or read paths
+
+**Files:** `tools/pipeline/develop_phase.ts:358`, `tools/pipeline/verify_phase.ts:196`, `schemas/packet.schema.json:103`, `tools/execute.ts:169`, `tools/status.ts:139`
+
+The schema's status enum is `null, draft, ready, implementing, review_requested, changes_requested, review_approved, completed, abandoned, deferred`. **There is no `"failed"`.** Code writing `status: "failed"` produces schema-invalid data. Worse, code reading status has no handling for it — `execute.ts`/`status.ts` reconstruction returns `completed` if a completion record exists, otherwise `in_progress` if `started_at` is set. So an "escalated" packet looks like `in_progress` or even `completed` to downstream tooling.
+
+The escalation IS controlling inside the per-packet loop (the state machine breaks correctly). But the data model doesn't propagate the failure to the rest of the system.
+
+**Fix:** Add `"failed"` to `schemas/packet.schema.json` status enum. Update `tools/execute.ts` (especially `deriveDevResumePoint`) and `tools/status.ts` so failed packets are terminal-failed, NOT ready/in-progress/completed. Verify-phase early exits should also account for `status: "failed"` when computing dependency satisfaction.
+
+### 2. `BuildFailed` recovery at `completePacket` boundaries can falsely succeed
+
+**Files:** `tools/pipeline/develop_phase.ts:820, 831`, `tools/pipeline/verify_phase.ts:418, 474`, `tools/lifecycle/complete.ts:128, 227`
+
+`completePacket` writes a completion record AND sets packet status to `completed` even when `ci_pass: false`. On retry, completePacket sees the existing completion and returns `{ already_complete: true, ci_pass: false }`. Both phase closures (e.g. develop_phase.ts:831) check `already_complete` BEFORE checking `ci_pass`:
+
+```ts
+if (r.already_complete) return { outcome: 'ok', value: true };  // false success
+if (r.ci_pass) return { outcome: 'ok', value: true };
+```
+
+So a CI-failed completion that was retried looks successful. Worse: in develop finalize (lines 820+), the retry path doesn't invoke the dev agent with `attempt.guardrailPrompt` — it just re-runs `completePacket`. The retry is structurally meaningless because (a) no dev remediation happens and (b) the existing completion record short-circuits to "success."
+
+**Fix:** Two choices, developer picks:
+
+- **(A) Make completePacket atomic** — only write the completion record on success. CI-failed completion produces no record. Retry can actually re-attempt. Cleanest. Matches the "completion means done" mental model.
+- **(B) Fix in callers** — treat `already_complete && !ci_pass` as failure, NOT success. Ordering at the callers becomes `if (r.ci_pass) ok; else fail` (drop the `already_complete` short-circuit). And for retry to re-attempt verification, callers must delete the prior failed completion record OR completePacket gains a `force_reverify` flag.
+
+I lean (A) — atomic completion semantics. But (B) is acceptable if the side effects are documented.
+
+ALSO: the develop finalize retry path must invoke the dev agent with `attempt.guardrailPrompt` BEFORE retrying. The previous attempt's round-2 fix had this; it regressed. The closure dispatches on `attempt.action === 'retry_with_guardrail_prompt'` for implement/rework already (lines 535-541, 751). The same dispatch must happen at finalize.
+
+### 3. Tests miss the lifecycle side effects and one post-escalation invariant
+
+**Files:** `tools/test/develop_phase_recovery.test.ts:513`, `tools/test/verify_phase_recovery.test.ts:352, 338`
+
+The BuildFailed tests mock `completePacket` as a pure queue, so they don't catch the real failed-completion idempotency path in finding #2. The verify stale-branch test asserts `failed` and scenario but NOT:
+- `result.completed` absence for that packet
+- `packets/<id>.json` `status: "failed"`
+- No `packet.completed` event for the QA packet
+
+That's the round-3 testing gap pattern — assertions on labels but not on behavior.
+
+**Fix:** Make the `completePacket` mock write the same failed-completion artifacts the real lifecycle code does (or use the real `completePacket` against a tmpdir fixture). Add the FULL four post-escalation invariant assertions to every escalation integration test (failed list, NOT completed list, packet JSON status, no `packet.completed` event).
+
+## What this attempt does well
+
+- The `RecoveryResult<T>` discriminator IS the right architectural move. The round-3 "logged then state advances" bug class is structurally impossible at the type level.
+- StaleBranch lifecycle path is substantially more real than the previous attempt: opt-in detection at production boundaries, recovery loop executes real fetch/rebase/abort through an injectable runner.
+
+## Round budget remaining
+
+2 rounds.
