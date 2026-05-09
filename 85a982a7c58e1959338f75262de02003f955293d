@@ -1,0 +1,42 @@
+# Phase 6 (revised) Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** worktree-agent-ae1b27e7f8caf42df (round-2 commits 691683e, c4b0c89, d769e91)
+**Verdict:** REQUEST-CHANGES (codex explicitly: "I do not recommend revert")
+
+## What's confirmed correct
+
+- `RecoveryResult<T>` discriminator architecture preserved.
+- `FailureScenario` closed enum stayed at the original 8 variants. `CascadedFromDependency` is a label, NOT an enum addition.
+- Atomic completePacket contract: no record / no status mutation when ci_pass=false.
+- Develop finalize BuildFailed retry now invokes the dev agent with `attempt.guardrailPrompt` BEFORE re-running completePacket.
+- Mock fixtures reflect "no record on failed CI."
+- LintFailed/TestFailed/CompletionGateBlocked/ProviderUnavailable still escalate immediately.
+
+## Issues remaining (schema-validator drift only)
+
+### 1. `validate.ts` `validStatuses` doesn't include `"failed"`
+
+**File:** `tools/validate.ts:127`
+
+`schemas/packet.schema.json` now allows `"failed"`, and recovery writes it. But `validate.ts` (the authoritative validator that `npx tsx tools/validate.ts` runs) still has the old `validStatuses` array without it. A real post-escalation artifact would fail validation even though it's a normal terminal state.
+
+**Fix:** Add `"failed"` to `validStatuses`. Add a `validate.test.ts` fixture proving a realistic failed packet validates.
+
+### 2. Recovery writes a `failure` object that the schema rejects
+
+**Files:** `schemas/packet.schema.json:103`, `tools/pipeline/develop_phase.ts:362`, `tools/pipeline/verify_phase.ts:340`
+
+`packet.schema.json` has `additionalProperties: false`, but both escalation and QA cascade paths stamp a `failure` object onto packet artifacts. Real recovery output is therefore outside the declared data model.
+
+**Fix:** Add an optional `failure` object to `packet.schema.json`. Document its shape (scenario, reason, escalation_path or similar). Document `CascadedFromDependency` as a packet-failure label string (NOT a `FailureScenario` enum member).
+
+## What this round did well
+
+- The atomic completePacket contract is the right architectural call — completion records now mean "this packet is verified done," which simplifies the whole reasoning model.
+- The finalize BuildFailed retry now genuinely invokes remediation before re-attempting verification (regression-fixed from the previous attempt).
+
+## Round budget remaining
+
+1 round. The two findings are narrow schema/validator drift fixes. APPROVE expected after round 3.
