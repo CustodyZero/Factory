@@ -23,7 +23,8 @@ import * as fmt from './output.js';
 export type PacketLifecycleStatus =
   | 'not_started'
   | 'in_progress'
-  | 'completed';
+  | 'completed'
+  | 'failed';
 
 export interface PacketSummary {
   readonly id: string;
@@ -65,8 +66,21 @@ export interface FactoryStatus {
     readonly completed: number;
     readonly in_progress: number;
     readonly not_started: number;
+    /**
+     * Phase 6 — packets in terminal `status: "failed"` state.
+     * Mutually exclusive with completed/in_progress/not_started.
+     * Counted separately so the operator sees the failure cohort.
+     */
+    readonly failed: number;
   };
   readonly incomplete: ReadonlyArray<PacketSummary>;
+  /**
+   * Phase 6 — packets in terminal failed state. Surfaced separately
+   * from `incomplete` (in-progress) and `blocked` so downstream
+   * tooling can distinguish "not yet attempted" from "attempted and
+   * abandoned by the recovery layer."
+   */
+  readonly failed: ReadonlyArray<PacketSummary>;
   readonly blocked: ReadonlyArray<PacketSummary>;
   readonly next_action: NextAction;
 }
@@ -137,6 +151,10 @@ function derivePacketLifecycle(
   completionIds: ReadonlySet<string>,
 ): PacketLifecycleStatus {
   if (completionIds.has(packet.id)) return 'completed';
+  // Phase 6 — terminal-failed status takes precedence over the
+  // started_at heuristic. A packet whose recovery layer escalated
+  // has started_at set but is NOT in_progress — it is failed.
+  if (packet.status === 'failed') return 'failed';
   return packet.started_at != null ? 'in_progress' : 'not_started';
 }
 
@@ -177,13 +195,21 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
   }
 
   const incomplete = allPackets.filter((p) => p.status === 'in_progress');
-  const blocked = allPackets.filter((p) => p.unmet_dependencies.length > 0 && p.status !== 'completed');
+  const failed = allPackets.filter((p) => p.status === 'failed');
+  // Failed packets are NOT 'blocked' — they are terminal. Excluding
+  // them here keeps the blocked bucket meaningful (truly waiting).
+  const blocked = allPackets.filter(
+    (p) => p.unmet_dependencies.length > 0
+      && p.status !== 'completed'
+      && p.status !== 'failed',
+  );
 
   const summary = {
     total: allPackets.length,
     completed: allPackets.filter((p) => p.status === 'completed').length,
     in_progress: incomplete.length,
     not_started: allPackets.filter((p) => p.status === 'not_started').length,
+    failed: failed.length,
   };
 
   const intentsPendingPlanning = (input.intents ?? [])
@@ -212,6 +238,7 @@ export function deriveFactoryStatus(input: StatusInput): FactoryStatus {
     features_in_progress: featuresInProgress,
     summary,
     incomplete,
+    failed,
     blocked,
     next_action: nextAction,
   };
@@ -288,11 +315,22 @@ function renderStatus(status: FactoryStatus, projectName: string): string {
   lines.push(`    Completed:      ${fmt.success(String(status.summary.completed))}`);
   lines.push(`    In-progress:    ${fmt.info(String(status.summary.in_progress))}`);
   lines.push(`    Not started:    ${fmt.muted(String(status.summary.not_started))}`);
+  if (status.summary.failed > 0) {
+    lines.push(`    Failed:         ${fmt.error(String(status.summary.failed))}`);
+  }
   lines.push('');
 
   if (status.incomplete.length > 0) {
     lines.push(`  ${fmt.sym.warn} ${fmt.warn('In progress:')}`);
     for (const p of status.incomplete) {
+      lines.push(`    - ${fmt.bold(p.id)} (${p.kind}) "${p.title}"`);
+    }
+    lines.push('');
+  }
+
+  if (status.failed.length > 0) {
+    lines.push(`  ${fmt.sym.fail} ${fmt.error('Failed:')}`);
+    for (const p of status.failed) {
       lines.push(`    - ${fmt.bold(p.id)} (${p.kind}) "${p.title}"`);
     }
     lines.push('');

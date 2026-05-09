@@ -111,10 +111,11 @@
         "changes_requested",
         "review_approved",
         "completed",
+        "failed",
         "abandoned",
         "deferred"
       ],
-      "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets."
+      "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets. 'failed' is terminal — set by the recovery layer when a packet escalates; it is mutually exclusive with 'completed' (no completion record exists for failed packets)."
     },
     "branch": {
       "type": ["string", "null"],
