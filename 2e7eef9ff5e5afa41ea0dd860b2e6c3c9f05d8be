@@ -81,3 +81,55 @@ Captures the original failure mode, not a renamed error path.
 ## Round budget
 
 3 of 3 rounds used. Bounded-iteration model honored.
+
+# Phase 7 QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-05
+**Verdict:** APPROVE
+
+All 20 acceptance criteria PASS, all 17 specific checks PASS.
+
+## Critical verifications
+
+- **All 5 closures** (planner, developer implement/rework/finalize, reviewer, QA) use `target = attempt.cascade ?? <persona>Primary` consistently. `<persona>Primary` derived from `cascade[0]`.
+- **`computeCascade` correctness** confirmed by manual trace for 4 examples + edge cases. Within-CLI hops fire before cross-CLI fallback.
+- **Recipe self-caps** at `nextIndex >= cascade.length`, escalation reason names every attempted hop.
+- **`skipBudgetCheck = scenario === 'ProviderUnavailable'`** exempts the scenario from the static budget — recipe is the authoritative cap.
+- **Dynamic safety bound** (`computeSafetyBound + Math.max` monotonic update) handles late-discovered cascades from BuildFailed → remediation ProviderUnavailable flows.
+- **Round-3 test drives real semantics**: BuildFailed primary (no cascade) → remediation ProviderUnavailable (cascade length 8 > static 7) → asserts "cascade exhausted" reason AND negates "safety bound" reason.
+- **TZ-invariance preserved**: `TZ=Pacific/Kiritimati npx vitest run` → 681/681 pass.
+- **No new dependencies**, schema accepts both shapes, backward compat preserved (single-string `persona_providers.developer = "codex"` still works).
+
+## Strongest qualities (independent assessment)
+
+1. **The round-3 dynamic safety bound is tested with real semantics.** The test pins both the positive contract (cascade-exhausted reason names every hop) and the negative contract (safety-bound message must NOT appear) against an actual BuildFailed→remediation flow.
+2. **Data-driven cap enforced by REMOVING the static budget** for ProviderUnavailable rather than papering over with a high sentinel. `skipBudgetCheck` makes the recipe the single source of truth — failure to walk the cascade would surface as a recipe bug, not a numerical miscount. Honest design.
+
+# Phase 7 Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-05
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 7 ships two-layer provider failover: cross-CLI via `persona_providers` array, within-CLI via `model_failover`. The Phase 6 escalate-immediately `ProviderUnavailable` recipe is replaced with a data-driven cascade. Backward compat preserved — single-string `persona_providers` configs keep working.
+
+- 10 commits across 3 review rounds
+- New: `tools/pipeline/cascade.ts` (183, pure)
+- Modified: schema, config.ts, agent_invoke.ts, recovery.ts, recovery_loop.ts, 3 phase modules
+- tests: 630 → 681 (+51 across 10 commits)
+- validate.ts: PASS, package.json unchanged
+- 3 review rounds: REQUEST-CHANGES (3 substantive bugs), REQUEST-CHANGES (1 residual), APPROVE
+- Independent QA APPROVE on all 20 acceptance criteria + 17 specific checks
+
+## The architectural arc across rounds
+
+Round 1 found three bugs that all stemmed from the same shape of error: data flowed through the system as labels but didn't control behavior. Primary invocations bypassed cascade[0]; remediation prompts didn't survive cascade boundaries; budget sentinels weren't actually bounded. Round 2 fixed all three structurally. Round 3 caught a remaining edge case where the safety bound snapshot couldn't accommodate late-discovered cascades — a pattern that emerges only when BuildFailed remediation itself fails over.
+
+The final design has the recipe as the single source of truth for cascade exhaustion, the loop's safety bound dynamically tracking observed cascades, and primary invocations consistently anchored to `cascade[0]`.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
