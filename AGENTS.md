@@ -161,8 +161,10 @@ on the same state is a no-op (it prints "already done" and exits 0).
 3.1. **No implementation without a packet.** If there is no packet artifact,
      there is no authority to change code. Create the packet first.
 
-3.2. **No commit without a completion.** The pre-commit hook enforces this.
-     Run `complete.ts` after implementation; it records build/lint/test results.
+3.2. **No commit without a completion.** Agents record completions through
+     the agent protocol after implementation; operators get this by running
+     or re-running `npx tsx tools/run.ts <spec-id>`. The pre-commit hook
+     enforces that started packets have completion records before commit.
 
 3.3. **No facades.** No stubbed success paths, no TODOs that return success,
      no silent fallbacks. If something is not done, it must fail explicitly.

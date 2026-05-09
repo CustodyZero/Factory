@@ -406,13 +406,25 @@ event is one JSON line in `<artifactRoot>/events/<runId>.jsonl` (one file
 per run). The stream is append-only during a run; rotation/archival is the
 host's concern.
 
-Event types include `pipeline.started`, `spec.started`,
-`phase.started` / `phase.completed` / `phase.failed`, `packet.started`,
-`packet.review_requested`, `packet.review_approved`, `packet.completed`,
-`packet.failed`, `recovery.attempt_started`, `recovery.succeeded`,
-`recovery.exhausted`, `recovery.escalated`, `cost.cap_crossed`,
-`pipeline.finished`, and `pipeline.failed`. Every event has a stable shape:
-`{ event_type, timestamp, provenance, payload }`.
+The taxonomy is closed — `tools/pipeline/events.ts` defines the full
+`EventType` union. Grouped by category:
+
+- **Pipeline lifecycle:** `pipeline.started`, `pipeline.spec_resolved`,
+  `pipeline.finished`, `pipeline.failed`
+- **Spec lifecycle:** `spec.started`, `spec.blocked`, `spec.completed`
+- **Phase lifecycle:** `phase.started`, `phase.completed` (the payload
+  carries `outcome: 'ok' | 'failed'` — there is no separate
+  `phase.failed` event)
+- **Packet lifecycle:** `packet.started`, `packet.review_requested`,
+  `packet.review_approved`, `packet.changes_requested`,
+  `packet.completed`, `packet.failed`
+- **Verification:** `verification.passed`, `verification.failed`
+- **Recovery:** `recovery.attempt_started`, `recovery.succeeded`,
+  `recovery.exhausted`, `recovery.escalated`
+- **Cost:** `cost.cap_crossed`
+
+Every event has a stable shape:
+`{ event_type, timestamp, provenance, run_id, payload }`.
 
 Each event also carries a **provenance label** — `live_run` for normal
 operator runs, `test` for events emitted by the test suite, plus

@@ -161,8 +161,10 @@ Do not write code and then create the packet after the fact.
 
 ### 3.2 No Commit Without Completion
 
-Run `npx tsx .factory/tools/complete.ts <packet-id>` before committing.
-The pre-commit hook enforces this. If it blocks you, create the completion first.
+Agents record completions through the agent protocol after implementation;
+operators get this by running or re-running
+`npx tsx .factory/tools/run.ts <spec-id>`. The pre-commit hook enforces
+that started packets have completion records before commit.
 
 ### 3.3 No Facades
 
