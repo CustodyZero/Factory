@@ -1,0 +1,53 @@
+# Phase 8 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-8-docs-pass (round-2 commit 88f1475)
+**Verdict:** REQUEST-CHANGES (one new narrow finding)
+
+## Confirmed fixed
+
+- AGENTS.md and templates/AGENTS.md rule 3.2 no longer instruct operators to run `complete.ts`; correctly routes through `run.ts`.
+- `docs/integration.md` event taxonomy matches `tools/pipeline/events.ts` and explicitly notes there's no separate `phase.failed`.
+
+## New finding
+
+### Cost TL;DR misstates the run summary format
+
+**File:** `docs/integration.md:448`
+
+The doc shows ONE format:
+> `Total cost: $0.4231 (3 unknown-cost invocation(s))`
+
+But `tools/run.ts:110-127` has THREE actual format branches plus a no-line case:
+- `count === 0` → no line at all
+- All unknown (`knownCount === 0`) → `Cost: N unknown-cost invocation(s) (provider did not report tokens)`
+- All known (`unknown_count === 0`) → `Total cost: $X.YZYZ over N invocation(s)`
+- Mixed → `Total cost: $X.YZYZ (N unknown-cost invocation(s))` (the one the doc shows)
+
+This is a Phase 5.7 operator-facing honesty issue — operators reading the doc and then running an all-known-cost run see a different format than promised.
+
+**Fix:** Replace the single example with the actual format set. Either show all three formats explicitly (recommended) or list them by case:
+
+```
+The pipeline emits zero, one, or many invocations per run. The summary line
+varies based on what was metered:
+
+- Zero invocations: line is omitted.
+- All unknown-cost invocations: `Cost: 3 unknown-cost invocation(s) (provider did not report tokens)`.
+- All known-cost invocations: `Total cost: $0.4231 over 5 invocation(s)`.
+- Mixed: `Total cost: $0.4231 (3 unknown-cost invocation(s))`.
+```
+
+## Non-blocking
+
+- `docs/decisions/event_observability.md:57` still mentions `phase.failed`. Already surfaced as out-of-scope; orchestrator will hotfix after merge.
+
+## Strongest parts
+
+- Operator/agent boundary is much clearer.
+- Event taxonomy is now precise instead of approximate.
+
+## Round budget remaining
+
+1 round. The fix is narrow.
