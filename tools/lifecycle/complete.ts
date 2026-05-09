@@ -22,6 +22,17 @@
  *   existing values WITHOUT re-running verification. The FI-1 invariant
  *   (one completion per packet) is preserved by refusing to overwrite,
  *   not by erroring on re-invocation.
+ *
+ * Atomicity contract (Phase 6):
+ *   A completion record + packet `status: "completed"` is written ONLY
+ *   when ALL of {build, lint, test, ci} pass. A failed verification:
+ *     - emits verification.failed + packet.failed events (observable)
+ *     - does NOT write completions/<id>.json
+ *     - does NOT update packets/<id>.json status to 'completed'
+ *     - returns CompleteResult with already_complete=false and ci_pass=false
+ *   This makes "completion record exists" an authoritative signal of
+ *   success, and lets the recovery layer retry verification on the next
+ *   invocation without tripping the idempotent early-return.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -36,6 +47,7 @@ import {
   makePacketFailed,
   type VerificationKind,
 } from '../pipeline/events.js';
+import { checkBranchUpToDate, type GitCheckRunner } from './git_check.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -46,6 +58,27 @@ export interface CompleteOptions {
   readonly summary?: string;
   readonly identity?: string;
   readonly projectRoot?: string;
+  /**
+   * Phase 6 — opt-in stale-branch detection. When true, runs
+   * `git fetch origin main` + `rev-list --count HEAD..origin/main`
+   * BEFORE the build/lint/test verification. If the local branch is
+   * behind origin/main, throws an Error whose message matches the
+   * recovery classifier's STALE_BRANCH_PATTERNS so the calling phase
+   * can route the failure through the StaleBranch recipe.
+   *
+   * Off by default to preserve existing CLI/test behavior. The
+   * pipeline phase modules pass `true`.
+   *
+   * The check runs BEFORE verification because verifying against a
+   * stale tree wastes time — the rebase will require re-running it
+   * anyway.
+   */
+  readonly checkStaleBranch?: boolean;
+  /**
+   * Injectable git runner for the stale-branch check. Defaults to
+   * `spawnSync('git', ...)`. Tests pass a stub.
+   */
+  readonly gitRunner?: GitCheckRunner;
 }
 
 export interface CompleteResult {
@@ -121,6 +154,29 @@ export function completePacket(options: CompleteOptions): CompleteResult {
     throw new Error(`Packet '${packetId}' has not been started.`);
   }
 
+  // Phase 6 — stale-branch detection at the complete boundary. When
+  // the pipeline phase requests this check, fetch from origin and
+  // compare HEAD to origin/main; if behind, throw an Error whose
+  // message matches the recovery classifier's STALE_BRANCH_PATTERNS
+  // so the calling phase routes the failure through the rebase
+  // recipe.
+  //
+  // Off by default to preserve existing CLI/test behavior. Runs
+  // BEFORE verification: a stale tree must be rebased first.
+  if (options.checkStaleBranch === true) {
+    const stale = checkBranchUpToDate(projectRoot, options.gitRunner);
+    if (stale !== null) {
+      throw new Error(
+        // The "branch is behind 'origin/main'" substring is the
+        // load-bearing match for STALE_BRANCH_PATTERNS in
+        // tools/pipeline/recovery.ts. A cross-layer drift test
+        // (tools/test/recovery_io.test.ts) pins this alignment.
+        `Branch is behind 'origin/main' by ${stale.behindCount} commit(s); ` +
+          `non-fast-forward state. ${stale.stderr}`,
+      );
+    }
+  }
+
   // Run verification
   const buildPass = runVerification('build', config.verification.build, projectRoot);
   const lintPass = runVerification('lint', config.verification.lint, projectRoot);
@@ -154,6 +210,58 @@ export function completePacket(options: CompleteOptions): CompleteResult {
     ? `Verification failed for: ${failedSteps.join(', ')}`
     : 'All verification passed.';
 
+  // Phase 5.5 — emit verification + packet outcome events. Two
+  // distinct events because verification and packet lifecycle are
+  // separable concerns (recovery in Phase 6 acts on verification.*
+  // independently of the packet state machine). All no-ops outside
+  // an orchestrator session.
+  //
+  // Phase 6 atomicity: events fire regardless of outcome, but the
+  // completion record + packet status update happen ONLY on success.
+  // This decouples observability (event stream sees every attempt)
+  // from the durable contract (completion record == success).
+  const passedChecks: VerificationKind[] = [];
+  const failedChecks: VerificationKind[] = [];
+  for (const [name, ok] of [
+    ['build', buildPass] as const,
+    ['lint', lintPass] as const,
+    ['tests', testsPass] as const,
+  ]) {
+    (ok ? passedChecks : failedChecks).push(name);
+  }
+
+  if (!ciPass) {
+    // Atomic-failure path. Surface the failure observably (events)
+    // but DO NOT write a completion record and DO NOT mark the
+    // packet 'completed'. The recovery layer's retry can re-run
+    // verification because no idempotent early-return is in the way.
+    appendLifecycleEvent(
+      (base) => makeVerificationFailed(base, {
+        packet_id: packetId,
+        failed_checks: failedChecks,
+      }),
+      artifactRoot,
+    );
+    appendLifecycleEvent(
+      (base) => makePacketFailed(base, {
+        packet_id: packetId,
+        reason: verificationNotes,
+      }),
+      artifactRoot,
+    );
+    return {
+      packet_id: packetId,
+      build_pass: buildPass,
+      lint_pass: lintPass,
+      tests_pass: testsPass,
+      ci_pass: ciPass,
+      files_changed: filesChanged,
+      already_complete: false,
+    };
+  }
+
+  // Success path: write the completion record, mark the packet
+  // 'completed', emit verification.passed + packet.completed.
   const completion = {
     packet_id: packetId,
     completed_at: new Date().toISOString(),
@@ -185,53 +293,17 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   packet['status'] = 'completed';
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-  // Phase 5.5 — emit verification + packet outcome events. Two
-  // distinct events because verification and packet lifecycle are
-  // separable concerns (recovery in Phase 6 acts on verification.*
-  // independently of the packet state machine). All no-ops outside
-  // an orchestrator session.
-  const passedChecks: VerificationKind[] = [];
-  const failedChecks: VerificationKind[] = [];
-  for (const [name, ok] of [
-    ['build', buildPass] as const,
-    ['lint', lintPass] as const,
-    ['tests', testsPass] as const,
-  ]) {
-    (ok ? passedChecks : failedChecks).push(name);
-  }
-  if (ciPass) {
-    appendLifecycleEvent(
-      (base) => makeVerificationPassed(base, {
-        packet_id: packetId,
-        checks: [...passedChecks, 'ci'],
-      }),
-      artifactRoot,
-    );
-    appendLifecycleEvent(
-      (base) => makePacketCompleted(base, { packet_id: packetId }),
-      artifactRoot,
-    );
-  } else {
-    appendLifecycleEvent(
-      (base) => makeVerificationFailed(base, {
-        packet_id: packetId,
-        failed_checks: failedChecks,
-      }),
-      artifactRoot,
-    );
-    // packet.failed: verification failure means the packet did not
-    // pass its acceptance gate. The on-disk packet status is still
-    // 'completed' (existing behavior — complete.ts records the
-    // attempt regardless), but the event taxonomy distinguishes
-    // pass from fail.
-    appendLifecycleEvent(
-      (base) => makePacketFailed(base, {
-        packet_id: packetId,
-        reason: verificationNotes,
-      }),
-      artifactRoot,
-    );
-  }
+  appendLifecycleEvent(
+    (base) => makeVerificationPassed(base, {
+      packet_id: packetId,
+      checks: [...passedChecks, 'ci'],
+    }),
+    artifactRoot,
+  );
+  appendLifecycleEvent(
+    (base) => makePacketCompleted(base, { packet_id: packetId }),
+    artifactRoot,
+  );
 
   return {
     packet_id: packetId,

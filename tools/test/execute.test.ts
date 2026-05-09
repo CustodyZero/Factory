@@ -550,4 +550,80 @@ describe('resolveExecuteAction', () => {
     expect(action.in_progress_packets).toHaveLength(1);
     expect(action.in_progress_packets[0]!.persona).toBe('qa');
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 — terminal `failed` status is recognized as terminal-failed,
+  // NOT ready/in-progress/blocked/completed.
+  // ---------------------------------------------------------------------------
+
+  it('EX-U31: packet with status="failed" appears in failed_packets, NOT ready/in-progress/completed/blocked', () => {
+    const packet = {
+      ...makeDevPacket('pkt-failed', [], '2026-03-21T00:00:00Z'),
+      status: 'failed' as const,
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['pkt-failed'] }),
+      packets: [packet],
+    }));
+    // Failed packet does NOT come back through any "still workable" bucket.
+    expect(action.failed_packets).toEqual(['pkt-failed']);
+    expect(action.ready_packets).toEqual([]);
+    expect(action.in_progress_packets).toEqual([]);
+    expect(action.completed_packets).toEqual([]);
+    expect(action.blocked_packets).toEqual([]);
+  });
+
+  it('EX-U32: status="failed" takes precedence over started_at (not in_progress)', () => {
+    // The legacy heuristic says any packet with started_at is in_progress.
+    // The Phase 6 terminal-failed status MUST override it.
+    const packet = {
+      ...makeDevPacket('pkt-x', [], '2026-03-21T00:00:00Z'),
+      status: 'failed' as const,
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['pkt-x'] }),
+      packets: [packet],
+    }));
+    expect(action.failed_packets).toContain('pkt-x');
+    expect(action.in_progress_packets).toEqual([]);
+  });
+
+  it('EX-U33: QA packet whose dev dependency failed cascades to failed_packets', () => {
+    // The failed dev packet must NOT keep its QA packet stuck as
+    // "blocked, waiting for dev" — QA should also fail.
+    const devFailed = {
+      ...makeDevPacket('dev-1', [], '2026-03-21T00:00:00Z'),
+      status: 'failed' as const,
+    };
+    const qa = makeQaPacket('qa-1', 'dev-1', ['dev-1']);
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-1', 'qa-1'] }),
+      packets: [devFailed, qa],
+    }));
+    expect(action.failed_packets).toContain('dev-1');
+    expect(action.failed_packets).toContain('qa-1');
+    expect(action.blocked_packets).toEqual([]);
+    expect(action.ready_packets).toEqual([]);
+  });
+
+  it('EX-U34: failed_packets does NOT block all_complete when it covers the rest', () => {
+    // Mixed: one packet completed, one failed. Total accounted for.
+    const devOk = makeDevPacket('dev-ok');
+    const devFailed = {
+      ...makeDevPacket('dev-bad', [], '2026-03-21T00:00:00Z'),
+      status: 'failed' as const,
+    };
+    const action = resolveExecuteAction(makeInput({
+      feature: makeFeature({ packets: ['dev-ok', 'dev-bad'] }),
+      packets: [devOk, devFailed],
+      completionIds: new Set(['dev-ok']),
+    }));
+    // The feature is not "all_complete" because one packet failed —
+    // it's spawn_packets (or blocked) with the failed_packets bucket
+    // populated. Either way: failed_packets contains dev-bad, ready
+    // does not.
+    expect(action.failed_packets).toEqual(['dev-bad']);
+    expect(action.completed_packets).toEqual(['dev-ok']);
+    expect(action.ready_packets.find((r) => r.packet_id === 'dev-bad')).toBeUndefined();
+  });
 });

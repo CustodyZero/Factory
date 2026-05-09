@@ -25,6 +25,7 @@ import {
   readFileSync,
   statSync,
   rmSync,
+  existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -263,6 +264,77 @@ describe('completePacket — happy path still works and is NOT idempotent on fir
     expect(readFileSync(f.completionPath, 'utf-8')).toContain('pkt-fresh');
 
     // Packet status updated.
+    const after = JSON.parse(readFileSync(f.packetPath, 'utf-8')) as Record<string, unknown>;
+    expect(after['status']).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — atomic-completion contract: ci_pass=false does NOT write a
+// completion record and does NOT mutate packet status to 'completed'.
+// ---------------------------------------------------------------------------
+
+describe('completePacket — atomic on ci_pass=false (Phase 6)', () => {
+  it('does NOT write a completion record when verification fails', () => {
+    const f = makeFixture({
+      packet: {
+        id: 'pkt-fail',
+        kind: 'dev',
+        title: 'verification fails',
+        status: 'review_approved',
+        started_at: '2024-01-01T00:00:00Z',
+      },
+    });
+    fixtures.push(f);
+    // Default fixture verification commands are 'false' (failing).
+    // Capture packet content + mtime so we can assert no mutation.
+    const packetBefore = readFileSync(f.packetPath, 'utf-8');
+
+    const result = completePacket({ packetId: 'pkt-fail', projectRoot: f.root });
+    expect(result.already_complete).toBe(false);
+    expect(result.ci_pass).toBe(false);
+
+    // Atomicity invariant 1: NO completion record on disk.
+    expect(existsSync(f.completionPath)).toBe(false);
+
+    // Atomicity invariant 2: packet status NOT mutated to 'completed'.
+    const packetAfter = JSON.parse(readFileSync(f.packetPath, 'utf-8')) as Record<string, unknown>;
+    expect(packetAfter['status']).not.toBe('completed');
+    // The fixture set status='review_approved' originally; that's preserved.
+    expect(packetAfter['status']).toBe('review_approved');
+    // (Defensive) packet content unchanged byte-for-byte.
+    expect(readFileSync(f.packetPath, 'utf-8')).toBe(packetBefore);
+  });
+
+  it('a retry after a failed completion can re-run verification (no stale short-circuit)', () => {
+    const f = makeFixture({
+      packet: {
+        id: 'pkt-retry',
+        kind: 'dev',
+        title: 'retry after fail',
+        status: 'review_approved',
+        started_at: '2024-01-01T00:00:00Z',
+      },
+    });
+    fixtures.push(f);
+
+    // First call fails verification (default 'false' commands).
+    const r1 = completePacket({ packetId: 'pkt-retry', projectRoot: f.root });
+    expect(r1.ci_pass).toBe(false);
+    expect(r1.already_complete).toBe(false);
+
+    // Now flip verification to passing and re-call. There is NO stale
+    // completion record short-circuiting to false-success.
+    const config = JSON.parse(readFileSync(join(f.root, 'factory.config.json'), 'utf-8')) as {
+      verification: { build: string; lint: string; test: string };
+    };
+    config.verification = { build: 'true', lint: 'true', test: 'true' };
+    writeFileSync(join(f.root, 'factory.config.json'), JSON.stringify(config, null, 2), 'utf-8');
+
+    const r2 = completePacket({ packetId: 'pkt-retry', projectRoot: f.root });
+    expect(r2.already_complete).toBe(false); // first real success
+    expect(r2.ci_pass).toBe(true);
+
     const after = JSON.parse(readFileSync(f.packetPath, 'utf-8')) as Record<string, unknown>;
     expect(after['status']).toBe('completed');
   });

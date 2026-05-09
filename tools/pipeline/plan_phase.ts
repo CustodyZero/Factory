@@ -28,12 +28,20 @@ import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
 import type { InvokeResult } from './agent_invoke.js';
 import type { CostRecord } from './cost.js';
-import { recordCost } from '../cost.js';
+import { recordCost, localDateString } from '../cost.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
 } from './events.js';
 import { appendEvent } from '../events.js';
+import {
+  failureFromSubprocess,
+  newPacketRecoveryBudget,
+  runWithRecovery,
+  type AttemptContext,
+  type GitRunner,
+  type OperationResult,
+} from './recovery_loop.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -57,6 +65,13 @@ export interface PlanPhaseOptions {
    */
   readonly runId?: string;
   readonly specId?: string | null;
+  /**
+   * Phase 6 — injectable git runner for the StaleBranch recovery
+   * action. The planner doesn't typically encounter stale-branch
+   * conditions (it doesn't push), but the option is plumbed for
+   * uniformity with develop_phase / verify_phase.
+   */
+  readonly gitRunner?: GitRunner;
 }
 
 export interface PlanPhaseResult {
@@ -251,23 +266,68 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   const plannerTier = config.personas.planner.model ?? 'high';
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
-  const result = invokeAgent(provider, prompt, config, plannerTier);
+  // Phase 6 — wrap the planner invocation in runWithRecovery.
+  // Per-spec budget (the planner runs once per spec, so the budget
+  // is fresh per call by construction). ProviderTransient and
+  // AgentNonResponsive failures retry; ProviderUnavailable escalates
+  // immediately. Cost recording happens on every attempt via the
+  // closure so retried planner runs still flow into the cost stream.
+  const recoveryBudget = newPacketRecoveryBudget();
+  const recoveryOptions = {
+    perRunCap: config.pipeline?.cost_caps?.per_run,
+    perDayCap: config.pipeline?.cost_caps?.per_day,
+    today: localDateString(),
+    ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+  };
+  const recoveryRunId = opts.runId ?? 'no-run';
 
-  // Round-2 fix (Issue 1): persist a CostRecord for the planner
-  // invocation so the run/day cost streams are complete. The record is
-  // written regardless of whether the planner succeeded — a failed
-  // planner still consumed tokens. The orchestrator's per-run cap
-  // check after each spec reads aggregateRunCost (which sums all
-  // records, including this one), so no additional cap-check at the
-  // plan boundary is required.
-  recordPlanCost(result, opts.runId, opts.specId ?? intent.id, artifactRoot);
+  const recovered = runWithRecovery<InvokeResult>(
+    (_attempt: AttemptContext): OperationResult<InvokeResult> => {
+      const r = invokeAgent(provider, prompt, config, plannerTier);
+      // Persist a CostRecord regardless of outcome — a failed planner
+      // still consumed tokens. Done inside the closure so retried
+      // calls record one row each.
+      recordPlanCost(r, opts.runId, opts.specId ?? intent.id, artifactRoot);
+      if (r.exit_code === 0) return { outcome: 'ok', value: r };
+      return {
+        outcome: 'fail',
+        failure: failureFromSubprocess({
+          exitCode: r.exit_code,
+          stdout: r.stdout,
+          stderr: r.stderr,
+          kind: 'agent_invocation',
+          specId: opts.specId ?? intent.id,
+          packetId: null,
+          operationLabel: 'plan_phase.invoke_planner',
+        }),
+      };
+    },
+    {
+      runId: recoveryRunId,
+      artifactRoot,
+      dryRun,
+      specId: opts.specId ?? intent.id,
+      packetId: null,
+      operationLabel: 'plan_phase.invoke_planner',
+      budget: recoveryBudget,
+    },
+    recoveryOptions,
+  );
 
-  if (result.exit_code !== 0) {
-    fmt.log('plan', fmt.error(`Planner failed (exit ${result.exit_code})`));
-    if (result.stderr) fmt.log('plan', fmt.muted(result.stderr.slice(0, 500)));
+  // Dispatch on the discriminator. On escalation: emit no further
+  // progress, log the reason, return feature_id: null. The plan
+  // phase has no per-packet artifact to mark failed — the spec
+  // itself fails when feature_id is null and the orchestrator
+  // skips dependents.
+  if (recovered.kind === 'escalated') {
+    fmt.log('plan', fmt.error(`Planner escalated (${recovered.scenario}): ${recovered.reason}`));
+    if (recovered.escalation_path !== null) {
+      fmt.log('plan', fmt.muted(`Escalation written: ${recovered.escalation_path}`));
+    }
     return { feature_id: null };
   }
 
+  const result = recovered.value;
   fmt.log('plan', fmt.success('Planner completed'));
 
   // Re-read features to find what was created.

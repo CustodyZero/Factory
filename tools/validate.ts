@@ -125,13 +125,44 @@ function validatePacketSchema(filepath: string, data: unknown): ValidationResult
   }
 
   if (data['status'] != null && data['status'] !== null) {
-    const validStatuses = ['draft', 'ready', 'implementing', 'review_requested', 'changes_requested', 'review_approved', 'completed', 'abandoned', 'deferred'];
+    // 'failed' is a terminal status set by the recovery layer when a packet
+    // escalates. It is mutually exclusive with 'completed' (a failed packet
+    // has NO completion record). Keep this list in sync with packet.schema.json
+    // §status.enum — both artifacts encode the same closed contract.
+    const validStatuses = ['draft', 'ready', 'implementing', 'review_requested', 'changes_requested', 'review_approved', 'completed', 'failed', 'abandoned', 'deferred'];
     if (typeof data['status'] !== 'string' || !validStatuses.includes(data['status'])) {
       e(`'status' must be null or one of: ${validStatuses.join(', ')}`);
     }
     const reviewStates = ['review_requested', 'changes_requested', 'review_approved'];
     if (reviewStates.includes(data['status'] as string) && data['kind'] !== 'dev') {
       e(`Review status '${data['status']}' is only valid for dev packets`);
+    }
+  }
+
+  // Optional `failure` object — stamped onto the packet by the recovery layer
+  // when a packet escalates (develop_phase.ts / verify_phase.ts) or when a QA
+  // packet cascades from a failed dev dependency. Required fields are
+  // 'scenario' and 'reason'; 'attempts' and 'escalation_path' are written by
+  // the code but are not strictly required (cascade writes attempts: 0,
+  // escalation_path: null and that is honest). Keep in sync with the
+  // `failure` property in packet.schema.json.
+  if (data['failure'] != null) {
+    if (!isObject(data['failure'])) {
+      e("'failure' must be an object");
+    } else {
+      const f = data['failure'];
+      if (typeof f['scenario'] !== 'string' || f['scenario'].length === 0) {
+        e("'failure.scenario' must be a non-empty string");
+      }
+      if (typeof f['reason'] !== 'string' || f['reason'].length === 0) {
+        e("'failure.reason' must be a non-empty string");
+      }
+      if (f['attempts'] != null && (typeof f['attempts'] !== 'number' || !Number.isInteger(f['attempts']) || f['attempts'] < 0)) {
+        e("'failure.attempts' must be a non-negative integer when present");
+      }
+      if (f['escalation_path'] != null && typeof f['escalation_path'] !== 'string') {
+        e("'failure.escalation_path' must be a string or null when present");
+      }
     }
   }
 

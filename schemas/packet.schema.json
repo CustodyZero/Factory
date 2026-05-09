@@ -111,10 +111,11 @@
         "changes_requested",
         "review_approved",
         "completed",
+        "failed",
         "abandoned",
         "deferred"
       ],
-      "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets."
+      "description": "Packet lifecycle status. null for legacy packets whose state is derived from started_at and completion records. Review states (review_requested, changes_requested, review_approved) apply only to dev packets. 'failed' is terminal — set by the recovery layer when a packet escalates; it is mutually exclusive with 'completed' (no completion record exists for failed packets)."
     },
     "branch": {
       "type": ["string", "null"],
@@ -146,6 +147,33 @@
       "items": { "type": "string" },
       "default": [],
       "description": "Freeform tags for filtering."
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario", "reason"],
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifies the failure mode. Carries either: (a) a value from the closed FailureScenario enum (ProviderTransient, ProviderUnavailable, BuildFailed, LintFailed, TestFailed, StaleBranch, AgentNonResponsive, CompletionGateBlocked) when classification produced one; (b) the literal 'Unclassified' when the recovery layer could not match the failure to any recipe; or (c) the literal 'CascadedFromDependency' when a QA packet inherited failure from a dev packet whose dependency failed. CascadedFromDependency is a packet-failure label string, NOT a 9th FailureScenario enum variant — the FailureScenario enum stays closed at 8 members. Values are not enumerated in this schema because the cascade label is intentionally outside the enum surface."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable explanation of why this packet failed. For escalations from the recovery loop, this is the reason field of the RecoveryResult. For cascades, this names the upstream failed dependency."
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of recovery attempts made before escalation. 0 for cascade entries (no recovery was attempted on the cascading packet itself)."
+        },
+        "escalation_path": {
+          "type": ["string", "null"],
+          "description": "Path to the canonical escalation record under escalations/, or null when there is no separate escalation record (e.g. cascade entries have null because the upstream dev packet's escalation is the canonical artifact)."
+        }
+      },
+      "description": "Set by the recovery layer when a packet enters the terminal 'failed' status. Mirrors the canonical escalation record under escalations/ for human-readable provenance directly on the packet artifact. Always paired with status: 'failed'; never present on packets that complete successfully."
     }
   },
   "if": {

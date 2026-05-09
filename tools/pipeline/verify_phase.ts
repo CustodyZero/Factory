@@ -14,26 +14,38 @@
  * pre-extraction loop.
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Feature, RawPacket } from '../execute.js';
 import type { FactoryConfig, ModelTier } from '../config.js';
 import * as fmt from '../output.js';
 import { invokeAgent } from './agent_invoke.js';
-import { buildQaPrompt } from './prompts.js';
+import { buildDevPrompt, buildQaPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
 import { completePacket } from '../lifecycle/complete.js';
+import { looksLikeStaleBranchMessage } from '../lifecycle/git_check.js';
 import {
   makePhaseStarted,
   makePhaseCompleted,
   makeCostCapCrossed,
+  makePacketFailed,
 } from './events.js';
 import { appendEvent } from '../events.js';
 import type { InvokeResult } from './agent_invoke.js';
 import type { CostRecord } from './cost.js';
 import { checkCap } from './cost.js';
-import { recordCost } from '../cost.js';
+import { recordCost, localDateString } from '../cost.js';
+import {
+  failureFromSubprocess,
+  failureFromThrow,
+  newPacketRecoveryBudget,
+  runWithRecovery,
+  type AttemptContext,
+  type GitRunner,
+  type OperationResult,
+  type RecoveryResult,
+} from './recovery_loop.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -57,6 +69,13 @@ export interface VerifyPhaseOptions {
    */
   readonly runId?: string;
   readonly specId?: string | null;
+  /**
+   * Phase 6 — injectable git runner for the StaleBranch recovery
+   * action AND the lifecycle stale-branch detection (forwarded to
+   * `completePacket` via its `gitRunner` option). Production callers
+   * omit it; tests inject a stub.
+   */
+  readonly gitRunner?: GitRunner;
 }
 
 export interface VerifyPhaseResult {
@@ -157,6 +176,48 @@ function recordInvocationCost(
 }
 
 // ---------------------------------------------------------------------------
+// Packet escalation (Phase 6) — same shape as develop_phase.
+// ---------------------------------------------------------------------------
+
+interface MarkPacketFailedArgs {
+  readonly packetId: string;
+  readonly artifactRoot: string;
+  readonly recovery: RecoveryResult<unknown> & { readonly kind: 'escalated' };
+  readonly runId: string | undefined;
+  readonly dryRun: boolean;
+}
+
+function markPacketFailed(args: MarkPacketFailedArgs): void {
+  const { packetId, artifactRoot, recovery, runId, dryRun } = args;
+  try {
+    const packetPath = join(artifactRoot, 'packets', `${packetId}.json`);
+    if (existsSync(packetPath)) {
+      const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+      data['status'] = 'failed';
+      data['failure'] = {
+        scenario: recovery.scenario,
+        reason: recovery.reason,
+        attempts: recovery.attempts,
+        escalation_path: recovery.escalation_path,
+      };
+      writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
+  } catch { /* best-effort */ }
+  if (runId !== undefined) {
+    appendEvent(
+      makePacketFailed(
+        { run_id: runId, dry_run: dryRun },
+        {
+          packet_id: packetId,
+          reason: `${recovery.scenario}: ${recovery.reason}`,
+        },
+      ),
+      artifactRoot,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // runVerifyPhase
 // ---------------------------------------------------------------------------
 
@@ -219,6 +280,11 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
   const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
   const qaTier: ModelTier = config.personas.qa.model ?? 'medium';
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
+  // For BuildFailed remediation in the QA flow, the dev agent must
+  // be invoked against the DEV packet (the `verifies` target), NOT
+  // the QA packet. Resolve the developer config up front.
+  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  const devTier: ModelTier = config.personas.developer.model ?? 'high';
 
   for (const packet of qaPackets) {
     // Same external-mutation model as the develop phase: an external
@@ -232,11 +298,57 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
       continue;
     }
 
-    // Check that the dev packet it verifies is completed.
+    // Phase 6 — a QA packet already marked failed (e.g. by a prior
+    // run's recovery escalation) is not retried.
+    if (packet.status === 'failed') {
+      fmt.log('verify', `${fmt.sym.fail} ${packet.id} — already failed (terminal)`);
+      failed.push(packet.id);
+      continue;
+    }
+
+    // Check that the dev packet it verifies is completed. Phase 6 —
+    // if the dev packet is in terminal `failed` state, the QA packet
+    // is also failed (the verification target no longer exists in a
+    // verifiable form). This is NOT a skip: the QA packet is
+    // terminated, not waiting for a future run. Re-read each
+    // dependency from disk because the develop phase may have
+    // mutated a dep packet's status during this run.
     const deps = packet.dependencies ?? [];
     const verifies = packet.verifies;
     const allDeps = verifies && !deps.includes(verifies) ? [...deps, verifies] : [...deps];
-    const unmetDeps = allDeps.filter((d) => !completionIds.has(d));
+    const unmetDeps: string[] = [];
+    const failedDeps: string[] = [];
+    for (const d of allDeps) {
+      if (completionIds.has(d)) continue;
+      const depPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${d}.json`));
+      if (depPacket !== null && depPacket.status === 'failed') {
+        failedDeps.push(d);
+        continue;
+      }
+      unmetDeps.push(d);
+    }
+    if (failedDeps.length > 0) {
+      fmt.log('verify', `${fmt.sym.fail} ${packet.id} — terminated (dev dependency failed: ${failedDeps.join(', ')})`);
+      // Stamp the QA packet as failed too so subsequent reads see the
+      // cascade. Best-effort write; the failed list below is the
+      // controlling artifact.
+      try {
+        const packetPath = join(artifactRoot, 'packets', `${packet.id}.json`);
+        if (existsSync(packetPath)) {
+          const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+          data['status'] = 'failed';
+          data['failure'] = {
+            scenario: 'CascadedFromDependency',
+            reason: `Dev dependency failed: ${failedDeps.join(', ')}`,
+            attempts: 0,
+            escalation_path: null,
+          };
+          writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+        }
+      } catch { /* best-effort */ }
+      failed.push(packet.id);
+      continue;
+    }
     if (unmetDeps.length > 0) {
       fmt.log('verify', `${fmt.sym.blocked} ${packet.id} — skipped (dev not complete: ${unmetDeps.join(', ')})`);
       skipped.push(packet.id);
@@ -252,38 +364,226 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
 
     safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
 
-    fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
-    const qaResult = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
-    // Phase 5.7 — per-packet cost cap. Tracker is single-shot for the
-    // QA path. A cap crossing here marks the packet failed (like an
-    // exit_code != 0 from the agent itself) and continues to the
-    // next packet — does NOT abort the whole verify phase.
+    // Phase 6 — per-packet recovery budget + cap snapshot.
     const perPacketCap = config.pipeline?.cost_caps?.per_packet;
     const packetCostTracker = newPacketCostTracker();
-    const { capCrossed } = recordInvocationCost(
-      qaResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-      perPacketCap, packetCostTracker, dryRun,
+    const recoveryBudget = newPacketRecoveryBudget();
+    const recoveryOptions = {
+      perRunCap: config.pipeline?.cost_caps?.per_run,
+      perDayCap: config.pipeline?.cost_caps?.per_day,
+      today: localDateString(),
+      ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+    };
+    const recoveryRunId = opts.runId ?? 'no-run';
+
+    fmt.log('verify', `  Verifying via ${qaProvider} (${qaTier})...`);
+    // Wrap the QA-agent invocation in runWithRecovery. ProviderTransient
+    // and AgentNonResponsive failures retry; BuildFailed/LintFailed/
+    // TestFailed don't apply at this boundary (the QA agent is not
+    // expected to produce those classifications until completePacket
+    // runs verification).
+    const qaRecovered = runWithRecovery<InvokeResult>(
+      (_attempt: AttemptContext): OperationResult<InvokeResult> => {
+        const r = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
+        recordInvocationCost(
+          r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+          perPacketCap, packetCostTracker, dryRun,
+        );
+        if (r.exit_code === 0) return { outcome: 'ok', value: r };
+        return {
+          outcome: 'fail',
+          failure: failureFromSubprocess({
+            exitCode: r.exit_code,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            kind: 'agent_invocation',
+            specId: opts.specId ?? null,
+            packetId: packet.id,
+            operationLabel: 'verify_phase.qa',
+          }),
+        };
+      },
+      {
+        runId: recoveryRunId,
+        artifactRoot,
+        dryRun,
+        specId: opts.specId ?? null,
+        packetId: packet.id,
+        operationLabel: 'verify_phase.qa',
+        budget: recoveryBudget,
+      },
+      recoveryOptions,
     );
-    if (capCrossed) {
+    if (packetCostTracker.crossed) {
       fmt.log('verify', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
       failed.push(packet.id);
       continue;
     }
-    if (qaResult.exit_code !== 0) {
-      fmt.log('verify', `  ${fmt.sym.fail} QA agent failed`);
+    if (qaRecovered.kind === 'escalated') {
+      fmt.log('verify', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${qaRecovered.scenario}): ${qaRecovered.reason}`)}`);
+      markPacketFailed({
+        packetId: packet.id,
+        artifactRoot,
+        recovery: qaRecovered,
+        runId: opts.runId,
+        dryRun,
+      });
       failed.push(packet.id);
       continue;
     }
 
     fmt.log('verify', `  Running verification...`);
-    if (safeCall(() => completePacket({ packetId: packet.id, identity: qaIdentity, projectRoot })).ok) {
-      fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
-      completionIds.add(packet.id);
-      completed.push(packet.id);
-    } else {
-      fmt.log('verify', `  ${fmt.sym.fail} Completion failed`);
+
+    // Phase 6 — wrap the QA completion in runWithRecovery so
+    // BuildFailed remediation, LintFailed, TestFailed, StaleBranch,
+    // CompletionGateBlocked all classify correctly at this boundary.
+    //
+    // QA BuildFailed remediation specifics:
+    //   The QA persona only verifies; the dev persona writes code.
+    //   Re-running completePacket without code remediation would
+    //   observe the same failure forever. So when the recovery layer
+    //   dispatches retry_with_guardrail_prompt, the closure invokes
+    //   the DEV agent against the DEV packet referenced by
+    //   `packet.verifies` (NOT the QA packet — that was the bug the
+    //   round-3 codex review caught in the previous attempt). The QA
+    //   packet context is appended so the dev agent knows which QA
+    //   invocation surfaced the failure.
+    //
+    // Defensive: an orphan QA packet (verifies points at a missing
+    // dev packet) returns a structured failure so recovery escalates
+    // rather than misdirecting the dev prompt.
+    const devPacketForRemediation: RawPacket | null = (() => {
+      const verifiesId = packet.verifies;
+      if (verifiesId === undefined || verifiesId === null) return null;
+      const direct = packets.find((p) => p.id === verifiesId && p.kind === 'dev');
+      return direct ?? null;
+    })();
+
+    const completeRecovered = runWithRecovery<true>(
+      (attempt: AttemptContext): OperationResult<true> => {
+        if (attempt.action === 'retry_with_guardrail_prompt'
+          && attempt.guardrailPrompt !== undefined) {
+          // BuildFailed remediation step: the dev agent re-implements
+          // against the DEV packet, NOT the QA packet.
+          if (devPacketForRemediation === null) {
+            return {
+              outcome: 'fail',
+              failure: {
+                exit_code: null,
+                stdout: '',
+                stderr:
+                  `Cannot dispatch dev-agent remediation: QA packet ${packet.id} ` +
+                  `references missing dev packet '${String(packet.verifies)}'.`,
+                error_message: 'orphan QA packet',
+                kind: 'lifecycle',
+                spec_id: opts.specId ?? null,
+                packet_id: packet.id,
+                operation_label: 'verify_phase.complete.remediation',
+              },
+            };
+          }
+          const basePrompt = buildDevPrompt(devPacketForRemediation, config);
+          const qaContext =
+            `This dev packet is being verified by QA packet ${packet.id} ` +
+            `("${packet.title}"); QA reported build failure.`;
+          const remediationPrompt =
+            `${basePrompt}\n\n---\n${qaContext}\n\n${attempt.guardrailPrompt}`;
+          const r = invokeAgent(devProvider, remediationPrompt, config, devTier);
+          recordInvocationCost(
+            r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+            perPacketCap, packetCostTracker, dryRun,
+          );
+          if (r.exit_code !== 0) {
+            return {
+              outcome: 'fail',
+              failure: failureFromSubprocess({
+                exitCode: r.exit_code,
+                stdout: r.stdout,
+                stderr: r.stderr,
+                kind: 'agent_invocation',
+                specId: opts.specId ?? null,
+                packetId: packet.id,
+                operationLabel: 'verify_phase.complete.remediation',
+              }),
+            };
+          }
+        }
+        try {
+          const r = completePacket({
+            packetId: packet.id,
+            identity: qaIdentity,
+            projectRoot,
+            // Phase 6 — opt in to lifecycle stale-branch detection.
+            checkStaleBranch: true,
+            ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+          });
+          // Phase 6: completePacket is atomic — it does NOT write a
+          // record on ci_pass=false. So `already_complete` only
+          // appears on success (existing successful completion) and
+          // never as a false-success short-circuit on a failed
+          // verification. Branch on ci_pass alone.
+          if (r.ci_pass) return { outcome: 'ok', value: true };
+          const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
+          if (!r.build_pass) failedChecks.push('build');
+          if (!r.lint_pass) failedChecks.push('lint');
+          if (!r.tests_pass) failedChecks.push('tests');
+          if (failedChecks.length === 0) failedChecks.push('ci');
+          return {
+            outcome: 'fail',
+            failure: failureFromSubprocess({
+              exitCode: 1,
+              stdout: '',
+              stderr: `Verification failed: ${failedChecks.join(', ')}`,
+              kind: 'verification',
+              failedChecks,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'verify_phase.complete',
+            }),
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const kind: 'git' | 'lifecycle' = looksLikeStaleBranchMessage(msg)
+            ? 'git'
+            : 'lifecycle';
+          return {
+            outcome: 'fail',
+            failure: failureFromThrow({
+              error: err,
+              kind,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'verify_phase.complete',
+            }),
+          };
+        }
+      },
+      {
+        runId: recoveryRunId,
+        artifactRoot,
+        dryRun,
+        specId: opts.specId ?? null,
+        packetId: packet.id,
+        operationLabel: 'verify_phase.complete',
+        budget: recoveryBudget,
+      },
+      recoveryOptions,
+    );
+    if (completeRecovered.kind === 'escalated') {
+      fmt.log('verify', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${completeRecovered.scenario}): ${completeRecovered.reason}`)}`);
+      markPacketFailed({
+        packetId: packet.id,
+        artifactRoot,
+        recovery: completeRecovered,
+        runId: opts.runId,
+        dryRun,
+      });
       failed.push(packet.id);
+      continue;
     }
+    fmt.log('verify', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+    completionIds.add(packet.id);
+    completed.push(packet.id);
   }
 
   return { completed, failed, skipped };

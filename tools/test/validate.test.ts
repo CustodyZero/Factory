@@ -456,6 +456,179 @@ describe('validate.ts — packet validator (compatibility)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 6 — terminal 'failed' status + optional `failure` object
+//
+// The recovery layer (develop_phase.markPacketFailed / verify_phase.markPacketFailed
+// / verify_phase cascade) stamps a `status: 'failed'` and a `failure` object
+// onto packet artifacts when a packet escalates. validate.ts must accept the
+// realistic shape and reject malformed failure objects so the new state does
+// not silently bypass validation.
+// ---------------------------------------------------------------------------
+
+describe("validate.ts — failed status + failure object (Phase 6)", () => {
+  it("accepts a realistic failed dev packet (status: 'failed', failure populated, started_at set, no completed_at)", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        // intentionally NO completed_at — failed packets have no completion
+        failure: {
+          scenario: 'BuildFailed',
+          reason: 'tsc reported 2 errors after 3 attempts',
+          attempts: 3,
+          escalation_path: 'escalations/dev-1.json',
+        },
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('PASS');
+    // Sanity-check: validator did not complain about the new status or
+    // failure shape — silence on these fields is the contract.
+    expect(r.stdout).not.toContain("'status'");
+    expect(r.stdout).not.toContain("'failure'");
+  });
+
+  it("rejects a failed packet whose failure object is missing 'scenario'", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: {
+          // scenario intentionally omitted
+          reason: 'something went wrong',
+          attempts: 1,
+          escalation_path: null,
+        },
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("'failure.scenario' must be a non-empty string");
+  });
+
+  it("rejects a failed packet whose failure object is missing 'reason'", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: {
+          scenario: 'TestFailed',
+          // reason intentionally omitted
+          attempts: 2,
+          escalation_path: null,
+        },
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("'failure.reason' must be a non-empty string");
+  });
+
+  it("rejects a failed packet whose failure object is empty {}", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: {},
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(1);
+    // Both required-field errors should fire — the failure shape was empty.
+    expect(r.stdout).toContain("'failure.scenario' must be a non-empty string");
+    expect(r.stdout).toContain("'failure.reason' must be a non-empty string");
+  });
+
+  it("rejects a packet with a non-object 'failure'", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: 'just a string',
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("'failure' must be an object");
+  });
+
+  it("accepts a QA packet whose failure carries the cascade label 'CascadedFromDependency'", () => {
+    // verify_phase.ts cascades a failed dev dep onto its QA packet by
+    // writing scenario: 'CascadedFromDependency' (NOT a 9th FailureScenario
+    // enum variant — a label string the validator must accept).
+    const f = makeFixture();
+    writeFeature(f.root, {
+      id: 'feat-1',
+      intent: 'feat',
+      acceptance_criteria: ['ac'],
+      status: 'planned',
+      packets: ['dev-1', 'qa-1'],
+      created_by: { kind: 'human', id: 'me' },
+    });
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: {
+          scenario: 'BuildFailed',
+          reason: 'real escalation',
+          attempts: 2,
+          escalation_path: 'escalations/dev-1.json',
+        },
+      }),
+    );
+    writePacket(
+      f.root,
+      qaPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:31:00.000Z',
+        failure: {
+          scenario: 'CascadedFromDependency',
+          reason: 'Dev dependency failed: dev-1',
+          attempts: 0,
+          escalation_path: null,
+        },
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('PASS');
+  });
+
+  it("rejects 'failure.attempts: -1' (must be non-negative integer)", () => {
+    const f = makeFixture();
+    writePacket(
+      f.root,
+      devPacket({
+        status: 'failed',
+        started_at: '2026-04-29T00:30:00.000Z',
+        failure: {
+          scenario: 'BuildFailed',
+          reason: 'r',
+          attempts: -1,
+          escalation_path: null,
+        },
+      }),
+    );
+    const r = runValidate(f.root);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("'failure.attempts' must be a non-negative integer");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase 4.6 compatibility suite — feature validator
 // ---------------------------------------------------------------------------
 

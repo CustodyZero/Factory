@@ -72,6 +72,14 @@ export interface ExecuteAction {
   readonly ready_packets: ReadonlyArray<PacketAssignment>;
   readonly in_progress_packets: ReadonlyArray<PacketAssignment>;
   readonly completed_packets: ReadonlyArray<string>;
+  /**
+   * Phase 6 — packets in terminal `status: "failed"` state. Mutually
+   * exclusive with `completed_packets`, `ready_packets`,
+   * `in_progress_packets`, and `blocked_packets`. The recovery layer
+   * sets this status when a packet escalates; downstream tooling must
+   * treat it as terminal (no further work attempted by the factory).
+   */
+  readonly failed_packets: ReadonlyArray<string>;
   readonly blocked_packets: ReadonlyArray<{ readonly id: string; readonly blocked_by: ReadonlyArray<string> }>;
   readonly total_packets: number;
   readonly message: string;
@@ -123,6 +131,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       ready_packets: [],
       in_progress_packets: [],
       completed_packets: [],
+      failed_packets: [],
       blocked_packets: [],
       total_packets: feature.packets.length,
       message: `Feature '${feature.id}' is in status '${feature.status}'. Already finished.`,
@@ -135,6 +144,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
   }
 
   const completedPackets: string[] = [];
+  const failedPackets: string[] = [];
   const inProgressPackets: PacketAssignment[] = [];
   const readyPackets: PacketAssignment[] = [];
   const blockedPackets: Array<{ id: string; blocked_by: string[] }> = [];
@@ -171,8 +181,17 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       continue;
     }
 
-    // Status-aware routing for dev packets in the review lifecycle
+    // Phase 6 — terminal-failed packets are mutually exclusive with
+    // every other state. They do NOT come back into ready, in-progress,
+    // or blocked buckets. The recovery layer set this status; the
+    // factory will not re-attempt the packet without operator action.
     const pktStatus = packet.status ?? null;
+    if (pktStatus === 'failed') {
+      failedPackets.push(packetId);
+      continue;
+    }
+
+    // Status-aware routing for dev packets in the review lifecycle
     if (packet.kind === 'dev' && pktStatus === 'review_requested') {
       readyPackets.push(assignPacket(packet, 'code_reviewer', 'review'));
       continue;
@@ -192,13 +211,32 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     }
 
     const deps = packet.dependencies ?? [];
+    // For QA packets, also include the `verifies` target as an
+    // implicit dependency so a failed dev packet propagates its
+    // failed state to the QA packet that verifies it.
+    const verifies = typeof packet.verifies === 'string' ? packet.verifies : null;
+    const allDeps = verifies !== null && !deps.includes(verifies)
+      ? [...deps, verifies]
+      : [...deps];
     const unmetDeps: string[] = [];
-    for (const dep of deps) {
-      if (!input.completionIds.has(dep)) {
-        unmetDeps.push(dep);
+    let hasFailedDep = false;
+    for (const dep of allDeps) {
+      if (input.completionIds.has(dep)) continue;
+      const depPacket = allPacketMap.get(dep);
+      if (depPacket !== undefined && depPacket.status === 'failed') {
+        // Phase 6 — failed-dependency cascade. A packet whose
+        // dependency is in terminal-failed state is itself failed.
+        // Never returned as ready, in-progress, or blocked.
+        hasFailedDep = true;
+        break;
       }
+      unmetDeps.push(dep);
     }
 
+    if (hasFailedDep) {
+      failedPackets.push(packetId);
+      continue;
+    }
     if (unmetDeps.length > 0) {
       blockedPackets.push({ id: packetId, blocked_by: unmetDeps });
     } else {
@@ -213,6 +251,7 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       ready_packets: [],
       in_progress_packets: [],
       completed_packets: completedPackets,
+      failed_packets: failedPackets,
       blocked_packets: [],
       total_packets: feature.packets.length,
       message: `Feature '${feature.id}': all ${String(feature.packets.length)} packets complete. Ready for delivery.`,
@@ -227,10 +266,13 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
       ready_packets: readyPackets,
       in_progress_packets: inProgressPackets,
       completed_packets: completedPackets,
+      failed_packets: failedPackets,
       blocked_packets: blockedPackets,
       total_packets: feature.packets.length,
       message:
-        `Feature '${feature.id}': ${String(completedPackets.length)}/${String(feature.packets.length)} complete.\n` +
+        `Feature '${feature.id}': ${String(completedPackets.length)}/${String(feature.packets.length)} complete` +
+        (failedPackets.length > 0 ? `, ${String(failedPackets.length)} failed` : '') +
+        `.\n` +
         (readyPackets.length > 0 ? `  Ready: ${readyDesc}\n` : '') +
         `  Spawn ${String(readyPackets.length)} agent(s) for ready packets.`,
     };
@@ -242,10 +284,13 @@ export function resolveExecuteAction(input: ExecuteInput): ExecuteAction {
     ready_packets: [],
     in_progress_packets: [],
     completed_packets: completedPackets,
+    failed_packets: failedPackets,
     blocked_packets: blockedPackets,
     total_packets: feature.packets.length,
     message:
-      `Feature '${feature.id}': BLOCKED. ${String(completedPackets.length)}/${String(feature.packets.length)} complete.\n` +
+      `Feature '${feature.id}': BLOCKED. ${String(completedPackets.length)}/${String(feature.packets.length)} complete` +
+      (failedPackets.length > 0 ? `, ${String(failedPackets.length)} failed` : '') +
+      `.\n` +
       blockedPackets.map((b) => `  - ${b.id} needs: ${b.blocked_by.join(', ')}`).join('\n'),
   };
 }
@@ -267,6 +312,14 @@ function renderAction(action: ExecuteAction): string {
     lines.push(`  ${fmt.sym.ok} ${fmt.success('Completed:')}`);
     for (const id of action.completed_packets) {
       lines.push(`    - ${fmt.muted(id)}`);
+    }
+    lines.push('');
+  }
+
+  if (action.failed_packets.length > 0) {
+    lines.push(`  ${fmt.sym.fail} ${fmt.error('Failed:')}`);
+    for (const id of action.failed_packets) {
+      lines.push(`    - ${fmt.bold(id)}`);
     }
     lines.push('');
   }

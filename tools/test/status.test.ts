@@ -15,6 +15,7 @@ function makePacket(
   overrides: Partial<{
     title: string;
     kind: string;
+    status: string | null;
     started_at: string | null;
     dependencies: string[];
   }> = {},
@@ -23,6 +24,7 @@ function makePacket(
     id,
     title: overrides.title ?? `Packet ${id}`,
     kind: overrides.kind ?? 'dev',
+    status: overrides.status,
     started_at: overrides.started_at !== undefined ? overrides.started_at : '2026-03-20T00:00:00Z',
     dependencies: overrides.dependencies ?? [],
   };
@@ -160,5 +162,56 @@ describe('deriveFactoryStatus', () => {
     });
     expect(status.features_in_progress).toHaveLength(1);
     expect(status.next_action.kind).toBe('run_feature');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 — terminal `failed` status is recognized as terminal-failed,
+  // distinct from completed/in_progress/not_started.
+  // ---------------------------------------------------------------------------
+
+  it('FS-U18: packet with status="failed" is classified as failed (not in_progress / completed)', () => {
+    const status = deriveFactoryStatus(makeInput({
+      packets: [{
+        ...makePacket('pkt-failed', { started_at: '2026-03-20T00:00:00Z' }),
+        status: 'failed',
+      }],
+    }));
+    // Failed list is populated; in_progress is NOT.
+    expect(status.failed).toHaveLength(1);
+    expect(status.failed[0]!.id).toBe('pkt-failed');
+    expect(status.failed[0]!.status).toBe('failed');
+    expect(status.incomplete).toHaveLength(0);
+    expect(status.summary.failed).toBe(1);
+    expect(status.summary.in_progress).toBe(0);
+    expect(status.summary.completed).toBe(0);
+  });
+
+  it('FS-U19: failed packet does NOT appear in blocked even when dependencies unmet', () => {
+    // A failed packet with unmet dependencies is still terminal-failed,
+    // not "blocked" — blocked means "waiting and could still progress."
+    const status = deriveFactoryStatus(makeInput({
+      packets: [{
+        ...makePacket('pkt-bad', {
+          started_at: '2026-03-20T00:00:00Z',
+          dependencies: ['nonexistent-dep'],
+        }),
+        status: 'failed',
+      }],
+    }));
+    expect(status.failed).toHaveLength(1);
+    expect(status.blocked).toHaveLength(0);
+  });
+
+  it('FS-U20: status="failed" takes precedence over started_at heuristic', () => {
+    // Without the explicit 'failed' status check, started_at would
+    // misclassify the packet as in_progress.
+    const status = deriveFactoryStatus(makeInput({
+      packets: [{
+        ...makePacket('pkt-x', { started_at: '2026-03-20T00:00:00Z' }),
+        status: 'failed',
+      }],
+    }));
+    expect(status.summary.in_progress).toBe(0);
+    expect(status.summary.failed).toBe(1);
   });
 });

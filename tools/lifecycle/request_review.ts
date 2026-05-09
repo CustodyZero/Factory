@@ -27,6 +27,7 @@ import { loadConfig, findProjectRoot, resolveArtifactRoot } from '../config.js';
 import type { FactoryConfig } from '../config.js';
 import { appendLifecycleEvent } from '../events.js';
 import { makePacketReviewRequested } from '../pipeline/events.js';
+import { checkBranchUpToDate, type GitCheckRunner } from './git_check.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -37,6 +38,26 @@ export interface RequestReviewOptions {
   readonly branchOverride?: string;
   readonly projectRoot?: string;
   readonly config?: FactoryConfig;
+  /**
+   * Phase 6 — opt-in stale-branch detection. When true, runs a
+   * `git fetch origin main` + `rev-list` comparison BEFORE
+   * transitioning the packet to `review_requested`. If the local
+   * branch is behind origin/main, throws a `RequestReviewError`
+   * whose message matches the recovery classifier's
+   * STALE_BRANCH_PATTERNS so the calling phase routes the failure
+   * through the StaleBranch recipe.
+   *
+   * Off by default to preserve existing CLI/test behavior. The
+   * pipeline phase modules pass `true`.
+   *
+   * The helper returns null on environmental failure (offline, no
+   * remote), in which case requestReview proceeds normally.
+   */
+  readonly checkStaleBranch?: boolean;
+  /**
+   * Injectable git runner for the stale-branch check.
+   */
+  readonly gitRunner?: GitCheckRunner;
 }
 
 /**
@@ -184,6 +205,31 @@ export function requestReview(options: RequestReviewOptions): RequestReviewOutco
       'Detached HEAD state. Cannot determine branch name.',
       ['Use --branch <branch-name> to specify manually.'],
     );
+  }
+
+  // Phase 6 — stale-branch detection at the request-review boundary.
+  // When the pipeline phase requests this check, fetch from origin
+  // and compare HEAD to origin/main; if behind, throw a structured
+  // error whose message matches the recovery classifier's
+  // STALE_BRANCH_PATTERNS so the calling phase routes the failure
+  // through the rebase recipe.
+  //
+  // Off by default to preserve existing CLI/test behavior. NEVER
+  // thrown when the check itself cannot run (offline, no remote, no
+  // origin/main ref) — the helper returns null in that case.
+  if (options.checkStaleBranch === true) {
+    const stale = checkBranchUpToDate(projectRoot, options.gitRunner);
+    if (stale !== null) {
+      throw new RequestReviewError(
+        // The "branch is behind 'origin/main'" substring is the
+        // load-bearing match for STALE_BRANCH_PATTERNS in
+        // tools/pipeline/recovery.ts. A cross-layer drift test pins
+        // this alignment.
+        `Branch is behind 'origin/main' by ${stale.behindCount} commit(s); ` +
+          `non-fast-forward state. Rebase before requesting review.`,
+        [stale.stderr],
+      );
+    }
   }
 
   const wasChangesRequested = status === 'changes_requested';
