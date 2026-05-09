@@ -1,0 +1,54 @@
+# Phase 8 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-8-docs-pass (commits 21bc255, 326260d, 5da65cd)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. AGENTS.md still tells readers to run `complete.ts` directly
+
+**Files:** `AGENTS.md:164`, `templates/AGENTS.md:164`
+
+In rule 3.2 ("No commit without a completion"):
+> "Run `complete.ts` after implementation; it records build/lint/test results."
+
+`AGENTS.md` is read by both AI agents and human operators. This sentence reads as a human-operator instruction, violating Phase 8 acceptance criterion 1.
+
+**Fix:** Reword to keep lifecycle ownership agent-scoped:
+
+> "Agents record completions through the agent protocol after implementation; operators get this by running or re-running `run.ts <spec-id>`. The pre-commit hook enforces that started packets have completion records before commit."
+
+Apply to both `AGENTS.md` and `templates/AGENTS.md`.
+
+### 2. Event TL;DR names a non-existent event type and misses several real ones
+
+**File:** `docs/integration.md:405-415`
+
+The doc lists:
+> "phase.started / phase.completed / phase.failed"
+
+But the actual `EventType` union (`tools/pipeline/events.ts`) has:
+- `phase.started`
+- `phase.completed` (with payload field `outcome: 'ok' | 'failed'`)
+- NO `phase.failed`
+
+The TL;DR also misses: `pipeline.spec_resolved`, `spec.blocked`, `spec.completed`, `packet.changes_requested`, `verification.passed`, `verification.failed`.
+
+This is a direct operator-facing honesty issue (CLAUDE.md §3). An operator running `tail -f` or grepping the JSONL stream looking for `phase.failed` will never find it.
+
+**Fix:** Replace the inline list with an accurate one. Either:
+- (a) List the full taxonomy (17 base event types + 5 recovery/cost) — matches `events.ts` exactly.
+- (b) Group by category with the real names: pipeline lifecycle (started, spec_resolved, finished, failed), spec lifecycle (started, blocked, completed), phase lifecycle (started, completed-with-outcome), packet lifecycle (started, review_requested, review_approved, changes_requested, completed, failed), verification (passed, failed), recovery (attempt_started, succeeded, exhausted, escalated), cost (cap_crossed).
+
+Option (b) is more readable. Either way, do NOT name `phase.failed` as if it were a separate event type.
+
+## Strongest parts
+
+- The spec-authoring guide is in the right place (`docs/integration.md` near the top) and covers location, frontmatter, dependencies, and body conventions clearly. Frontmatter example matches the parser's inline `depends_on` format.
+- The README's first-change walkthrough is a meaningful improvement: removes the old manual packet flow and points new operators at `run.ts <spec-id>`.
+
+## Round budget remaining
+
+2 rounds.
