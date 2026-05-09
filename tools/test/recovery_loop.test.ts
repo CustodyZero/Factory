@@ -185,8 +185,12 @@ describe('runWithRecovery — ProviderTransient', () => {
 // ProviderUnavailable — Phase 6 contract: escalate IMMEDIATELY
 // ---------------------------------------------------------------------------
 
-describe('runWithRecovery — ProviderUnavailable', () => {
-  it('escalates immediately; budget 0; no attempt_started event', () => {
+describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
+  it('with no cascade context: escalates immediately with "no cascade configured" reason', () => {
+    // Phase 7 — when the FailureContext supplied by the closure
+    // carries no `cascade` field, the recipe escalates with an
+    // explicit no-cascade reason. The orchestration loop emits
+    // recovery.escalated; no attempt_started.
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
     const r = runWithRecovery(
@@ -199,16 +203,92 @@ describe('runWithRecovery — ProviderUnavailable', () => {
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       expect(r.scenario).toBe('ProviderUnavailable');
-      expect(r.reason).toMatch(/Phase 7/);
+      expect(r.reason).toMatch(/no cascade/i);
       expect(r.attempts).toBe(1);
     }
-    // Operation called exactly once (the original failure).
     expect(calls.length).toBe(1);
-
     const events = readEventStream(ctx.artifactRoot, ctx.runId).map((e) => e.event_type);
-    // No attempt_started (we never tried again); only escalated.
     expect(events).toContain('recovery.escalated');
     expect(events).not.toContain('recovery.attempt_started');
+  });
+
+  it('with a cascade: dispatches cascade_provider until the cascade succeeds', () => {
+    // Cascade has 3 hops. Primary fails ProviderUnavailable; second
+    // hop fails ProviderUnavailable; third hop succeeds. Each retry
+    // emits attempt_started; the final retry emits succeeded.
+    const ctx = defaultCtx();
+    const cascade = [
+      { provider: 'codex' as const, model: 'A' },
+      { provider: 'claude' as const, model: 'B' },
+      { provider: 'copilot' as const, model: 'C' },
+    ];
+    const calls: AttemptContext[] = [];
+    const op = (attempt: AttemptContext): OperationResult<string> => {
+      calls.push(attempt);
+      if (attempt.attemptNumber <= 2) {
+        return {
+          outcome: 'fail',
+          failure: failureFromSubprocess({
+            exitCode: 1,
+            stdout: '',
+            stderr: "Provider 'X' is disabled",
+            kind: 'agent_invocation',
+          }) as unknown as ReturnType<typeof failureFromSubprocess>,
+        };
+      }
+      return ok('cascade-success');
+    };
+    // Closure-style wrapper to inject `cascade` into every failure
+    // context. (Production closures do this via failureFromSubprocess
+    // helpers in the phase modules.)
+    const opWithCascade = (attempt: AttemptContext): OperationResult<string> => {
+      const r = op(attempt);
+      if (r.outcome === 'fail') {
+        return { outcome: 'fail', failure: { ...r.failure, cascade } };
+      }
+      return r;
+    };
+    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value).toBe('cascade-success');
+    expect(calls.length).toBe(3);
+    expect(calls[0]?.action).toBeUndefined();
+    expect(calls[1]?.action).toBe('cascade_provider');
+    expect(calls[1]?.cascade).toEqual({ provider: 'claude', model: 'B' });
+    expect(calls[2]?.action).toBe('cascade_provider');
+    expect(calls[2]?.cascade).toEqual({ provider: 'copilot', model: 'C' });
+
+    const types = readEventStream(ctx.artifactRoot, ctx.runId).map((e) => e.event_type);
+    expect(types).toContain('recovery.attempt_started');
+    expect(types).toContain('recovery.succeeded');
+  });
+
+  it('with a cascade exhausted: escalates naming the full attempted list', () => {
+    const ctx = defaultCtx();
+    const cascade = [
+      { provider: 'codex' as const, model: 'A' },
+      { provider: 'claude' as const, model: 'B' },
+    ];
+    const opWithCascade = (_attempt: AttemptContext): OperationResult<string> => ({
+      outcome: 'fail',
+      failure: {
+        ...failureFromSubprocess({
+          exitCode: 1,
+          stdout: '',
+          stderr: "Provider 'X' is disabled",
+          kind: 'agent_invocation',
+        }),
+        cascade,
+      },
+    });
+    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    expect(r.kind).toBe('escalated');
+    if (r.kind === 'escalated') {
+      expect(r.scenario).toBe('ProviderUnavailable');
+      expect(r.reason).toMatch(/cascade exhausted/i);
+      expect(r.reason).toContain('codex:A');
+      expect(r.reason).toContain('claude:B');
+    }
   });
 });
 

@@ -157,6 +157,41 @@ export interface FailureContext {
    * "verify_phase.complete", "plan_phase.invoke_planner".
    */
   readonly operation_label?: string;
+  /**
+   * Phase 7 — the persona's full ordered cascade for the call site
+   * that produced this failure. Computed once by the closure (via
+   * `computeCascade(persona, tier, config)`) and threaded through
+   * unchanged on every retry. The `ProviderUnavailable` recipe reads
+   * this list to pick the next failover step; on exhaustion the
+   * recipe escalates with a reason naming the attempted cascade.
+   *
+   * Optional because most call sites do NOT compute a cascade
+   * (BuildFailed / StaleBranch / non-agent operations). Recipes
+   * other than `ProviderUnavailable` ignore this field.
+   *
+   * When present, `cascade[0]` is the primary (already-attempted)
+   * step; the next step to try is `cascade[cascade_attempt_index + 1]`.
+   * See `cascade_attempt_index` below for the indexing contract.
+   */
+  readonly cascade?: ReadonlyArray<{
+    readonly provider: import('../config.js').PipelineProvider;
+    readonly model: string | undefined;
+  }>;
+  /**
+   * Phase 7 — the cascade index of the most-recently-attempted step.
+   * The recovery_loop populates this just before calling the
+   * `ProviderUnavailable` recipe (or any recipe that might consult
+   * the cascade). Index 0 is the primary; after the primary fails
+   * the loop sets this to 0 and the recipe returns cascade[1] as
+   * the next hop. After cascade[1] fails the loop sets it to 1,
+   * and so on.
+   *
+   * Recipes that do not consult `cascade` ignore this field. The
+   * loop never sets this on the initial classification call (the
+   * primary attempt has not "happened" yet from the recipe's point
+   * of view) — only on the retry-classification path.
+   */
+  readonly cascade_attempt_index?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,15 +221,21 @@ export interface FailureContext {
  *   - `git_rebase_then_retry`: run `git fetch && git rebase
  *     origin/main` from the worktree; on success, re-run the
  *     original operation. Used by StaleBranch.
+ *   - `cascade_provider`: re-run the operation against a different
+ *     (provider, model) pair, supplied via `RecoveryAttempt.cascade`.
+ *     Used by ProviderUnavailable to walk the cross-CLI / within-CLI
+ *     failover order computed by `computeCascade`. Phase 7.
  *
  * The orchestration layer maps each kind to a concrete sequence of
  * I/O calls. Adding a new kind requires updating both this enum
- * AND the dispatch in recovery_loop.ts.
+ * AND the dispatch in recovery_loop.ts AND the closures in
+ * `plan_phase.ts` / `develop_phase.ts` / `verify_phase.ts`.
  */
 export type RecoveryActionKind =
   | 'retry_same'
   | 'retry_with_guardrail_prompt'
-  | 'git_rebase_then_retry';
+  | 'git_rebase_then_retry'
+  | 'cascade_provider';
 
 export interface RecoveryAttempt {
   readonly kind: 'attempt';
@@ -212,6 +253,21 @@ export interface RecoveryAttempt {
    * to back off briefly. Default (when omitted) is no wait.
    */
   readonly wait_ms?: number;
+  /**
+   * For action='cascade_provider', the (provider, model) pair the
+   * closure must use on the next attempt — bypassing the persona's
+   * default provider/tier resolution. The closure passes these
+   * through to `invokeAgent(provider, prompt, config, modelTier?,
+   * model)`. Phase 7.
+   *
+   * Required when `action === 'cascade_provider'`; ignored otherwise.
+   * The recipe always populates this when it returns
+   * cascade_provider.
+   */
+  readonly cascade?: {
+    readonly provider: import('../config.js').PipelineProvider;
+    readonly model: string | undefined;
+  };
 }
 
 export interface EscalateRequest {
@@ -545,10 +601,79 @@ const recipeProviderTransient: RecoveryRecipe = (_scenario, _ctx) => ({
   wait_ms: 250,
 });
 
-const recipeProviderUnavailable: RecoveryRecipe = (_scenario, _ctx) => ({
-  kind: 'escalate',
-  reason: 'Provider unavailable; cascade not yet implemented (Phase 7).',
-});
+/**
+ * Phase 7 — ProviderUnavailable cascade recipe.
+ *
+ * Consults the cascade computed at the call site
+ * (`context.cascade`) and returns either:
+ *
+ *   - `RecoveryAttempt` with `action: 'cascade_provider'` and the
+ *     next (provider, model) pair, when the cascade is not yet
+ *     exhausted.
+ *   - `EscalateRequest` when the cascade is exhausted (or absent —
+ *     the call site supplied no cascade).
+ *
+ * The recipe self-caps based on cascade length, NOT on
+ * SCENARIO_RETRY_BUDGET. The orchestration layer's per-scenario
+ * budget for ProviderUnavailable is therefore a high sentinel (see
+ * SCENARIO_RETRY_BUDGET); the data-driven cap lives here so the
+ * cascade-length contract stays in one place. Any future change to
+ * "how many cascade hops are allowed" is a change to this recipe
+ * and to `computeCascade`, not to the budget map.
+ *
+ * Indexing contract:
+ *   `cascade[0]` is the PRIMARY (already-attempted) step. The
+ *   `cascade_attempt_index` field on the failure context tracks
+ *   the most-recently-attempted index. After cascade[N] fails, the
+ *   loop sets cascade_attempt_index=N; the recipe returns
+ *   cascade[N+1] (or escalates if N+1 >= cascade.length).
+ *
+ * On the FIRST ProviderUnavailable failure, the loop has not yet
+ * set cascade_attempt_index — it defaults to 0 (the primary just
+ * failed). So the first call to this recipe returns cascade[1].
+ *
+ * Pure: no I/O, no globals, no time. Same inputs, same output.
+ */
+const recipeProviderUnavailable: RecoveryRecipe = (_scenario, ctx) => {
+  const cascade = ctx.cascade;
+  if (cascade === undefined || cascade.length === 0) {
+    // Call site supplied no cascade. Honest "we cannot fail over"
+    // (CLAUDE.md §3.1): the persona has no failover declared OR the
+    // call site is non-agent (planner planning isn't, but this can
+    // happen if the closure is called outside the agent path). Escalate.
+    return {
+      kind: 'escalate',
+      reason:
+        'Provider unavailable: no cascade configured for this persona ' +
+        '(persona_providers list of length 1 with no model_failover, or ' +
+        'the call site did not compute a cascade).',
+    };
+  }
+  // The "current" attempted index. On the first call (after the
+  // primary failed) this is 0. The next step to try is index+1.
+  const lastAttempted = ctx.cascade_attempt_index ?? 0;
+  const nextIndex = lastAttempted + 1;
+  if (nextIndex >= cascade.length) {
+    // Cascade exhausted. Escalate with a reason naming the full
+    // attempted list so a human reading the escalation record can
+    // see exactly what was tried.
+    const attempted = cascade
+      .map((s) => `${s.provider}${s.model !== undefined ? `:${s.model}` : ''}`)
+      .join(', ');
+    return {
+      kind: 'escalate',
+      reason:
+        `Provider unavailable: cascade exhausted after ${cascade.length} ` +
+        `attempt(s). Tried: [${attempted}].`,
+    };
+  }
+  const next = cascade[nextIndex]!;
+  return {
+    kind: 'attempt',
+    action: 'cascade_provider',
+    cascade: { provider: next.provider, model: next.model },
+  };
+};
 
 const recipeBuildFailed: RecoveryRecipe = (_scenario, ctx) => {
   // Append a short tail of the failure output so the developer agent
@@ -613,17 +738,41 @@ export const RECIPES: Readonly<Record<FailureScenario, RecoveryRecipe>> = {
 // "n retries" means n attempts AFTER the first failure. Budget is
 // per-packet, per-scenario; see recovery_loop.ts for enforcement.
 //
-// The numbers come straight from the brief. Do not edit without
-// updating the brief — these are load-bearing for tests and for the
-// recovery contract.
+// Most numbers come straight from the brief. The exception is
+// ProviderUnavailable: Phase 7 made its cap data-driven (= cascade
+// length minus 1). The recipe self-caps when the cascade is
+// exhausted; we set the budget here to a high sentinel
+// (PROVIDER_UNAVAILABLE_BUDGET_SENTINEL) so the orchestration loop
+// never short-circuits the cascade before the recipe has a chance
+// to walk it.
+//
+// Trade-off considered: the alternative was threading the data-
+// driven cap into the loop (compute cascade length per call,
+// pass it as the cap). That couples the loop to the cascade and
+// adds plumbing. The sentinel keeps the loop ignorant of cascade
+// shape; the recipe is the single source of truth for "the cascade
+// is exhausted." Downside: the loop's defensive iteration cap
+// (sum of per-scenario budgets + 1) grows; we keep that bounded
+// by capping the sentinel at 99, which is far above any realistic
+// cascade length.
 // ---------------------------------------------------------------------------
+
+/**
+ * High sentinel for ProviderUnavailable. The recipe self-caps based
+ * on cascade length. This number must exceed any realistic cascade
+ * length — the schema's `minItems` for both `persona_providers` and
+ * `model_failover` is 1, so even a maxed-out config (3 CLIs * 3
+ * models each = 9 hops) is well below 99.
+ */
+export const PROVIDER_UNAVAILABLE_BUDGET_SENTINEL = 99;
 
 export const SCENARIO_RETRY_BUDGET: Readonly<Record<FailureScenario, number>> = {
   ProviderTransient: 2,
   AgentNonResponsive: 2,
   BuildFailed: 1,
   StaleBranch: 1,
-  ProviderUnavailable: 0,
+  // Phase 7 — sentinel cap; recipe self-caps via cascade length.
+  ProviderUnavailable: PROVIDER_UNAVAILABLE_BUDGET_SENTINEL,
   LintFailed: 0,
   TestFailed: 0,
   CompletionGateBlocked: 0,

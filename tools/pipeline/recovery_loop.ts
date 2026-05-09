@@ -228,11 +228,18 @@ export type OperationResult<T> =
  *     dev agent for a BuildFailed remediation in QA flow).
  *   - `attempt.guardrailPrompt`: when the action is
  *     retry_with_guardrail_prompt, the prompt suffix to append.
+ *   - `attempt.cascade`: when the action is `cascade_provider`, the
+ *     (provider, model) pair the closure must invoke against,
+ *     bypassing the persona's default provider/tier. Phase 7.
  */
 export interface AttemptContext {
   readonly attemptNumber: number;
   readonly action?: RecoveryActionKind;
   readonly guardrailPrompt?: string;
+  readonly cascade?: {
+    readonly provider: import('../config.js').PipelineProvider;
+    readonly model: string | undefined;
+  };
 }
 
 export type RecoverableOperation<T> = (attempt: AttemptContext) => OperationResult<T>;
@@ -296,6 +303,16 @@ export function runWithRecovery<T>(
   let lastFailure: FailureContext = result.failure;
   let lastScenario: FailureScenario | null = null;
 
+  // Phase 7 — cascade-walking state. `cascadeIndex` is the index of
+  // the most-recently-ATTEMPTED cascade step. The primary attempt
+  // corresponds to index 0 (cascade[0] is what the call site invoked
+  // before threading into the recovery loop). The recipe reads this
+  // value (via `cascade_attempt_index` on FailureContext) to pick
+  // the next hop. After each cascade_provider attempt, we increment
+  // this counter regardless of outcome — the next failure-classification
+  // pass needs to know we've now consumed cascade[cascadeIndex+1].
+  let cascadeIndex = 0;
+
   // Retry loop. We re-classify on every failure because the failure
   // shape can change between attempts (transient -> stable error).
   // Bounded by SCENARIO_RETRY_BUDGET and any caller-supplied cost
@@ -319,7 +336,14 @@ export function runWithRecovery<T>(
 
     lastScenario = scenario;
     const recipe = RECIPES[scenario];
-    const recipeOutput: RecipeOutput = recipe(scenario, failure);
+    // Phase 7 — enrich the failure context with the cascade-walking
+    // index so the ProviderUnavailable recipe knows which hop just
+    // failed. Recipes that don't consult `cascade` ignore this field.
+    const enrichedFailure: FailureContext = {
+      ...failure,
+      cascade_attempt_index: cascadeIndex,
+    };
+    const recipeOutput: RecipeOutput = recipe(scenario, enrichedFailure);
 
     // Recipe says escalate (LintFailed, TestFailed, ProviderUnavailable,
     // CompletionGateBlocked under the Phase-6 contract). Immediate
@@ -399,7 +423,18 @@ export function runWithRecovery<T>(
       ...(recipeOutput.guardrail_prompt !== undefined
         ? { guardrailPrompt: recipeOutput.guardrail_prompt }
         : {}),
+      ...(recipeOutput.cascade !== undefined
+        ? { cascade: recipeOutput.cascade }
+        : {}),
     };
+    // Phase 7 — bump the cascade index BEFORE invoking the closure
+    // so the next failure-classification pass sees the correct
+    // "most-recently-attempted" index. Done here (rather than after
+    // the call returns) because the index reflects what the closure
+    // is about to attempt, regardless of outcome.
+    if (recipeOutput.action === 'cascade_provider') {
+      cascadeIndex += 1;
+    }
     result = operation(attemptCtx);
     if (result.outcome === 'ok') {
       appendEvent(
