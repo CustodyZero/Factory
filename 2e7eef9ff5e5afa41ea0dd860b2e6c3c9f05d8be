@@ -1,0 +1,44 @@
+# Phase 7 Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-7-failover (round-2 commits b2b36a6, e90f51b, 3fd0737)
+**Verdict:** REQUEST-CHANGES (one residual finding)
+
+## Confirmed correct
+
+- **Fix 1 (primary uses cascade[0])**: every `invokeAgent` call site uses `attempt.cascade ?? <persona>Primary`. Pattern consistently applied.
+- **Fix 2 (remediation preservation)**: develop and verify finalize closures correctly preserve the guardrail prompt across `cascade_provider` and `retry_same`.
+
+## Issue remaining
+
+### Safety bound snapshots `cascade.length` from initial failure only
+
+**File:** `tools/pipeline/recovery_loop.ts:350-356` (and the safety-bound check at `:544`)
+
+`maxIterations` is computed from the initial failure's cascade. That works when the first failure is `ProviderUnavailable` (cascade attached upfront).
+
+It does NOT work for `BuildFailed → remediation fails ProviderUnavailable`:
+- Initial failure: `BuildFailed` (no cascade attached)
+- Loop's `maxIterations` is set with cascade.length = 0 + static-budget slack
+- Remediation runs, fails with `ProviderUnavailable` (cascade attached now)
+- If the remediation cascade is longer than the static-budget slack, the loop hits `Recovery loop exceeded safety bound` BEFORE the recipe self-caps with the real "cascade exhausted" reason
+
+This reintroduces a static cap for remediation cascades — the very condition Round 1 finding #3 was supposed to eliminate.
+
+**Fix:** Make the safety bound dynamic. Update `maxIterations` after each failed operation based on the max observed cascade length, OR check a dynamically recomputed bound inside the `while` loop. Either:
+```ts
+maxIterations = Math.max(maxIterations, sum(static budgets) + currentFailure.cascade?.length ?? 0 + 1);
+```
+or restructure the bound check to be data-driven on each iteration.
+
+**Test required:** Initial failure is `BuildFailed` (no cascade), remediation path returns `ProviderUnavailable` with cascade length > 7 (longer than the static-budget slack). Assert the loop exhausts exactly that cascade and emits `ProviderUnavailable` / `cascade exhausted`, NOT the safety-bound escalation.
+
+## What this round did well
+
+- The primary `cascade[0]` fix is clean and consistently applied across all 5 wrap sites.
+- The remediation state machine now handles the important mid-remediation cascade path instead of falling through to `completePacket`.
+
+## Round budget remaining
+
+1 round. The fix is narrow.
