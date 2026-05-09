@@ -464,9 +464,38 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
       continue;
     }
 
-    // Check dependencies are met before proceeding.
+    // Phase 6 — a packet already in terminal `failed` status (set by a
+    // prior recovery escalation) is not retried in the same run. Surface
+    // it in the failed list and continue to the next packet.
+    if (freshPacket.status === 'failed') {
+      fmt.log('develop', `${fmt.sym.fail} ${packet.id} — already failed (terminal)`);
+      failed.push(packet.id);
+      continue;
+    }
+
+    // Check dependencies are met before proceeding. Phase 6 — a
+    // dep packet in terminal-failed status cascades the failure to
+    // this packet rather than waiting indefinitely. Re-read from
+    // disk because a prior packet in this loop may have had its
+    // status mutated to 'failed' by markPacketFailed since the
+    // phase-start scan.
     const deps = freshPacket.dependencies ?? [];
-    const unmetDeps = deps.filter((d) => !completionIds.has(d));
+    const unmetDeps: string[] = [];
+    let cascadeFailed = false;
+    for (const dep of deps) {
+      if (completionIds.has(dep)) continue;
+      const depPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${dep}.json`));
+      if (depPacket !== null && depPacket.status === 'failed') {
+        cascadeFailed = true;
+        break;
+      }
+      unmetDeps.push(dep);
+    }
+    if (cascadeFailed) {
+      fmt.log('develop', `${fmt.sym.fail} ${packet.id} — cascaded from failed dependency`);
+      failed.push(packet.id);
+      continue;
+    }
     if (unmetDeps.length > 0) {
       fmt.log('develop', `${fmt.sym.blocked} ${packet.id} — blocked by: ${unmetDeps.join(', ')}`);
       failed.push(packet.id);
@@ -816,8 +845,53 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           //   (b) the lib returns CompleteResult with ci_pass=false.
           //       The closure builds the explicit failed_checks list
           //       so the classifier dispatches authoritatively.
+          //
+          // Phase 6 round-2 fix: BuildFailed remediation requires the
+          // dev agent to run AGAIN with the guardrail prompt before the
+          // retry of completePacket. Without that step, completePacket
+          // would observe the same failure forever. This dispatch
+          // mirrors the implement/rework closures above.
+          //
+          // Phase 6 round-2 idempotency fix: completePacket is now
+          // atomic — it does NOT write a completion record on
+          // ci_pass=false. So `already_complete` is reachable only on
+          // success, and the prior `if (r.already_complete) ok`
+          // short-circuit (which used to false-succeed a failed
+          // completion) is gone.
           const finalizeRecovered = runWithRecovery<true>(
-            (_attempt: AttemptContext): OperationResult<true> => {
+            (attempt: AttemptContext): OperationResult<true> => {
+              if (attempt.action === 'retry_with_guardrail_prompt'
+                && attempt.guardrailPrompt !== undefined) {
+                // BuildFailed remediation: re-invoke the dev agent
+                // with the guardrail prompt before re-running
+                // completePacket. The dev agent edits code; the next
+                // completePacket then re-runs verification against
+                // the new tree.
+                const basePrompt = buildDevPrompt(freshPacket, config);
+                const remediationPrompt =
+                  `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`;
+                const r = invokeAgent(
+                  devProvider, remediationPrompt, config, devTier,
+                );
+                recordInvocationCost(
+                  r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+                  perPacketCap, packetCostTracker, dryRun,
+                );
+                if (r.exit_code !== 0) {
+                  return {
+                    outcome: 'fail',
+                    failure: failureFromSubprocess({
+                      exitCode: r.exit_code,
+                      stdout: r.stdout,
+                      stderr: r.stderr,
+                      kind: 'agent_invocation',
+                      specId: opts.specId ?? null,
+                      packetId: packet.id,
+                      operationLabel: 'develop_phase.complete.remediation',
+                    }),
+                  };
+                }
+              }
               try {
                 const r = completePacket({
                   packetId: packet.id,
@@ -828,7 +902,6 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
                   checkStaleBranch: true,
                   ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
                 });
-                if (r.already_complete) return { outcome: 'ok', value: true };
                 if (r.ci_pass) return { outcome: 'ok', value: true };
                 const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
                 if (!r.build_pass) failedChecks.push('build');

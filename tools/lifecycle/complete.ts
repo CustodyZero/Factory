@@ -22,6 +22,17 @@
  *   existing values WITHOUT re-running verification. The FI-1 invariant
  *   (one completion per packet) is preserved by refusing to overwrite,
  *   not by erroring on re-invocation.
+ *
+ * Atomicity contract (Phase 6):
+ *   A completion record + packet `status: "completed"` is written ONLY
+ *   when ALL of {build, lint, test, ci} pass. A failed verification:
+ *     - emits verification.failed + packet.failed events (observable)
+ *     - does NOT write completions/<id>.json
+ *     - does NOT update packets/<id>.json status to 'completed'
+ *     - returns CompleteResult with already_complete=false and ci_pass=false
+ *   This makes "completion record exists" an authoritative signal of
+ *   success, and lets the recovery layer retry verification on the next
+ *   invocation without tripping the idempotent early-return.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -199,6 +210,58 @@ export function completePacket(options: CompleteOptions): CompleteResult {
     ? `Verification failed for: ${failedSteps.join(', ')}`
     : 'All verification passed.';
 
+  // Phase 5.5 — emit verification + packet outcome events. Two
+  // distinct events because verification and packet lifecycle are
+  // separable concerns (recovery in Phase 6 acts on verification.*
+  // independently of the packet state machine). All no-ops outside
+  // an orchestrator session.
+  //
+  // Phase 6 atomicity: events fire regardless of outcome, but the
+  // completion record + packet status update happen ONLY on success.
+  // This decouples observability (event stream sees every attempt)
+  // from the durable contract (completion record == success).
+  const passedChecks: VerificationKind[] = [];
+  const failedChecks: VerificationKind[] = [];
+  for (const [name, ok] of [
+    ['build', buildPass] as const,
+    ['lint', lintPass] as const,
+    ['tests', testsPass] as const,
+  ]) {
+    (ok ? passedChecks : failedChecks).push(name);
+  }
+
+  if (!ciPass) {
+    // Atomic-failure path. Surface the failure observably (events)
+    // but DO NOT write a completion record and DO NOT mark the
+    // packet 'completed'. The recovery layer's retry can re-run
+    // verification because no idempotent early-return is in the way.
+    appendLifecycleEvent(
+      (base) => makeVerificationFailed(base, {
+        packet_id: packetId,
+        failed_checks: failedChecks,
+      }),
+      artifactRoot,
+    );
+    appendLifecycleEvent(
+      (base) => makePacketFailed(base, {
+        packet_id: packetId,
+        reason: verificationNotes,
+      }),
+      artifactRoot,
+    );
+    return {
+      packet_id: packetId,
+      build_pass: buildPass,
+      lint_pass: lintPass,
+      tests_pass: testsPass,
+      ci_pass: ciPass,
+      files_changed: filesChanged,
+      already_complete: false,
+    };
+  }
+
+  // Success path: write the completion record, mark the packet
+  // 'completed', emit verification.passed + packet.completed.
   const completion = {
     packet_id: packetId,
     completed_at: new Date().toISOString(),
@@ -230,53 +293,17 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   packet['status'] = 'completed';
   writeFileSync(packetPath, JSON.stringify(packet, null, 2) + '\n', 'utf-8');
 
-  // Phase 5.5 — emit verification + packet outcome events. Two
-  // distinct events because verification and packet lifecycle are
-  // separable concerns (recovery in Phase 6 acts on verification.*
-  // independently of the packet state machine). All no-ops outside
-  // an orchestrator session.
-  const passedChecks: VerificationKind[] = [];
-  const failedChecks: VerificationKind[] = [];
-  for (const [name, ok] of [
-    ['build', buildPass] as const,
-    ['lint', lintPass] as const,
-    ['tests', testsPass] as const,
-  ]) {
-    (ok ? passedChecks : failedChecks).push(name);
-  }
-  if (ciPass) {
-    appendLifecycleEvent(
-      (base) => makeVerificationPassed(base, {
-        packet_id: packetId,
-        checks: [...passedChecks, 'ci'],
-      }),
-      artifactRoot,
-    );
-    appendLifecycleEvent(
-      (base) => makePacketCompleted(base, { packet_id: packetId }),
-      artifactRoot,
-    );
-  } else {
-    appendLifecycleEvent(
-      (base) => makeVerificationFailed(base, {
-        packet_id: packetId,
-        failed_checks: failedChecks,
-      }),
-      artifactRoot,
-    );
-    // packet.failed: verification failure means the packet did not
-    // pass its acceptance gate. The on-disk packet status is still
-    // 'completed' (existing behavior — complete.ts records the
-    // attempt regardless), but the event taxonomy distinguishes
-    // pass from fail.
-    appendLifecycleEvent(
-      (base) => makePacketFailed(base, {
-        packet_id: packetId,
-        reason: verificationNotes,
-      }),
-      artifactRoot,
-    );
-  }
+  appendLifecycleEvent(
+    (base) => makeVerificationPassed(base, {
+      packet_id: packetId,
+      checks: [...passedChecks, 'ci'],
+    }),
+    artifactRoot,
+  );
+  appendLifecycleEvent(
+    (base) => makePacketCompleted(base, { packet_id: packetId }),
+    artifactRoot,
+  );
 
   return {
     packet_id: packetId,

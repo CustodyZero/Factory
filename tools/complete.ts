@@ -61,12 +61,23 @@ function main(): void {
     }
 
     console.log(`\nCreating completion for: ${packetId}\n`);
-    console.log(`\nCompletion written: completions/${packetId}.json`);
-    console.log(`  Packet status updated to: completed`);
 
     if (!result.ci_pass) {
-      console.log(`\n${fmt.sym.warn} ${fmt.warn('Verification did not fully pass.')}`);
+      // Phase 6 atomic-completion contract: ci_pass=false means no
+      // record was written and the packet is NOT 'completed'. Surface
+      // that explicitly so the operator doesn't expect a record on
+      // disk.
+      const failed: string[] = [];
+      if (!result.build_pass) failed.push('build');
+      if (!result.lint_pass) failed.push('lint');
+      if (!result.tests_pass) failed.push('tests');
+      console.log(`\n${fmt.sym.fail} ${fmt.error(`Verification did not pass: ${failed.join(', ')}`)}`);
+      console.log(`  No completion record written. Packet status unchanged.`);
+      process.exit(1);
     }
+
+    console.log(`\nCompletion written: completions/${packetId}.json`);
+    console.log(`  Packet status updated to: completed`);
 
     // Re-validate
     const config = loadConfig();

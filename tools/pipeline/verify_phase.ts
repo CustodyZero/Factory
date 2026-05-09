@@ -298,11 +298,57 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
       continue;
     }
 
-    // Check that the dev packet it verifies is completed.
+    // Phase 6 — a QA packet already marked failed (e.g. by a prior
+    // run's recovery escalation) is not retried.
+    if (packet.status === 'failed') {
+      fmt.log('verify', `${fmt.sym.fail} ${packet.id} — already failed (terminal)`);
+      failed.push(packet.id);
+      continue;
+    }
+
+    // Check that the dev packet it verifies is completed. Phase 6 —
+    // if the dev packet is in terminal `failed` state, the QA packet
+    // is also failed (the verification target no longer exists in a
+    // verifiable form). This is NOT a skip: the QA packet is
+    // terminated, not waiting for a future run. Re-read each
+    // dependency from disk because the develop phase may have
+    // mutated a dep packet's status during this run.
     const deps = packet.dependencies ?? [];
     const verifies = packet.verifies;
     const allDeps = verifies && !deps.includes(verifies) ? [...deps, verifies] : [...deps];
-    const unmetDeps = allDeps.filter((d) => !completionIds.has(d));
+    const unmetDeps: string[] = [];
+    const failedDeps: string[] = [];
+    for (const d of allDeps) {
+      if (completionIds.has(d)) continue;
+      const depPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${d}.json`));
+      if (depPacket !== null && depPacket.status === 'failed') {
+        failedDeps.push(d);
+        continue;
+      }
+      unmetDeps.push(d);
+    }
+    if (failedDeps.length > 0) {
+      fmt.log('verify', `${fmt.sym.fail} ${packet.id} — terminated (dev dependency failed: ${failedDeps.join(', ')})`);
+      // Stamp the QA packet as failed too so subsequent reads see the
+      // cascade. Best-effort write; the failed list below is the
+      // controlling artifact.
+      try {
+        const packetPath = join(artifactRoot, 'packets', `${packet.id}.json`);
+        if (existsSync(packetPath)) {
+          const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+          data['status'] = 'failed';
+          data['failure'] = {
+            scenario: 'CascadedFromDependency',
+            reason: `Dev dependency failed: ${failedDeps.join(', ')}`,
+            attempts: 0,
+            escalation_path: null,
+          };
+          writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+        }
+      } catch { /* best-effort */ }
+      failed.push(packet.id);
+      continue;
+    }
     if (unmetDeps.length > 0) {
       fmt.log('verify', `${fmt.sym.blocked} ${packet.id} — skipped (dev not complete: ${unmetDeps.join(', ')})`);
       skipped.push(packet.id);
@@ -471,7 +517,11 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
             checkStaleBranch: true,
             ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
           });
-          if (r.already_complete) return { outcome: 'ok', value: true };
+          // Phase 6: completePacket is atomic — it does NOT write a
+          // record on ci_pass=false. So `already_complete` only
+          // appears on success (existing successful completion) and
+          // never as a false-success short-circuit on a failed
+          // verification. Branch on ci_pass alone.
           if (r.ci_pass) return { outcome: 'ok', value: true };
           const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
           if (!r.build_pass) failedChecks.push('build');
