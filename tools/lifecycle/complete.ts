@@ -36,6 +36,7 @@ import {
   makePacketFailed,
   type VerificationKind,
 } from '../pipeline/events.js';
+import { checkBranchUpToDate, type GitCheckRunner } from './git_check.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -46,6 +47,27 @@ export interface CompleteOptions {
   readonly summary?: string;
   readonly identity?: string;
   readonly projectRoot?: string;
+  /**
+   * Phase 6 — opt-in stale-branch detection. When true, runs
+   * `git fetch origin main` + `rev-list --count HEAD..origin/main`
+   * BEFORE the build/lint/test verification. If the local branch is
+   * behind origin/main, throws an Error whose message matches the
+   * recovery classifier's STALE_BRANCH_PATTERNS so the calling phase
+   * can route the failure through the StaleBranch recipe.
+   *
+   * Off by default to preserve existing CLI/test behavior. The
+   * pipeline phase modules pass `true`.
+   *
+   * The check runs BEFORE verification because verifying against a
+   * stale tree wastes time — the rebase will require re-running it
+   * anyway.
+   */
+  readonly checkStaleBranch?: boolean;
+  /**
+   * Injectable git runner for the stale-branch check. Defaults to
+   * `spawnSync('git', ...)`. Tests pass a stub.
+   */
+  readonly gitRunner?: GitCheckRunner;
 }
 
 export interface CompleteResult {
@@ -119,6 +141,29 @@ export function completePacket(options: CompleteOptions): CompleteResult {
   const startedAt = typeof packet['started_at'] === 'string' ? packet['started_at'] : null;
   if (startedAt === null) {
     throw new Error(`Packet '${packetId}' has not been started.`);
+  }
+
+  // Phase 6 — stale-branch detection at the complete boundary. When
+  // the pipeline phase requests this check, fetch from origin and
+  // compare HEAD to origin/main; if behind, throw an Error whose
+  // message matches the recovery classifier's STALE_BRANCH_PATTERNS
+  // so the calling phase routes the failure through the rebase
+  // recipe.
+  //
+  // Off by default to preserve existing CLI/test behavior. Runs
+  // BEFORE verification: a stale tree must be rebased first.
+  if (options.checkStaleBranch === true) {
+    const stale = checkBranchUpToDate(projectRoot, options.gitRunner);
+    if (stale !== null) {
+      throw new Error(
+        // The "branch is behind 'origin/main'" substring is the
+        // load-bearing match for STALE_BRANCH_PATTERNS in
+        // tools/pipeline/recovery.ts. A cross-layer drift test
+        // (tools/test/recovery_io.test.ts) pins this alignment.
+        `Branch is behind 'origin/main' by ${stale.behindCount} commit(s); ` +
+          `non-fast-forward state. ${stale.stderr}`,
+      );
+    }
   }
 
   // Run verification
