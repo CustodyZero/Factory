@@ -445,11 +445,13 @@ Full design: [`docs/decisions/event_observability.md`](decisions/event_observabi
 
 ## Cost visibility
 
-Every agent invocation is metered. The run summary line reports total cost:
+Every agent invocation is metered. The run summary emits zero, one, or
+many invocations per run; the summary line varies by what was metered:
 
-```
-Total cost: $0.4231 (3 unknown-cost invocation(s))
-```
+- **No invocations:** the cost line is omitted entirely.
+- **All unknown-cost:** `Cost: 3 unknown-cost invocation(s) (provider did not report tokens)`
+- **All known-cost:** `Total cost: $0.4231 over 5 invocation(s)`
+- **Mixed:** `Total cost: $0.4231 (3 unknown-cost invocation(s))`
 
 The `unknown-cost` count is invocations where the provider did not report
 tokens (e.g., `gh copilot`); they are counted but contribute `null`
