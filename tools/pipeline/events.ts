@@ -116,7 +116,12 @@ export type EventType =
   | 'verification.passed'
   | 'verification.failed'
   // Cost (Phase 5.7)
-  | 'cost.cap_crossed';
+  | 'cost.cap_crossed'
+  // Recovery (Phase 6)
+  | 'recovery.attempt_started'
+  | 'recovery.succeeded'
+  | 'recovery.exhausted'
+  | 'recovery.escalated';
 
 // ---------------------------------------------------------------------------
 // Payload variants — discriminated union keyed on `event_type`.
@@ -273,6 +278,70 @@ export interface CostCapCrossedPayload {
   readonly spec_id: string | null;
 }
 
+/**
+ * Phase 6 — Recovery event payloads.
+ *
+ * The four recovery events form a closed sequence per attempt cluster:
+ *
+ *   recovery.attempt_started -> (op runs) -> recovery.succeeded
+ *
+ *   recovery.attempt_started -> (op fails) ->
+ *   recovery.attempt_started -> ... ->
+ *   recovery.exhausted -> recovery.escalated
+ *
+ *   recovery.attempt_started -> (op fails) ->
+ *   cost.cap_crossed -> recovery.escalated   (cap-blocked retry)
+ *
+ *   (no events) -> recovery.escalated   (immediate-escalate recipe
+ *                                       OR unclassifiable failure)
+ *
+ * All four carry the failure scenario as a string discriminator (the
+ * `FailureScenario` enum lives in tools/pipeline/recovery.ts; we keep
+ * the events module ignorant of that file so the type cycle stays
+ * one-way: recovery.ts depends on events.ts, never the reverse).
+ *
+ *   - `attempt_number` is 1-indexed: the first retry is attempt 2.
+ *     (The initial invocation does NOT emit a recovery event — silent
+ *     streams mean "everything went normally," which is the dominant
+ *     case.)
+ *   - `packet_id` / `spec_id` are nullable because recovery may
+ *     wrap a planner invocation (no packet) or a pre-spec step
+ *     (no spec).
+ *   - `reason` on escalations is the human-readable string written
+ *     into the escalation record file by tools/recovery.ts.
+ */
+export interface RecoveryAttemptStartedPayload {
+  readonly event_type: 'recovery.attempt_started';
+  readonly scenario: string;
+  readonly attempt_number: number;
+  readonly packet_id: string | null;
+  readonly spec_id: string | null;
+}
+
+export interface RecoverySucceededPayload {
+  readonly event_type: 'recovery.succeeded';
+  readonly scenario: string;
+  readonly attempt_number: number;
+  readonly packet_id: string | null;
+  readonly spec_id: string | null;
+}
+
+export interface RecoveryExhaustedPayload {
+  readonly event_type: 'recovery.exhausted';
+  readonly scenario: string;
+  readonly attempts: number;
+  readonly packet_id: string | null;
+  readonly spec_id: string | null;
+}
+
+export interface RecoveryEscalatedPayload {
+  readonly event_type: 'recovery.escalated';
+  readonly scenario: string;
+  readonly reason: string;
+  readonly packet_id: string | null;
+  readonly spec_id: string | null;
+}
+
 export type EventPayload =
   | PipelineStartedPayload
   | PipelineSpecResolvedPayload
@@ -291,7 +360,11 @@ export type EventPayload =
   | PacketFailedPayload
   | VerificationPassedPayload
   | VerificationFailedPayload
-  | CostCapCrossedPayload;
+  | CostCapCrossedPayload
+  | RecoveryAttemptStartedPayload
+  | RecoverySucceededPayload
+  | RecoveryExhaustedPayload
+  | RecoveryEscalatedPayload;
 
 // ---------------------------------------------------------------------------
 // Event envelope
@@ -656,6 +729,86 @@ export function makeCostCapCrossed(
     cap_dollars: fields.cap_dollars,
     running_total: fields.running_total,
     run_id: base.run_id,
+    packet_id: fields.packet_id,
+    spec_id: fields.spec_id,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Recovery constructors (Phase 6)
+//
+// One make* per recovery event type. The `scenario` field is the
+// string form of the FailureScenario enum; we pass it as a string so
+// this module never imports recovery.ts (one-way dependency).
+// ---------------------------------------------------------------------------
+
+export function makeRecoveryAttemptStarted(
+  base: BaseInputs,
+  fields: {
+    readonly scenario: string;
+    readonly attempt_number: number;
+    readonly packet_id: string | null;
+    readonly spec_id: string | null;
+  },
+): Event<RecoveryAttemptStartedPayload> {
+  return envelope(base, {
+    event_type: 'recovery.attempt_started',
+    scenario: fields.scenario,
+    attempt_number: fields.attempt_number,
+    packet_id: fields.packet_id,
+    spec_id: fields.spec_id,
+  });
+}
+
+export function makeRecoverySucceeded(
+  base: BaseInputs,
+  fields: {
+    readonly scenario: string;
+    readonly attempt_number: number;
+    readonly packet_id: string | null;
+    readonly spec_id: string | null;
+  },
+): Event<RecoverySucceededPayload> {
+  return envelope(base, {
+    event_type: 'recovery.succeeded',
+    scenario: fields.scenario,
+    attempt_number: fields.attempt_number,
+    packet_id: fields.packet_id,
+    spec_id: fields.spec_id,
+  });
+}
+
+export function makeRecoveryExhausted(
+  base: BaseInputs,
+  fields: {
+    readonly scenario: string;
+    readonly attempts: number;
+    readonly packet_id: string | null;
+    readonly spec_id: string | null;
+  },
+): Event<RecoveryExhaustedPayload> {
+  return envelope(base, {
+    event_type: 'recovery.exhausted',
+    scenario: fields.scenario,
+    attempts: fields.attempts,
+    packet_id: fields.packet_id,
+    spec_id: fields.spec_id,
+  });
+}
+
+export function makeRecoveryEscalated(
+  base: BaseInputs,
+  fields: {
+    readonly scenario: string;
+    readonly reason: string;
+    readonly packet_id: string | null;
+    readonly spec_id: string | null;
+  },
+): Event<RecoveryEscalatedPayload> {
+  return envelope(base, {
+    event_type: 'recovery.escalated',
+    scenario: fields.scenario,
+    reason: fields.reason,
     packet_id: fields.packet_id,
     spec_id: fields.spec_id,
   });
