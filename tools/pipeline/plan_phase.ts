@@ -27,6 +27,7 @@ import * as fmt from '../output.js';
 import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
 import type { InvokeResult } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import type { CostRecord } from './cost.js';
 import { recordCost, localDateString } from '../cost.js';
 import {
@@ -265,16 +266,21 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   // Phase 7 — `persona_providers.<persona>` is an ordered list after
   // loader normalization. Index 0 is the PRIMARY CLI; the rest form
   // the cross-CLI failover order. Read [0] for the initial attempt;
-  // the cascade is consulted only on failure (via the recovery layer).
+  // the cascade (computed once below) is consulted on failure via
+  // the recovery layer.
   const provider = config.pipeline?.persona_providers.planner[0] ?? 'claude';
   const plannerTier = config.personas.planner.model ?? 'high';
+  // Phase 7 — compute the persona cascade once. The recovery layer
+  // walks this list when ProviderUnavailable fires. Pure: same
+  // inputs, same output.
+  const plannerCascade = computeCascade('planner', plannerTier, config);
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
   // Phase 6 — wrap the planner invocation in runWithRecovery.
   // Per-spec budget (the planner runs once per spec, so the budget
   // is fresh per call by construction). ProviderTransient and
-  // AgentNonResponsive failures retry; ProviderUnavailable escalates
-  // immediately. Cost recording happens on every attempt via the
+  // AgentNonResponsive failures retry; ProviderUnavailable consults
+  // the cascade. Cost recording happens on every attempt via the
   // closure so retried planner runs still flow into the cost stream.
   const recoveryBudget = newPacketRecoveryBudget();
   const recoveryOptions = {
@@ -286,24 +292,39 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   const recoveryRunId = opts.runId ?? 'no-run';
 
   const recovered = runWithRecovery<InvokeResult>(
-    (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-      const r = invokeAgent(provider, prompt, config, plannerTier);
+    (attempt: AttemptContext): OperationResult<InvokeResult> => {
+      // Phase 7 — when the recovery layer dispatches a cascade hop,
+      // invoke against the cascade-supplied (provider, model)
+      // instead of the persona defaults. The override path bypasses
+      // tier resolution; the model id from the cascade flows
+      // straight into invokeAgent's modelOverride.
+      const useProvider = attempt.cascade?.provider ?? provider;
+      const useModel = attempt.cascade?.model;
+      const r = attempt.cascade !== undefined
+        ? invokeAgent(useProvider, prompt, config, plannerTier, useModel)
+        : invokeAgent(provider, prompt, config, plannerTier);
       // Persist a CostRecord regardless of outcome — a failed planner
       // still consumed tokens. Done inside the closure so retried
       // calls record one row each.
       recordPlanCost(r, opts.runId, opts.specId ?? intent.id, artifactRoot);
       if (r.exit_code === 0) return { outcome: 'ok', value: r };
+      // Phase 7 — attach the cascade to the failure context so the
+      // ProviderUnavailable recipe can walk it. Recipes that don't
+      // consult `cascade` (Build/Lint/Test/Stale/...) ignore it.
       return {
         outcome: 'fail',
-        failure: failureFromSubprocess({
-          exitCode: r.exit_code,
-          stdout: r.stdout,
-          stderr: r.stderr,
-          kind: 'agent_invocation',
-          specId: opts.specId ?? intent.id,
-          packetId: null,
-          operationLabel: 'plan_phase.invoke_planner',
-        }),
+        failure: {
+          ...failureFromSubprocess({
+            exitCode: r.exit_code,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            kind: 'agent_invocation',
+            specId: opts.specId ?? intent.id,
+            packetId: null,
+            operationLabel: 'plan_phase.invoke_planner',
+          }),
+          cascade: plannerCascade,
+        },
       };
     },
     {

@@ -20,6 +20,7 @@ import type { Feature, RawPacket } from '../execute.js';
 import type { FactoryConfig, ModelTier } from '../config.js';
 import * as fmt from '../output.js';
 import { invokeAgent } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildQaPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
@@ -289,6 +290,11 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
   // the QA packet. Resolve the developer config up front.
   const devProvider = config.pipeline?.persona_providers.developer[0] ?? 'codex';
   const devTier: ModelTier = config.personas.developer.model ?? 'high';
+  // Phase 7 — compute persona cascades once. Closures attach these
+  // to every failure context so the ProviderUnavailable recipe can
+  // walk the failover order.
+  const qaCascade = computeCascade('qa', qaTier, config);
+  const devCascade = computeCascade('developer', devTier, config);
 
   for (const packet of qaPackets) {
     // Same external-mutation model as the develop phase: an external
@@ -387,8 +393,14 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
     // expected to produce those classifications until completePacket
     // runs verification).
     const qaRecovered = runWithRecovery<InvokeResult>(
-      (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-        const r = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
+      (attempt: AttemptContext): OperationResult<InvokeResult> => {
+        // Phase 7 — cascade-aware QA invocation.
+        const useProvider = attempt.cascade?.provider ?? qaProvider;
+        const useModel = attempt.cascade?.model;
+        const qaPromptStr = buildQaPrompt(packet, config);
+        const r = attempt.cascade !== undefined
+          ? invokeAgent(useProvider, qaPromptStr, config, qaTier, useModel)
+          : invokeAgent(qaProvider, qaPromptStr, config, qaTier);
         recordInvocationCost(
           r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
           perPacketCap, packetCostTracker, dryRun,
@@ -396,15 +408,18 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
         if (r.exit_code === 0) return { outcome: 'ok', value: r };
         return {
           outcome: 'fail',
-          failure: failureFromSubprocess({
-            exitCode: r.exit_code,
-            stdout: r.stdout,
-            stderr: r.stderr,
-            kind: 'agent_invocation',
-            specId: opts.specId ?? null,
-            packetId: packet.id,
-            operationLabel: 'verify_phase.qa',
-          }),
+          failure: {
+            ...failureFromSubprocess({
+              exitCode: r.exit_code,
+              stdout: r.stdout,
+              stderr: r.stderr,
+              kind: 'agent_invocation',
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'verify_phase.qa',
+            }),
+            cascade: qaCascade,
+          },
         };
       },
       {
@@ -500,15 +515,20 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
           if (r.exit_code !== 0) {
             return {
               outcome: 'fail',
-              failure: failureFromSubprocess({
-                exitCode: r.exit_code,
-                stdout: r.stdout,
-                stderr: r.stderr,
-                kind: 'agent_invocation',
-                specId: opts.specId ?? null,
-                packetId: packet.id,
-                operationLabel: 'verify_phase.complete.remediation',
-              }),
+              failure: {
+                ...failureFromSubprocess({
+                  exitCode: r.exit_code,
+                  stdout: r.stdout,
+                  stderr: r.stderr,
+                  kind: 'agent_invocation',
+                  specId: opts.specId ?? null,
+                  packetId: packet.id,
+                  operationLabel: 'verify_phase.complete.remediation',
+                }),
+                // Attach the dev cascade so a remediation-step
+                // ProviderUnavailable failure can fail over.
+                cascade: devCascade,
+              },
             };
           }
         }

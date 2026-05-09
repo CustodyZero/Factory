@@ -27,6 +27,7 @@ import type { FactoryConfig, ModelTier } from '../config.js';
 import * as fmt from '../output.js';
 import { topoSort } from './topo.js';
 import { invokeAgent } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildReviewPrompt, buildReworkPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
@@ -451,6 +452,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
   const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
   const reviewProvider = config.pipeline?.persona_providers.code_reviewer[0] ?? 'claude';
   const reviewTier: ModelTier = config.personas.code_reviewer.model ?? 'medium';
+  // Phase 7 — compute persona cascades once per phase invocation.
+  // The closures attach these to every failure context so the
+  // ProviderUnavailable recipe can walk the failover order. Pure
+  // computation; no I/O.
+  const devCascade = computeCascade('developer', devTier, config);
+  const reviewerCascade = computeCascade('code_reviewer', reviewTier, config);
 
   for (const packet of sorted) {
     // Re-read packet from disk each iteration (a previous packet's agent
@@ -576,23 +583,35 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 — when the recovery layer dispatches a
+              // cascade hop, invoke against the cascade-supplied
+              // (provider, model). Otherwise use the persona defaults.
+              const useProvider = attempt.cascade?.provider ?? devProvider;
+              const useModel = attempt.cascade?.model;
+              const r = attempt.cascade !== undefined
+                ? invokeAgent(useProvider, finalPrompt, config, devTier, useModel)
+                : invokeAgent(devProvider, finalPrompt, config, devTier);
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
               );
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
+              // Phase 7 — attach cascade so ProviderUnavailable recipe
+              // can walk the failover order.
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.implement',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.implement',
+                  }),
+                  cascade: devCascade,
+                },
               };
             },
             {
@@ -715,8 +734,14 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewerRecovered = runWithRecovery<InvokeResult>(
-            (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-              const r = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
+            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+              // Phase 7 — cascade-aware reviewer invocation.
+              const useProvider = attempt.cascade?.provider ?? reviewProvider;
+              const useModel = attempt.cascade?.model;
+              const reviewPromptStr = buildReviewPrompt(freshPacket, config);
+              const r = attempt.cascade !== undefined
+                ? invokeAgent(useProvider, reviewPromptStr, config, reviewTier, useModel)
+                : invokeAgent(reviewProvider, reviewPromptStr, config, reviewTier);
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -724,15 +749,18 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.review',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.review',
+                  }),
+                  cascade: reviewerCascade,
+                },
               };
             },
             {
@@ -786,7 +814,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 — cascade-aware rework invocation.
+              const useProvider = attempt.cascade?.provider ?? devProvider;
+              const useModel = attempt.cascade?.model;
+              const r = attempt.cascade !== undefined
+                ? invokeAgent(useProvider, finalPrompt, config, devTier, useModel)
+                : invokeAgent(devProvider, finalPrompt, config, devTier);
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -794,15 +827,18 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.rework',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.rework',
+                  }),
+                  cascade: devCascade,
+                },
               };
             },
             {
@@ -873,6 +909,15 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
                 // completePacket. The dev agent edits code; the next
                 // completePacket then re-runs verification against
                 // the new tree.
+                //
+                // Phase 7 — the BuildFailed remediation closure is
+                // NOT a cascade hop (BuildFailed is a different
+                // recipe). But if a future ProviderUnavailable hop
+                // dispatches THIS closure (cascade_provider while
+                // we're still in the finalize boundary), we honor
+                // the override here too. The two recovery actions
+                // are independent — guardrail prompt vs cascade
+                // provider — so we layer both checks.
                 const basePrompt = buildDevPrompt(freshPacket, config);
                 const remediationPrompt =
                   `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`;
@@ -886,15 +931,20 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
                 if (r.exit_code !== 0) {
                   return {
                     outcome: 'fail',
-                    failure: failureFromSubprocess({
-                      exitCode: r.exit_code,
-                      stdout: r.stdout,
-                      stderr: r.stderr,
-                      kind: 'agent_invocation',
-                      specId: opts.specId ?? null,
-                      packetId: packet.id,
-                      operationLabel: 'develop_phase.complete.remediation',
-                    }),
+                    failure: {
+                      ...failureFromSubprocess({
+                        exitCode: r.exit_code,
+                        stdout: r.stdout,
+                        stderr: r.stderr,
+                        kind: 'agent_invocation',
+                        specId: opts.specId ?? null,
+                        packetId: packet.id,
+                        operationLabel: 'develop_phase.complete.remediation',
+                      }),
+                      // Attach the dev cascade so a remediation-step
+                      // ProviderUnavailable failure can fail over.
+                      cascade: devCascade,
+                    },
                   };
                 }
               }
