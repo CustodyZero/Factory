@@ -74,3 +74,56 @@ No blocking findings. Both round-2 issues fixed cleanly:
 ## Round budget
 
 3 of 3 rounds used. Bounded-iteration model honored.
+
+# Phase 6 (revised) QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-05
+**Verdict:** APPROVE
+
+All 17 acceptance criteria PASS, all 17 specific checks PASS.
+
+## Critical verifications
+
+- **8 `runWithRecovery` wrap sites verified** to have `kind === 'escalated'` dispatch + `markPacketFailed` + `break`/`continue` pattern. No log-then-advance bug class anywhere.
+- **Atomic completePacket verified at source** (`complete.ts:233-261`): on !ci_pass, early-return with `already_complete: false`, no record write, no status mutation. Eliminates the false-success short-circuit at the data layer.
+- **Round-3 reverted bug class provably gone** (develop_phase.ts:611-622 vs prior log-then-advance): every escalated branch calls markPacketFailed AND breaks/continues.
+- **TZ-invariance preserved**: `TZ=Pacific/Kiritimati` 630/630 pass.
+- **Closed enum stayed at 8 variants**. `CascadedFromDependency` and `Unclassified` are documented schema-level label strings, NOT enum members.
+
+## Strongest improvements over the reverted attempt
+
+1. **Discriminator is *controlling*, not *cosmetic*.** Every wrap site forces compile-time dispatch on escalation; the type system makes "logged-then-advances" structurally impossible.
+2. **Atomic completePacket removes the false-success short-circuit at the source.** A failed verification can no longer be retried-into-success because no completion record exists for the retry to short-circuit on.
+
+# Phase 6 (revised) Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-05
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 6 (revised) ships the recovery layer with state-machine integration as a first-class architectural concern. After 1 reverted attempt + 3 review rounds on the revised attempt, the architecture is clean and the contract holds end-to-end.
+
+- 12 commits: foundation/wiring (7) + round 2 (3) + round 3 (2)
+- New files: `tools/pipeline/recovery.ts` (630 pure), `tools/pipeline/recovery_loop.ts` (690 orchestration), `tools/recovery.ts` (118 I/O), `tools/lifecycle/git_check.ts` (211)
+- Modified: develop_phase.ts (+402/-82), verify_phase.ts (+253/-31), plan_phase.ts (+71/-15), events.ts (+157/-2), lifecycle/{request_review,complete}.ts (+91 total), complete.ts CLI (+17), execute.ts (+65), status.ts (+42), validate.ts (+33), packet.schema.json (+27)
+- tests: 485 → **630** (+145 across 12 commits)
+- validate.ts: PASS, package.json unchanged
+- 3 review rounds (REQUEST-CHANGES, REQUEST-CHANGES, APPROVE)
+- Independent QA APPROVE on all 17 acceptance criteria + 17 specific checks
+
+## Architectural breakthrough vs prior attempt
+
+The reverted attempt's defect: recovery escalation was *observable* (events fired) but *not controlling* (the per-packet state machine ignored escalation and advanced anyway). The revised attempt's typed `RecoveryResult<T>` discriminator forces compile-time dispatch — every wrap site MUST handle `kind === 'escalated'` to typecheck, and the standard pattern (`markPacketFailed` + `break`/`continue`) is consistently applied across 8 wrap sites.
+
+Plus the atomic `completePacket` contract: completion records exist only when the packet truly verified successfully. No more false-success short-circuit.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
+
+## Operational note
+
+This is the second consecutive Phase 6 review chain. The first attempt was reverted after round 3 RECOMMEND-REVERT (logged-then-advances bug class). The revised attempt's success comes from naming state-machine integration as a first-class architectural concern instead of treating it as wiring — exactly the lesson recorded in `docs/research/phase_6_recovery_attempt.md`.
