@@ -1,0 +1,33 @@
+# Phase 8 Code Review — Round 3 (FINAL)
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-8-docs-pass (round-3 commit 4938f6f)
+**Verdict:** APPROVE
+
+## Summary
+
+Round-3 fix satisfies the round-2 finding. `docs/integration.md:451` now covers all four `run.ts` cases (no-line, all-unknown, all-known, mixed), and the three emitted strings match `tools/run.ts:120` structurally.
+
+No remaining stale `Total cost` / `unknown-cost` claims in the changed operator docs/templates.
+
+## Non-blocking observations
+
+- `specs/single-entry-pipeline.md:289` still has historical shorthand for the cost summary, but outside this branch's changed files and not in Phase 8's scope.
+- `docs/decisions/event_observability.md:57` mentions a non-existent `phase.failed` event (already surfaced by the developer in round 2).
+
+Orchestrator will hotfix both as small post-merge commits on main.
+
+## Earlier fixes intact
+
+- AGENTS rule 3.2 routes operators through `run.ts`.
+- Integration event taxonomy matches `tools/pipeline/events.ts`.
+
+## Strongest parts this round
+
+- Distinguishes the omitted-line case from emitted summaries.
+- Examples preserve the exact production wording for known, unknown, and mixed cost accounting.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
