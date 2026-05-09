@@ -25,10 +25,15 @@ The setup script:
 
 After setup, the normal workflow is:
 
-1. Create an intent/spec artifact under `factory/intents/`
-2. Run the full pipeline: `npx tsx .factory/tools/run.ts <intent-id>`
+1. Author a spec at `specs/<spec-id>.md` (see [Authoring specs](#authoring-specs))
+2. Run the full pipeline: `npx tsx .factory/tools/run.ts <spec-id>`
 3. The pipeline plans, develops, reviews, and verifies — autonomously to completion
 4. Re-run the same command to resume if anything failed (the pipeline is idempotent)
+
+`run.ts` is the only command operators run. The lifecycle scripts
+(`start`, `request-review`, `review`, `complete`) are how agents signal
+back to the factory during a run; they are documented in the
+[Agent protocol appendix](#agent-protocol-for-reference).
 
 ### Directory Layout
 
@@ -36,17 +41,116 @@ After setup, your project will have:
 
 ```
 .factory/                # Tooling submodule (hidden)
-factory/                 # Artifacts (visible, one directory)
-├── intents/
+specs/                   # Human-authored specs (markdown + frontmatter)
+factory/                 # Factory artifacts (visible, one directory)
+├── intents/             # Derived from specs (or hand-authored back-compat)
 ├── features/
 ├── packets/
-└── completions/
+├── completions/
+├── events/              # Per-run event streams (JSONL)
+├── cost/                # Per-invocation cost records
+└── escalations/         # Structured failure records when recovery escalates
 factory.config.json      # Configuration
 CLAUDE.md                # AI instructions
 AGENTS.md                # Agent constraints
 ```
 
 Tooling is hidden in `.factory/`. Artifacts are visible in `factory/`.
+Specs live at the project root in `specs/` so authors edit them next to
+the code, not inside the tooling submodule.
+
+---
+
+## Authoring specs
+
+Specs are the operator's interface to the factory. One spec describes one
+unit of work; `run.ts <spec-id>` translates the spec into an intent and
+drives the pipeline to completion. The full architectural rationale is in
+[`docs/decisions/spec_artifact_model.md`](decisions/spec_artifact_model.md);
+this section is the authoring guide.
+
+### File location
+
+```
+specs/<spec-id>.md
+```
+
+At the project root, alongside `factory.config.json`. Tracked in git as
+the source of truth for what the project intends to build. The directory
+is intentionally distinct from any pre-existing `docs/specs/` directory —
+that one is project documentation; `specs/` is factory-managed.
+
+### Frontmatter
+
+A spec is a markdown file with YAML frontmatter:
+
+```markdown
+---
+id: add-health-endpoint
+title: Add /health endpoint
+depends_on: [auth-baseline]   # optional; default empty
+---
+
+# Spec body
+
+The body is markdown. The planner reads it to derive an intent. Operators
+author at the human-readable level; the factory translates to the locked
+intent schema (1:1).
+```
+
+| Field | Type | Required | Purpose |
+|-------|------|----------|---------|
+| `id` | string | yes | Stable identifier; must match the filename (`specs/<id>.md`) |
+| `title` | string | yes | One-line summary used in status output and audit logs |
+| `depends_on` | array of strings | no, default `[]` | Other spec IDs that must complete before this spec runs |
+
+Frontmatter is intentionally minimal. Anything else (priority, owner,
+target release) goes in the markdown body or in human-managed tooling
+outside the factory — those fields are not consumed by the factory.
+
+### Dependencies
+
+`depends_on` is the only sequencing primitive between specs:
+
+- If spec `A` declares `depends_on: [B]`, the factory will not start `A`
+  until `B` completes successfully (all packets in B's intent reach
+  `completed`).
+- If `B` fails, `A` is blocked and reported as such.
+- Cyclic dependencies are rejected at orchestrator entry.
+- **All transitive dependencies must be passed explicitly to `run.ts`.**
+  Auto-resolution is out of scope; if `A` depends on `B` and `B` depends
+  on `C`, you must invoke `run.ts C B A` (in any order — topological sort
+  computes the actual run order).
+
+### Body conventions
+
+The markdown body is the spec content. The planner agent reads it to
+derive an intent. Operators author at the human-readable level (problem
+statement, acceptance, constraints); the planner pulls implementation
+detail into the intent during planning.
+
+Recommended sections (not enforced):
+
+- A short problem statement
+- Acceptance criteria the change must satisfy
+- Out-of-scope notes — what the change deliberately does *not* do
+- Constraints the planner should respect
+
+### What NOT to do
+
+- **Do not author intents directly.** Hand-authored
+  `factory/intents/<id>.json` files still work for backward compatibility,
+  but new work should be a spec. The factory derives the intent.
+- **Do not put low-level implementation detail in the spec body.** The
+  planner translates the spec into an intent and decomposes the intent
+  into packets — that is where implementation choices belong.
+- **Do not put a `status`, `priority`, or `acceptance_criteria` field in
+  the frontmatter.** Status lives on derived artifacts. Priority is a
+  human concern outside the factory. Acceptance criteria are derived by
+  the planner onto packets.
+- **Do not split a single coherent change across multiple specs.** One
+  spec maps to one intent (1:1). If you need cross-spec sequencing, use
+  `depends_on`.
 
 ---
 
@@ -179,12 +283,12 @@ Adjust these patterns to match your project structure. Common additions:
 The pipeline (`run.ts`) is the single entry point for all factory work:
 
 ```
-npx tsx .factory/tools/run.ts <intent-id>
+npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]
 ```
 
 This runs to completion autonomously:
 
-1. **Plan** — Planner agent decomposes the spec/intent into a feature with dev/qa packet pairs
+1. **Plan** — Orchestrator translates each spec into an intent (1:1) and invokes the planner; the planner decomposes the intent into a feature with dev/qa packet pairs
 2. **Develop** — For each dev packet (in dependency order):
    - Developer agent implements
    - Code reviewer agent reviews (different identity)
@@ -193,15 +297,14 @@ This runs to completion autonomously:
 3. **Verify** — For each QA packet:
    - QA agent verifies (different identity from dev)
    - Completion recorded
-4. **Done** — Feature marked complete, summary printed
+4. **Done** — Feature marked complete, summary printed (with total cost)
 
 ### Human Gates
 
-Exactly two:
-1. Approve the spec (write the markdown document)
-2. Approve the intent (create the intent artifact with constraints)
-
-Everything after `run.ts` is autonomous. Completion IS acceptance.
+Exactly one — authoring the spec. The intent artifact is derived. (For
+backward compatibility, hand-authored intents continue to work as input
+to `run.ts`; spec-first is the recommended path.) Completion IS
+acceptance.
 
 ### Agent Identity Separation
 
@@ -247,39 +350,208 @@ subdirectory.
 
 ## End-to-End Pipeline Flow
 
-The pipeline runs autonomously from intent to completed feature:
+The pipeline runs autonomously from spec to completed feature:
 
-1. Human authors `factory/intents/<intent-id>.json`. The intent declares exactly
-   one of `spec` (inline body for short intents) or `spec_path` (path relative
-   to the project root pointing at a Markdown file that holds the authoritative
-   spec — use this for long human-authored specs like
-   `docs/specs/016-platform-targets.md`). `spec_path` must be relative, must not
-   escape the project root, and must point at a non-empty file. `validate.ts`
-   enforces the rules; `plan.ts` reads the file at plan time and hands its full
-   contents to the planner.
-2. Run `npx tsx .factory/tools/run.ts <intent-id>`
-3. **Plan phase** — the planner agent writes:
+1. Human authors `specs/<spec-id>.md` (see [Authoring specs](#authoring-specs)).
+   For backward compatibility, hand-authored
+   `factory/intents/<intent-id>.json` files are still accepted — declaring
+   either `spec` (inline body for short intents) or `spec_path` (path
+   relative to the project root pointing at a Markdown file that holds
+   the authoritative spec, e.g. `docs/specs/016-platform-targets.md`).
+   `spec_path` must be relative, must not escape the project root, and
+   must point at a non-empty file. `validate.ts` enforces the rules;
+   `plan.ts` reads the file at plan time and hands its full contents to
+   the planner.
+2. Run `npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]`
+3. **Plan phase** — orchestrator translates each spec into an intent (1:1);
+   the planner agent then writes:
    - one `factory/features/<feature-id>.json` artifact with `status: "planned"`
    - matching dev/qa packet pairs in `factory/packets/`
    - packet dependencies, change classes, and acceptance criteria
    - `feature.intent_id` linkage
 4. **Develop phase** — for each dev packet (in dependency order):
    - Developer agent implements (via the configured `developer` provider)
-   - Developer's prompt instructs it to `request-review.ts` when done
-   - Code reviewer agent runs `review.ts --approve` or `--request-changes`
+   - Developer's prompt instructs it to call `request-review.ts` when done
+   - Code reviewer agent calls `review.ts --approve` or `--request-changes`
    - On `--request-changes`, the developer reworks; loop bounded by `max_review_iterations`
    - On approval, completion is recorded with the developer's identity
 5. **Verify phase** — for each QA packet:
    - QA agent verifies (via the configured `qa` provider, distinct identity from dev)
    - Completion is recorded with the QA identity (FI-7 enforces distinct identities)
-6. **Done** — feature marked complete, summary printed
+6. **Done** — feature marked complete, summary printed (with total cost)
+
+The lifecycle calls in steps 4-5 (`request-review.ts`, `review.ts`,
+`complete.ts`, etc.) are how agents signal back to the factory. Operators
+do not invoke them — `run.ts` does, and so do the agents under their own
+prompts. See the [Agent protocol appendix](#agent-protocol-for-reference)
+for the lifecycle-script contract.
 
 Pipeline properties:
-- **Idempotent** — re-running resumes from artifact state on disk
+- **Idempotent** — re-running resumes from artifact state on disk; lifecycle scripts are individually idempotent too
 - **Provider-agnostic** — supports codex, claude, copilot (configure via `pipeline.providers`)
+- **Failover-aware** — `persona_providers` accepts a list for cross-CLI failover; abstraction providers may declare within-CLI `model_failover` (see [Provider failover](#provider-failover))
+- **Recovery-aware** — bounded auto-recovery for known scenarios; lint and test failures always escalate (see [Recovery](#recovery))
+- **Cost-visible** — every run reports total cost; configurable caps abort on overage (see [Cost visibility](#cost-visibility))
+- **Observable** — typed events stream to `factory/events/<run-id>.jsonl` (see [Event observability](#event-observability))
 - **Identity-separated** — developer, code_reviewer, and qa identities are distinct (FI-7)
 - **Bounded review** — `max_review_iterations` (default 3) caps rework cycles
-- **No human gates after intent approval** — completion IS acceptance
+- **No human gates after spec authoring** — completion IS acceptance
+
+---
+
+## Event observability
+
+The pipeline emits typed events at every meaningful state transition. Each
+event is one JSON line in `<artifactRoot>/events/<runId>.jsonl` (one file
+per run). The stream is append-only during a run; rotation/archival is the
+host's concern.
+
+Event types include `pipeline.started`, `spec.started`,
+`phase.started` / `phase.completed` / `phase.failed`, `packet.started`,
+`packet.review_requested`, `packet.review_approved`, `packet.completed`,
+`packet.failed`, `recovery.attempt_started`, `recovery.succeeded`,
+`recovery.exhausted`, `recovery.escalated`, `cost.cap_crossed`,
+`pipeline.finished`, and `pipeline.failed`. Every event has a stable shape:
+`{ event_type, timestamp, provenance, payload }`.
+
+Each event also carries a **provenance label** — `live_run` for normal
+operator runs, `test` for events emitted by the test suite, plus
+`healthcheck`, `replay`, and `dry_run` reserved for future tooling.
+Consumers filter by provenance, so test-suite events do not pollute the
+operator's stream.
+
+To inspect a run:
+
+```sh
+tail -f factory/events/<run-id>.jsonl
+jq 'select(.event_type == "recovery.escalated")' factory/events/<run-id>.jsonl
+```
+
+Full design: [`docs/decisions/event_observability.md`](decisions/event_observability.md).
+
+---
+
+## Cost visibility
+
+Every agent invocation is metered. The run summary line reports total cost:
+
+```
+Total cost: $0.4231 (3 unknown-cost invocation(s))
+```
+
+The `unknown-cost` count is invocations where the provider did not report
+tokens (e.g., `gh copilot`); they are counted but contribute `null`
+dollars rather than being silently zeroed.
+
+Caps are configurable in `factory.config.json`. All three are optional and
+default to disabled (no enforcement):
+
+```json
+"pipeline": {
+  "cost_caps": {
+    "per_run": 5.00,
+    "per_packet": 1.00,
+    "per_day": 25.00
+  }
+}
+```
+
+| Cap | Behavior on cross |
+|---|---|
+| `per_run` | Aborts the entire pipeline run; emits `cost.cap_crossed` and `pipeline.failed` |
+| `per_packet` | Fails just the affected packet; orchestrator continues to the next independent packet |
+| `per_day` | Aborts the run AND records the date so subsequent same-day runs are blocked at orchestrator entry (LOCAL date) |
+
+Caps use `>=` semantics: a running total at-or-above the cap triggers
+escalation. The cap dollar values are USD.
+
+Per-invocation cost records are written to `factory/cost/`. Operators
+own the audit trail.
+
+Full design: [`docs/decisions/cost_visibility.md`](decisions/cost_visibility.md).
+
+---
+
+## Recovery
+
+The factory recognizes eight failure scenarios and applies a recipe per
+scenario. Five auto-recover with bounded retries; three always escalate.
+
+| Scenario | Recipe | Per-packet retry budget |
+|---|---|---|
+| `ProviderTransient` | Wait, retry same provider/model | 2 |
+| `AgentNonResponsive` | Treat as `ProviderTransient` | 2 |
+| `BuildFailed` | Re-invoke developer with build error + guardrail prompt | 1 |
+| `StaleBranch` | `git fetch && git rebase origin/main`; retry once | 1 |
+| `ProviderUnavailable` | Cascade through within-CLI then cross-CLI failover (see [Provider failover](#provider-failover)) | data-driven (= cascade length) |
+| `LintFailed` | **Escalate.** Auto-recovery would invite agents to disable lint rules. | 0 |
+| `TestFailed` | **Escalate.** Auto-recovery is the failure mode where agents mutilate tests to clear errors. | 0 |
+| `CompletionGateBlocked` | **Escalate.** The pre-commit hook is an intentional human gate. | 0 |
+
+When recovery exhausts its budget or hits an escalate-only scenario:
+
+- The orchestrator writes a structured failure record at
+  `factory/escalations/<spec-id>-<timestamp>.json`
+- A `recovery.escalated` event is appended to the run's event stream
+- The affected packet is marked `failed`
+- Downstream packets and dependent specs are marked blocked
+
+`LintFailed` and `TestFailed` are deliberately escalate-only. The factory
+will not let an agent decide whether failing tests should be relaxed or
+whether failing lint rules should be disabled — that is a human call.
+
+Full design: [`docs/decisions/recovery_recipes_not_dsl.md`](decisions/recovery_recipes_not_dsl.md).
+
+---
+
+## Provider failover
+
+Each persona maps to one or more provider CLIs. The factory supports two
+layers of failover.
+
+**Cross-CLI** (`persona_providers.<persona>`) accepts either a single
+provider name or an ordered list:
+
+```json
+"persona_providers": {
+  "developer": ["codex", "claude", "copilot"],
+  "code_reviewer": ["claude", "copilot"],
+  "qa": "claude"
+}
+```
+
+The single-string form is the original shape and continues to work
+unchanged — no failover. The array form declares the failover order:
+the first entry is tried first, the next on failure, and so on. Existing
+configs do not need to migrate.
+
+**Within-CLI** (`pipeline.providers.<provider>.model_failover`) applies
+to **abstraction providers** — CLIs that route to multiple underlying
+models (e.g., `copilot`). It is an optional ordered list of model IDs:
+
+```json
+"copilot": {
+  "command": "gh copilot --",
+  "model_map": {
+    "high": "claude-opus-4-6",
+    "medium": "GPT-5.4",
+    "low": "claude-haiku-4-5"
+  },
+  "model_failover": ["claude-opus-4-6", "GPT-5.4", "claude-haiku-4-5"]
+}
+```
+
+Direct providers (`codex`, `claude` — one CLI maps to one upstream
+provider) do **not** set `model_failover`; the field is reserved for
+abstraction providers.
+
+When `ProviderUnavailable` fires, the cascade walks each provider's
+`model_failover` list (within-CLI) before falling through to the next
+CLI in `persona_providers` (cross-CLI). When every entry is exhausted,
+the scenario escalates.
+
+Full design: [`docs/decisions/single_entry_pipeline.md`](decisions/single_entry_pipeline.md)
+(see "Recovery" and "Provider failover").
 
 ---
 
@@ -331,3 +603,51 @@ Add to your project's `.gitignore`:
 
 The setup script does not modify your `.gitignore` — add these entries
 manually.
+
+---
+
+## Agent protocol — for reference
+
+The lifecycle scripts below are the agent-to-factory protocol. Operators
+do not invoke them during normal pipeline runs — `run.ts` calls them as
+library functions to advance state, and agents call them as CLIs when
+signaling state transitions back to the factory. They are documented
+here so an agent author (or someone debugging a stuck pipeline) can read
+the contract.
+
+All four lifecycle scripts are idempotent: re-invocation on a state that
+already satisfies the request prints "already done" and exits 0. This
+means external callers can safely retry without producing duplicate
+state.
+
+| Script | Purpose | Idempotent on |
+|---|---|---|
+| `start.ts <packet-id>` | Agent claims a packet; sets `started_at`, status → `implementing` | `started_at` already set |
+| `request-review.ts <packet-id>` | Developer signals dev work ready for code review; status → `review_requested` | status already `review_requested` |
+| `review.ts <packet-id> --approve` / `--request-changes` | Code reviewer records decision | status already matches the requested decision |
+| `complete.ts <packet-id>` | Runs verification (build/lint/test), writes the completion record | completion record already exists (skips re-running verification) |
+
+Two related scripts are part of the protocol but not state-mutating:
+
+| Script | Purpose |
+|---|---|
+| `plan.ts <spec-or-intent-id>` | Resolves what the planner should do; reads spec/intent and returns a structured planner action |
+| `execute.ts <feature-id>` | Resolves which packets are ready next, with persona and model assignments |
+
+### Agent prompt patterns
+
+Agents do not pick what to do next on their own — they ask `execute.ts`
+or follow the prompt the factory hands them. The natural agent loop:
+
+```
+1. Run start.ts <packet-id> (mark in progress)
+2. Implement the change
+3. Run request-review.ts <packet-id>           [dev only]
+4. Wait for review.ts decision                  [dev only]
+5. On --approve: run complete.ts <packet-id>
+   On --request-changes: rework, go to 3
+```
+
+These calls describe agent behavior. Operators run `run.ts <spec-id>` and
+the orchestrator drives both the agents and the lifecycle calls between
+them.
