@@ -42,3 +42,42 @@ or restructure the bound check to be data-driven on each iteration.
 ## Round budget remaining
 
 1 round. The fix is narrow.
+
+# Phase 7 Code Review — Round 3 (FINAL)
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-7-failover (round-3 commit 6dca466)
+**Verdict:** APPROVE
+
+## Summary
+
+The round-3 fix addresses the residual finding cleanly. The safety bound is now data-driven: computed as `static budget sum + observed cascade length + slack`, seeded from the initial failure and grown monotonically (`Math.max`) after each failed attempt observes a cascade. The placement — update after observing `lastFailure`, before the next bound check — is exactly right for late-discovered cascades.
+
+## Termination guarantee preserved
+
+The `ProviderUnavailable` recipe self-caps from the finite cascade attached by phase closures; `computeCascade` is config-derived. A later shorter cascade cannot shrink the bound (`Math.max` enforces monotonicity), which is the correct behavior.
+
+## Regression test quality
+
+The new test drives the actual `BuildFailed → remediation ProviderUnavailable` path with an 8-hop cascade attached AFTER the initial failure, asserts:
+- Final escalation reason matches `/cascade exhausted/i`
+- Negative assertion rejects `/safety bound/i`
+- Last cascade hop is reached (loop walked all 8)
+
+Captures the original failure mode, not a renamed error path.
+
+## Earlier round fixes intact
+
+- Primary uses `cascade[0]` (round 1 finding 1).
+- Remediation prompt state preserved across `cascade_provider` (round 1 finding 2).
+- Data-driven cap for `ProviderUnavailable` (round 1 finding 3).
+
+## Strongest parts this round
+
+1. Update happens after observing `lastFailure`, exactly where the late-discovered cascade becomes available.
+2. Regression test captures the original failure mode instead of merely asserting a renamed error path.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
