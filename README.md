@@ -25,14 +25,19 @@ begins. Verification (build, lint, test) gates every completion.
 The factory flow:
 
 ```
-intent/spec → run.ts → plan → develop (with code review) → QA verify → done
+specs/<spec-id>.md → run.ts <spec-id> → plan → develop (with code review) → QA verify → done
 ```
 
-**Human gates:** exactly two.
-1. Approve the spec (write the markdown document)
-2. Approve the intent (create the intent artifact with constraints)
+**Human gate:** exactly one — authoring the spec. The factory derives the
+intent artifact from the spec at run time. (Hand-authored
+`intents/<id>.json` files are still accepted for backward compatibility.)
 
 Everything after `run.ts` is autonomous.
+
+> **Operator vs. agent.** The factory has one operator command: `run.ts`.
+> The lifecycle scripts (`start`, `request-review`, `review`, `complete`)
+> are how agents signal back to the factory during a run — they are not
+> commands operators invoke. See [Agent protocol](#agent-protocol) below.
 
 ---
 
@@ -174,16 +179,14 @@ Custom providers can be added — any CLI that accepts a prompt argument works.
 
 The pipeline is the single entry point for all factory work:
 
-1. Human creates an intent/spec artifact in `intents/`
-2. Planner agent runs `tools/plan.ts <intent-id>` (or run the full pipeline with `tools/run.ts <intent-id>`)
-3. Planner writes one planned feature plus dev/qa packet pairs
-4. The pipeline runner picks up the planned feature and drives execution to completion
+```sh
+npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]
+```
 
-The planner and pipeline runner are intentionally separate:
-- planner decomposes work into artifacts
-- pipeline runner executes the artifacts deterministically
+`run.ts` accepts one or more spec IDs and drives the pipeline to completion
+across all of them in dependency order. Internally:
 
-1. **Plan** — Planner agent decomposes the spec/intent into a feature with dev/qa packet pairs
+1. **Plan** — Planner agent decomposes the spec into a feature with dev/qa packet pairs
 2. **Develop** — For each dev packet (in dependency order):
    - Developer agent implements
    - Code reviewer agent reviews (different identity)
@@ -194,12 +197,19 @@ The planner and pipeline runner are intentionally separate:
    - Completion recorded
 4. **Done** — Feature marked complete, summary printed
 
+The orchestrator is responsible for sequencing; agents are responsible for
+implementation. `run.ts` calls the lifecycle scripts as library functions
+to advance state. Agents call the same lifecycle scripts as CLIs to signal
+state transitions back to the factory — see [Agent protocol](#agent-protocol).
+
 ### Idempotency
 
 `run.ts` is idempotent. If the pipeline fails mid-execution, fix the issue
 and re-run the same command. The pipeline derives its resume point from
 artifact state on disk — completed packets are skipped, in-progress packets
-resume from their current lifecycle status.
+resume from their current lifecycle status. The lifecycle scripts are
+idempotent in the same way: re-invoking on a state that already satisfies
+the request prints "already done" and exits 0.
 
 ### Identity Separation
 
@@ -211,144 +221,83 @@ resume from their current lifecycle status.
 
 ## Your First Change
 
-Factory has no `create` command — intent, feature, and packet artifacts are JSON
-files you write by hand (or have an AI agent write). The pipeline flow above
-is the preferred path. The walkthrough below shows the lower-level direct packet flow.
+The operator workflow is: write a spec, run the pipeline.
 
-### 1. Create a dev packet
+### 1. Author a spec
 
-```json
-// factory/packets/add-health-endpoint-dev.json
-{
-  "id": "add-health-endpoint-dev",
-  "kind": "dev",
-  "title": "Add /health endpoint",
-  "intent": "Expose a health check endpoint so load balancers can verify the service is running.",
-  "acceptance_criteria": [
-    "GET /health returns 200 with { \"status\": \"ok\" }",
-    "Response time is under 50ms",
-    "Endpoint is included in API tests"
-  ],
-  "scope": { "packages": ["api"] },
-  "owner": "alice",
-  "created_at": "2025-01-15T10:00:00Z",
-  "started_at": null,
-  "dependencies": [],
-  "feature_id": null
-}
+Create `specs/add-health-endpoint.md`:
+
+```markdown
+---
+id: add-health-endpoint
+title: Add /health endpoint
+---
+
+# Health endpoint
+
+Expose a `/health` endpoint so load balancers can verify the service is running.
+
+## Acceptance
+
+- `GET /health` returns 200 with `{ "status": "ok" }`
+- Response time is under 50 ms
+- Endpoint is covered by API tests
 ```
 
-### 2. Create its QA counterpart
+The body is markdown the planner reads. The frontmatter gives the factory
+the metadata it needs to sequence work (`id`, `title`, optional
+`depends_on`). See [Authoring specs](docs/integration.md#authoring-specs)
+for the full guide.
 
-```json
-// factory/packets/add-health-endpoint-qa.json
-{
-  "id": "add-health-endpoint-qa",
-  "kind": "qa",
-  "verifies": "add-health-endpoint-dev",
-  "title": "Verify /health endpoint",
-  "intent": "Confirm the health endpoint meets all acceptance criteria from the dev packet.",
-  "acceptance_criteria": [
-    "All dev packet acceptance criteria verified",
-    "No regressions in existing API tests"
-  ],
-  "scope": { "packages": ["api"] },
-  "owner": "alice",
-  "created_at": "2025-01-15T10:00:00Z",
-  "started_at": null,
-  "dependencies": ["add-health-endpoint-dev"]
-}
-```
-
-### 3. Check factory status
+### 2. Run the pipeline
 
 ```sh
-npx tsx .factory/tools/status.ts
+npx tsx .factory/tools/run.ts add-health-endpoint
 ```
 
-You'll see both packets listed as `not_started`.
+`run.ts`:
 
-### 4. Implement the dev packet
+1. Translates `specs/add-health-endpoint.md` into
+   `factory/intents/add-health-endpoint.json` (1:1, derived state)
+2. Invokes the planner; the planner writes a feature artifact and
+   matched dev/qa packet pairs
+3. Invokes the developer agent, then the code reviewer, then runs
+   build / lint / test verification and records the dev completion
+4. Invokes the QA agent and records the QA completion (different
+   identity from the developer per FI-7)
+5. Marks the feature complete and prints a summary line (including
+   total cost — see [Cost visibility](docs/integration.md#cost-visibility))
 
-Claim the packet to mark work as in progress, write the code,
-then request code review:
+If anything fails, fix the issue and re-run the same command. The pipeline
+is idempotent.
+
+### 3. Commit
+
+The pre-commit hook (FI-7) ensures every started packet has a completion
+before commit. The factory artifacts (`specs/`, `factory/intents/`,
+`factory/features/`, `factory/packets/`, `factory/completions/`) ride
+alongside your implementation as the governance trail.
+
+### Multi-spec runs
+
+Pass multiple spec IDs to run them in dependency order:
 
 ```sh
-npx tsx .factory/tools/start.ts add-health-endpoint-dev
-# ... implement the change ...
-npx tsx .factory/tools/request-review.ts add-health-endpoint-dev
+npx tsx .factory/tools/run.ts spec-a spec-b spec-c
 ```
 
-### 5. Code review
+Topological order is computed from each spec's `depends_on` frontmatter.
+Cycles are rejected at orchestrator entry. All transitive dependencies
+must be passed explicitly — auto-resolution is out of scope.
 
-A code reviewer (different agent or human) reviews the branch and approves:
+### Backward compatibility: hand-authored intents
 
-```sh
-npx tsx .factory/tools/review.ts add-health-endpoint-dev --approve
-```
+Existing `factory/intents/<intent-id>.json` files (with inline `spec` or
+referenced `spec_path`) continue to work. `run.ts` accepts an intent ID
+the same way it accepts a spec ID. New work should prefer specs because
+markdown is easier to author and review than JSON.
 
-If changes are needed, `--request-changes` sends it back to the developer.
-After approval, run completion:
-
-```sh
-npx tsx .factory/tools/complete.ts add-health-endpoint-dev
-```
-
-This runs build + lint + tests and writes `factory/completions/add-health-endpoint-dev.json`.
-
-### 6. Run the QA packet
-
-The QA packet is now unblocked (its dependency is complete). A different
-agent or human reviews the dev work against the acceptance criteria, then:
-
-```sh
-npx tsx .factory/tools/start.ts add-health-endpoint-qa
-npx tsx .factory/tools/complete.ts add-health-endpoint-qa --identity claude-qa
-```
-
-The `--identity` flag ensures the QA completion is attributed to a different
-identity than the dev completion (FI-7).
-
-### 7. Commit
-
-The pre-commit hook verifies that all started packets have completions.
-Your commit includes the implementation files alongside the factory
-artifacts — the governance trail is part of the repo history.
-
-### Using features for larger work
-
-For multi-packet work, wrap packets in a feature:
-
-```json
-// factory/features/health-monitoring.json
-{
-  "id": "health-monitoring",
-  "intent": "Add health monitoring so ops can verify service availability.",
-  "acceptance_criteria": [
-    "Health endpoint exists and is tested",
-    "Monitoring dashboard updated"
-  ],
-  "status": "planned",
-  "packets": [
-    "add-health-endpoint-dev",
-    "add-health-endpoint-qa"
-  ],
-  "created_by": { "kind": "human", "id": "alice" },
-  "created_at": "2025-01-15T09:00:00Z"
-}
-```
-
-Then use `execute.ts` to drive the execution loop — it tells you which
-packets are ready, which persona to use, and what to do next:
-
-```sh
-npx tsx .factory/tools/execute.ts health-monitoring
-```
-
-### Using intents for planner-native work
-
-For planner-driven work, start with an intent artifact. Intents come in two
-shapes, depending on how large the spec is.
+The two intent shapes still supported during the transition:
 
 **Inline spec** — for short, self-contained intents:
 
@@ -369,8 +318,8 @@ shapes, depending on how large the spec is.
 }
 ```
 
-**Referenced spec** — for large, human-authored Markdown specs that already
-live in the repository:
+**Referenced spec** — for long, human-authored Markdown specs that already
+live in `docs/specs/`:
 
 ```json
 // factory/intents/016-platform-targets.json
@@ -389,24 +338,11 @@ live in the repository:
 }
 ```
 
-`spec_path` is resolved relative to the **project root** (not the artifact
-root). At plan time, the factory reads the referenced file and hands its
-full contents to the planner. This lets you keep large specs as Markdown
-in `docs/specs/` — structured, reviewable, and diff-friendly — instead of
-stuffing them into a JSON string.
-
-Rules for `spec_path`:
-- Must be relative (no absolute paths) and must not escape the project root
-- Must point to an existing, non-empty file
-- Mutually exclusive with `spec` — use exactly one
-- Validated at `validate.ts` time so a broken reference fails CI, not at
-  plan time
-
-Then run the pipeline:
-
-```sh
-npx tsx .factory/tools/run.ts customer-dashboard
-```
+`spec_path` is resolved relative to the project root, must be relative,
+must not escape the project root, must point to an existing non-empty
+file, and is mutually exclusive with `spec`. `validate.ts` enforces these
+rules; `plan.ts` reads the file at plan time and hands its full contents
+to the planner.
 
 ---
 
@@ -529,7 +465,7 @@ Required fields:
 ### Pipeline lifecycle (preferred)
 
 ```
-Human writes intent → run.ts plans, develops, reviews, verifies → done
+Human authors spec → run.ts plans, develops, reviews, verifies → done
 ```
 
 ### Manual packet lifecycle
@@ -585,17 +521,22 @@ The dependency graph across all packets must be a DAG. Cycles cause permanent bl
 When installed as a submodule at `.factory/`, tool paths use `.factory/tools/...`.
 When working in the factory repo itself, use `tools/...` directly.
 
-### Run (Pipeline)
+### Operator commands
+
+The factory has three commands operators run.
+
+#### Run (Pipeline)
 
 ```sh
-npx tsx .factory/tools/run.ts <intent-id>
+npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]
 ```
 
-Single-command pipeline. Plans the intent, executes dev packets with code review,
-runs QA verification, marks the feature complete. Idempotent — safe to re-run
-after failures.
+Single-command pipeline. Plans each spec, executes dev packets with code
+review, runs QA verification, marks each feature complete. Idempotent —
+safe to re-run after failures. Accepts intent IDs for backward
+compatibility with hand-authored intents.
 
-### Status
+#### Status
 
 ```sh
 npx tsx .factory/tools/status.ts              # human-readable report
@@ -603,7 +544,22 @@ npx tsx .factory/tools/status.ts --json       # machine-readable JSON
 npx tsx .factory/tools/status.ts --feature <id>  # scoped to a feature
 ```
 
-### Start
+#### Validate
+
+```sh
+npx tsx .factory/tools/validate.ts
+```
+
+Schema validation + referential integrity + invariant enforcement.
+
+### Agent protocol
+
+The lifecycle scripts below are how agents signal back to the factory.
+**Agents call these; operators do not.** `run.ts` invokes the same
+scripts as library functions when driving the pipeline. All four are
+idempotent — re-invocation on the same state is a no-op.
+
+#### Start
 
 ```sh
 npx tsx .factory/tools/start.ts <packet-id>
@@ -611,32 +567,33 @@ npx tsx .factory/tools/start.ts <packet-id>
 
 Claims a packet and marks it started before implementation begins.
 
-### Request Review
+#### Request Review
 
 ```sh
 npx tsx .factory/tools/request-review.ts <packet-id>
 npx tsx .factory/tools/request-review.ts <packet-id> --branch <branch-name>
 ```
 
-Transitions a dev packet from `implementing` (or `changes_requested`) to `review_requested`.
-Captures the current git branch (or uses `--branch` override) and sets the `branch` field
-on the packet. Increments `review_iteration` on re-requests after `changes_requested`.
+Transitions a dev packet from `implementing` (or `changes_requested`) to
+`review_requested`. Captures the current git branch (or uses `--branch`
+override) and sets the `branch` field on the packet. Increments
+`review_iteration` on re-requests after `changes_requested`.
 
-### Review
+#### Review
 
 ```sh
 npx tsx .factory/tools/review.ts <packet-id> --approve
 npx tsx .factory/tools/review.ts <packet-id> --request-changes
 ```
 
-Records a code review decision on a dev packet in `review_requested` status.
-`--approve` transitions to `review_approved` (developer can now call `complete.ts`).
-`--request-changes` transitions to `changes_requested` (developer addresses feedback,
-then calls `request-review.ts` again).
+Records a code review decision on a dev packet in `review_requested`
+status. `--approve` transitions to `review_approved` (developer can now
+call `complete.ts`). `--request-changes` transitions to
+`changes_requested` (developer addresses feedback, then calls
+`request-review.ts` again). Review feedback lives in git (branch diffs,
+git notes) — not in factory artifacts.
 
-Review feedback lives in git (branch diffs, git notes) — not in factory artifacts.
-
-### Complete
+#### Complete
 
 ```sh
 npx tsx .factory/tools/complete.ts <packet-id> [--summary "..."]
@@ -645,32 +602,26 @@ npx tsx .factory/tools/complete.ts <packet-id> [--summary "..."]
 Runs verification (build, lint, test), then creates a completion record.
 Dev packets must be in `review_approved` status before completion.
 
-### Execute
+#### Execute
 
 ```sh
 npx tsx .factory/tools/execute.ts <feature-id>
 npx tsx .factory/tools/execute.ts <feature-id> --json
 ```
 
-Stateless action resolver for feature-level execution.
+Stateless action resolver for feature-level execution. Used by agents
+under manual control or by `run.ts` when driving the develop/verify phases.
 
-### Plan
-
-```sh
-npx tsx .factory/tools/plan.ts <intent-id>
-npx tsx .factory/tools/plan.ts <intent-id> --json
-```
-
-Planner handoff resolver. Reads an intent/spec artifact and tells the planner
-whether it needs to decompose work, wait for approval, or hand off to the pipeline.
-
-### Validate
+#### Plan
 
 ```sh
-npx tsx .factory/tools/validate.ts
+npx tsx .factory/tools/plan.ts <spec-or-intent-id>
+npx tsx .factory/tools/plan.ts <spec-or-intent-id> --json
 ```
 
-Schema validation + referential integrity + invariant enforcement.
+Planner handoff resolver. Reads a spec or intent artifact and tells the
+planner whether it needs to decompose work, wait for approval, or hand
+off to the pipeline.
 
 ---
 
@@ -687,40 +638,44 @@ Dev packets:  draft → ready → implementing → review_requested → changes_
 QA packets:   draft → ready → implementing → completed
 ```
 
-Execution protocol:
-1. Run `npx tsx .factory/tools/run.ts <intent-id>` (preferred — runs everything)
-2. Or manually: run `execute.ts <feature-id>` to get the work list
-3. Dev agent: `start.ts` → implement → `request-review.ts` → code_reviewer runs `review.ts --approve` → `complete.ts`
-4. QA agent: `start.ts` → verify → `complete.ts`
-5. Re-run execute
-6. Repeat until all_complete
-7. Natural flow per story: dev packet (developer ↔ code_reviewer loop) → QA packet (qa)
+Operator path:
+1. Author `specs/<spec-id>.md`
+2. Run `npx tsx .factory/tools/run.ts <spec-id>` — drives plan, develop, review, verify, done
+
+Agent path inside a run (managed by `run.ts`, not the operator):
+- Dev agent: `start.ts` → implement → `request-review.ts` → code_reviewer runs `review.ts --approve` → `complete.ts`
+- QA agent: `start.ts` → verify → `complete.ts`
+- Natural flow per story: dev packet (developer ↔ code_reviewer loop) → QA packet (qa)
 
 ### End-to-End Pipeline Flow
 
-The full factory-native flow runs autonomously from intent to completed feature:
+The full factory-native flow runs autonomously from spec to completed feature:
 
-1. Human writes `intents/<intent-id>.json` (with `spec` or `spec_path`)
-2. Run `npx tsx .factory/tools/run.ts <intent-id>`
-3. **Plan phase** — planner agent writes:
-   - one `features/<feature-id>.json` artifact with `status: "planned"`
-   - dev/qa packet pairs in `packets/`
+1. Human authors `specs/<spec-id>.md` (preferred) or, for backward compatibility, `factory/intents/<intent-id>.json` (with `spec` or `spec_path`)
+2. Run `npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]`
+3. **Plan phase** — orchestrator translates spec → intent (1:1) and invokes the planner; the planner writes:
+   - one `factory/features/<feature-id>.json` artifact with `status: "planned"`
+   - dev/qa packet pairs in `factory/packets/`
    - packet dependencies, change classes, and acceptance criteria
    - `feature.intent_id` linkage
 4. **Develop phase** — for each dev packet (in dependency order):
-   - Developer agent implements and signals `request-review.ts`
-   - Code reviewer agent runs `review.ts --approve` or `--request-changes`
+   - Developer agent implements and signals via `request-review.ts`
+   - Code reviewer agent calls `review.ts --approve` or `--request-changes`
    - On `--request-changes`, developer reworks; loop bounded by `max_review_iterations`
    - On approval, completion is recorded with the developer's identity
 5. **Verify phase** — for each QA packet:
    - QA agent verifies (distinct identity from dev — FI-7)
    - Completion is recorded with the QA identity
-6. **Done** — feature marked complete, summary printed
+6. **Done** — feature marked complete, summary printed (with total cost where reportable)
 
 Pipeline properties:
 - **Idempotent** — re-running resumes from artifact state on disk
 - **Provider-agnostic** — codex, claude, copilot (configure via `pipeline.providers`)
-- **No human gates after intent approval** — completion IS acceptance
+- **Failover-aware** — `persona_providers` accepts an ordered list for cross-CLI failover; abstraction providers may declare within-CLI `model_failover` (see [Provider failover](docs/integration.md#provider-failover))
+- **Recovery-aware** — known failure scenarios are auto-recovered with bounded retries; lint/test failures always escalate (see [Recovery](docs/integration.md#recovery))
+- **Cost-visible** — every run reports total cost; configurable caps at run/packet/per-day scope (see [Cost visibility](docs/integration.md#cost-visibility))
+- **Observable** — typed events stream to `factory/events/<run-id>.jsonl` (see [Event observability](docs/integration.md#event-observability))
+- **No human gates after spec authoring** — completion IS acceptance
 - **Bounded review** — `max_review_iterations` (default 3) caps rework cycles
 
 ---
@@ -757,11 +712,15 @@ When installed in a host project as a git submodule:
 │   ├── setup.ps1            # Installation script (Windows)
 │   └── docs/
 │       └── integration.md   # Detailed integration guide
+├── specs/                   # Human-authored specs (markdown + frontmatter)
 ├── factory/                 # Factory artifacts (visible, one directory)
-│   ├── intents/             # Planner input specs
+│   ├── intents/             # Derived from specs (or hand-authored back-compat)
 │   ├── features/            # Planned execution units
 │   ├── packets/             # Work unit declarations
-│   └── completions/         # Implementation evidence
+│   ├── completions/         # Implementation evidence
+│   ├── events/              # Per-run event streams (JSONL)
+│   ├── cost/                # Per-invocation cost records
+│   └── escalations/         # Structured failure records when recovery escalates
 └── src/                     # Host project source (any language)
 ```
 
