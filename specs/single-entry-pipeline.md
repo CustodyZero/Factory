@@ -328,37 +328,56 @@ Pure refactor. Behavior unchanged at every event/cap/gate site. Tests 485 (no co
 
 **Operational note across the Phase 5-series + this checkpoint:** codex CLI hung 5 of 8 review dispatches in this session (process startup network stall — 0% CPU, 0 bytes output, never times out client-side). Kill+retry succeeded every time. External issue (codex CLI/network reliability), not factory. Worth carrying into a future workflow-reliability discussion separate from the pipeline architecture itself.
 
-### Phase 6 — Recovery layer
+### Phase 6 — Recovery layer ✅ COMPLETE (revised attempt)
 
-**Goal:** Implement the eight failure scenarios with their recipes. Builds on Phase 5.5 (events) and Phase 5.7 (cost caps) — recovery operates on events as its substrate, and retry budgets respect cost caps to prevent runaway loops.
+**Status:** Merged in commit `2f86856` (2026-05-05). Phase 7 (provider failover) and Phase 8 (docs) remain.
 
-Per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md), this uses scenario-keyed recipes (TypeScript functions), not a configurable policy DSL.
+**Iteration:** This phase took two attempts. The first attempt (branch `phase-6-recovery`, force-deleted) was reverted after 3 review rounds for the *logged-then-advances* bug class — recovery escalation was observable but not controlling. The lesson is captured in [`docs/research/phase_6_recovery_attempt.md`](../docs/research/phase_6_recovery_attempt.md).
 
-**Specifically:**
+The revised attempt's architectural breakthrough: typed `RecoveryResult<T>` discriminator that forces compile-time dispatch on escalation. Every wrap site MUST handle `kind === 'escalated'` to typecheck.
 
-- New `tools/pipeline/recovery.ts` module
-- Define `FailureScenario` enum: `ProviderTransient | ProviderUnavailable | BuildFailed | LintFailed | TestFailed | StaleBranch | AgentNonResponsive | CompletionGateBlocked`
-- Define `RecoveryAttempt` (action to take) and `EscalateRequest` (failure record) types
-- Implement classifier: `(error, exitCode, output, context) -> FailureScenario`
-- Implement recipes for each scenario per the decision doc
-- Wire recovery insertion points: every agent invocation in phases, every verification step in `complete.ts`
-- Recovery emits events: `recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated` (per Phase 5.5's event taxonomy)
-- Recovery checks cost caps before each retry attempt (per Phase 5.7); if a retry would cross a cap, recovery escalates immediately with the cap-block reason
-- Implement escalation: write `factory/escalations/<spec-id>-<timestamp>.json` with structured failure context
-- Recovery budget: per-scenario, per-packet (no cross-scenario cap):
-  - **2 retries** for non-deterministic scenarios (`ProviderTransient`, `AgentNonResponsive`) — repeated transient failures should be tried again before declaring the provider unavailable
-  - **1 retry** for semi-/fully-deterministic scenarios (`BuildFailed` with guardrail prompt, `StaleBranch` with rebase) — re-running with the same context is unlikely to succeed beyond the first retry
-  - **0 retries (immediate escalate)** for always-escalate scenarios (`LintFailed`, `TestFailed`, `CompletionGateBlocked`) and for Phase-7-deferred (`ProviderUnavailable`)
+**What shipped:**
 
-**Acceptance:**
+- New `tools/pipeline/recovery.ts` (630 lines, pure): closed `FailureScenario` enum (8 variants); classifier `classifyFailure(error, exitCode, output, context)` returning `FailureScenario | null`; `RECIPES: Record<FailureScenario, RecoveryRecipe>`; per-scenario retry budgets; `RecoveryResult<T>` discriminator type; `BUILD_GUARDRAIL_PROMPT` constant. Zero fs imports.
+- New `tools/pipeline/recovery_loop.ts` (690 lines, orchestration): `runWithRecovery<T>(operation, context, options) → RecoveryResult<T>`. Per-packet budget tracking via `PacketRecoveryBudget`. Cap-vs-retry checks (`cost.cap_crossed` BEFORE `recovery.escalated`). `runGitRebase` execution with injectable `GitRunner` (default uses `spawnSync`).
+- New `tools/recovery.ts` (118 lines, I/O): `writeEscalation(record, artifactRoot)` → `<artifactRoot>/escalations/<spec-id>-<timestamp>.json`. Best-effort, mirrors `appendEvent`.
+- New `tools/lifecycle/git_check.ts` (211 lines): stale-branch detection patterns shared between `request_review.ts` and `complete.ts`. Cross-layer pattern drift test prevents regex divergence between the lifecycle detector and the pipeline classifier.
+- 4 new event types extending the Phase 5.5 closed enum: `recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated`. The `attempt_started` event fires only on retry attempts (not on initial invocation) — streams without `recovery.*` events mean "everything went normally."
+- **Atomic `completePacket`** in `tools/lifecycle/complete.ts`: completion records exist only when ALL of `{build_pass, lint_pass, test_pass, ci_pass}` pass. CI-failed invocations write no record and don't mutate `status`. The false-success short-circuit (`already_complete: true && ci_pass: false`) is structurally impossible.
+- **`status: "failed"` is a first-class terminal state.** Added to `schemas/packet.schema.json` and `tools/validate.ts:validStatuses`. `tools/execute.ts` and `tools/status.ts` classify failed packets correctly (mutually exclusive with ready/in_progress/completed/blocked).
+- **Optional `failure` object on packet artifacts** (`packet.schema.json`, `additionalProperties: false`): required `scenario` (string) + `reason` (string), optional `attempts` (non-negative integer) + `escalation_path` (string-or-null). Schema description names `CascadedFromDependency` and `Unclassified` as label strings, NOT 9th/10th `FailureScenario` enum variants.
+- Recovery wiring at every fail-prone call site: `plan_phase.ts` (planner invocation), `develop_phase.ts` (implement / review / rework / finalize / requestReview), `verify_phase.ts` (QA agent / completePacket boundary). 8 wrap sites total, all dispatching on `kind === 'escalated'` with the `markPacketFailed + break/continue` pattern.
+- **Develop finalize retry path invokes the dev agent with `attempt.guardrailPrompt` BEFORE re-running completePacket.** The previous attempt's regression on this is fixed.
+- **QA cascade**: a QA packet whose dev `verifies` dependency failed is itself terminated with `failure.scenario: "CascadedFromDependency"`. The QA agent is NOT invoked (no wasted cost on a doomed verification).
 
-- A simulated 5xx response triggers `ProviderTransient` → retry; second 5xx escalates to `ProviderUnavailable`
-- A build failure triggers one auto-retry with the guardrail prompt; second failure escalates
-- A test failure escalates immediately (no auto-retry)
-- A lint failure escalates immediately
-- A stale branch is detected, rebased, and the original action retried; conflict aborts and escalates
-- Escalations write valid structured records; the orchestrator continues with the next independent spec
-- Tests cover the classifier and each recipe
+**Recovery scenarios (per the decision doc):**
+
+| Scenario | Retries | Recipe |
+|----------|---------|--------|
+| `ProviderTransient` | 2 | retry same provider/model |
+| `AgentNonResponsive` | 2 | treated as ProviderTransient |
+| `BuildFailed` | 1 | retry once with guardrail prompt forbidding test/build/lint config modification |
+| `StaleBranch` | 1 | `git fetch origin → git rebase origin/main → retry op`; on conflict: `git rebase --abort` + escalate |
+| `ProviderUnavailable` | 0 | escalate (Phase 7 will replace with cross-CLI / within-CLI cascade) |
+| `LintFailed` | 0 | escalate (auto-recovery would invite agents to disable rules) |
+| `TestFailed` | 0 | escalate (auto-recovery would invite agents to mutilate tests) |
+| `CompletionGateBlocked` | 0 | escalate (intentional human gate per FI-7) |
+
+**Iteration record (revised attempt):**
+
+- 3 review rounds used (codex GPT-5.5):
+  - Round 1 REQUEST-CHANGES: `status: "failed"` was schema-invalid and read-paths ignored it; `BuildFailed` recovery at completePacket boundary could falsely succeed; develop finalize ignored guardrail; tests pinned events without lifecycle side effects.
+  - Round 2 REQUEST-CHANGES: `validate.ts:validStatuses` missed `"failed"`; recovery-written `failure` object rejected by schema's `additionalProperties: false`. (Codex explicit: "I do not recommend revert.")
+  - Round 3 APPROVE.
+- Independent QA verification (separate Opus, FI-7) APPROVE on all 17 acceptance criteria + 17 specific checks. TZ-invariance independently verified under `TZ=Pacific/Kiritimati` (630/630 pass).
+
+**Tests:** 485 → 630 (+145 across 12 commits). All existing tests still pass.
+
+**What this does NOT include (still deferred):**
+
+- `ProviderUnavailable` cross-CLI / within-CLI cascade — Phase 7 replaces the recipe.
+- Recovery state persistence across runs (today's budget is in-memory per-run; recovery state for resumed runs is out of scope).
+- DSL-style policy composition (per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md), recipes stay as TypeScript functions).
 
 ### Phase 7 — Two-layer provider failover
 
