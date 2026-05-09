@@ -20,7 +20,7 @@
  * obscure that.
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Feature, RawPacket } from '../execute.js';
 import type { FactoryConfig, ModelTier } from '../config.js';
@@ -37,12 +37,24 @@ import {
   makePhaseStarted,
   makePhaseCompleted,
   makeCostCapCrossed,
+  makePacketFailed,
 } from './events.js';
 import { appendEvent } from '../events.js';
 import type { InvokeResult } from './agent_invoke.js';
 import type { CostRecord } from './cost.js';
 import { checkCap } from './cost.js';
-import { recordCost } from '../cost.js';
+import { recordCost, localDateString } from '../cost.js';
+import {
+  failureFromSubprocess,
+  failureFromThrow,
+  newPacketRecoveryBudget,
+  runWithRecovery,
+  type AttemptContext,
+  type GitRunner,
+  type OperationResult,
+  type RecoveryResult,
+} from './recovery_loop.js';
+import { looksLikeStaleBranchMessage } from '../lifecycle/git_check.js';
 
 // ---------------------------------------------------------------------------
 // Resume points
@@ -184,6 +196,13 @@ export interface DevelopPhaseOptions {
    */
   readonly runId?: string;
   readonly specId?: string | null;
+  /**
+   * Phase 6 — injectable git runner for the StaleBranch recovery
+   * action AND the lifecycle stale-branch detection. Production
+   * callers omit it and the default `spawnSync('git', ...)` runner
+   * is used. Tests inject a stub so they don't shell out.
+   */
+  readonly gitRunner?: GitRunner;
 }
 
 export interface DevelopPhaseResult {
@@ -297,6 +316,74 @@ function recordInvocationCost(
   return { capCrossed: false };
 }
 
+// ---------------------------------------------------------------------------
+// Packet escalation (Phase 6)
+//
+// markPacketFailed is the single point where the per-packet state
+// machine surfaces a recovery escalation. It MUST:
+//
+//   1. Mutate `packets/<id>.json` to status='failed' and record the
+//      escalation reason on the packet (best-effort; the on-disk
+//      escalation file in `escalations/` is the authoritative record).
+//   2. Emit a `packet.failed` event with the recovery escalation
+//      reason in the payload.
+//
+// The caller's per-packet loop must then break and continue to the
+// next packet. This is the load-bearing integration: the recovery
+// layer's `kind: 'escalated'` discriminator is observable AND
+// controlling — every wrap site that receives `kind: 'escalated'`
+// calls this helper and then breaks the loop.
+//
+// The previous Phase 6 attempt logged the escalation event and
+// unconditionally advanced. That's the bug we reverted for. The
+// fix in this attempt is the type-level discriminator forcing every
+// caller to make the decision visible.
+// ---------------------------------------------------------------------------
+
+interface MarkPacketFailedArgs {
+  readonly packetId: string;
+  readonly artifactRoot: string;
+  readonly recovery: RecoveryResult<unknown> & { readonly kind: 'escalated' };
+  readonly runId: string | undefined;
+  readonly dryRun: boolean;
+}
+
+function markPacketFailed(args: MarkPacketFailedArgs): void {
+  const { packetId, artifactRoot, recovery, runId, dryRun } = args;
+  // (1) Mutate packet status to 'failed' (best-effort).
+  try {
+    const packetPath = join(artifactRoot, 'packets', `${packetId}.json`);
+    if (existsSync(packetPath)) {
+      const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+      data['status'] = 'failed';
+      // Stamp the escalation onto the packet so a human reading
+      // packets/<id>.json sees why; the canonical record lives in
+      // escalations/.
+      data['failure'] = {
+        scenario: recovery.scenario,
+        reason: recovery.reason,
+        attempts: recovery.attempts,
+        escalation_path: recovery.escalation_path,
+      };
+      writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
+  } catch { /* best-effort: the escalation record is the canonical one */ }
+
+  // (2) Emit packet.failed with the recovery reason.
+  if (runId !== undefined) {
+    appendEvent(
+      makePacketFailed(
+        { run_id: runId, dry_run: dryRun },
+        {
+          packet_id: packetId,
+          reason: `${recovery.scenario}: ${recovery.reason}`,
+        },
+      ),
+      artifactRoot,
+    );
+  }
+}
+
 /**
  * Run the develop phase for a feature: implement / review / rework /
  * finalize each dev packet in topological order. Returns the lists
@@ -400,47 +487,190 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
     const perPacketCap = config.pipeline?.cost_caps?.per_packet;
     const packetCostTracker = newPacketCostTracker();
 
-    // State machine: I/O per step, then a pure transition function from
-    // above decides where to go next. `null` = failed.
-    let currentPoint: DevResumePoint | null = resumePoint;
+    // Phase 6 — per-packet recovery budget. Tracks per-scenario
+    // retries USED across this packet's full lifecycle. Each
+    // scenario has its own counter bounded by SCENARIO_RETRY_BUDGET;
+    // budgets do NOT carry across packets.
+    //
+    // Lifetime decision: this lives as a local in the per-packet
+    // loop body so the lifetime exactly matches the packet's run.
+    // Threading it through a wider context object would force the
+    // budget to outlive the packet, which contradicts the brief's
+    // "per-packet, per-scenario; no cross-scenario cap" rule.
+    const recoveryBudget = newPacketRecoveryBudget();
+    const recoveryOptions = {
+      perRunCap: config.pipeline?.cost_caps?.per_run,
+      perDayCap: config.pipeline?.cost_caps?.per_day,
+      today: localDateString(),
+      ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+    };
+    // Stable run id for the recovery layer when the caller didn't
+    // supply one (unit-test mode). The recovery layer's appendEvent
+    // calls are no-ops without an events dir; run id only determines
+    // the events file name.
+    const recoveryRunId = opts.runId ?? 'no-run';
 
-    while (currentPoint !== null && currentPoint !== 'completed') {
+    // Phase 6 — state-machine integration.
+    //
+    // The previous attempt logged escalations and unconditionally
+    // advanced. This attempt forces the state machine to dispatch on
+    // RecoveryResult<T>'s `kind` discriminator. On `kind: 'escalated'`,
+    // we mark the packet failed (markPacketFailed + packet.failed
+    // event), break the per-packet loop, continue to the next packet.
+    //
+    // Escalation is TERMINAL for the packet's lifecycle. The packet
+    // does NOT proceed to any further state regardless of which
+    // case was running when escalation fired (per the brief's Q1/Q2).
+    let currentPoint: DevResumePoint | null = resumePoint;
+    let escalated = false;
+
+    while (currentPoint !== null && currentPoint !== 'completed' && !escalated) {
       switch (currentPoint) {
         case 'implement': {
           safeCall(() => startPacket({ packetId: packet.id, projectRoot }));
           fmt.log('develop', `  Implementing via ${devProvider} (${devTier})...`);
-          const devResult = invokeAgent(devProvider, buildDevPrompt(freshPacket, config), config, devTier);
-          const { capCrossed: implCapCrossed } = recordInvocationCost(
-            devResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-            perPacketCap, packetCostTracker, dryRun,
+          // Wrap the dev-agent invocation in runWithRecovery. The
+          // closure builds the prompt fresh on each attempt — for a
+          // BuildFailed retry the loop passes the guardrail prompt
+          // via attempt.guardrailPrompt, which is appended to the
+          // dev prompt. ProviderTransient retries see no
+          // guardrailPrompt and re-issue the same prompt.
+          const recovered = runWithRecovery<InvokeResult>(
+            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+              const basePrompt = buildDevPrompt(freshPacket, config);
+              const finalPrompt = attempt.guardrailPrompt !== undefined
+                ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
+                : basePrompt;
+              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              recordInvocationCost(
+                r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+                perPacketCap, packetCostTracker, dryRun,
+              );
+              if (r.exit_code === 0) return { outcome: 'ok', value: r };
+              return {
+                outcome: 'fail',
+                failure: failureFromSubprocess({
+                  exitCode: r.exit_code,
+                  stdout: r.stdout,
+                  stderr: r.stderr,
+                  kind: 'agent_invocation',
+                  specId: opts.specId ?? null,
+                  packetId: packet.id,
+                  operationLabel: 'develop_phase.implement',
+                }),
+              };
+            },
+            {
+              runId: recoveryRunId,
+              artifactRoot,
+              dryRun,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'develop_phase.implement',
+              budget: recoveryBudget,
+            },
+            recoveryOptions,
           );
-          if (implCapCrossed) {
+          // Per-packet cost cap fires regardless of recovery outcome.
+          if (packetCostTracker.crossed) {
             fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
             currentPoint = null;
             break;
           }
-          const devOk = devResult.exit_code === 0;
-          fmt.log('develop', devOk
-            ? `  ${fmt.sym.ok} Implementation done`
-            : `  ${fmt.sym.fail} ${fmt.error('Developer agent failed')}`);
-          currentPoint = nextPointAfterImplement(devOk);
+          // Dispatch on the discriminator. The compiler enforces the
+          // exhaustive switch — observable AND controlling.
+          if (recovered.kind === 'escalated') {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${recovered.scenario}): ${recovered.reason}`)}`);
+            markPacketFailed({
+              packetId: packet.id,
+              artifactRoot,
+              recovery: recovered,
+              runId: opts.runId,
+              dryRun,
+            });
+            escalated = true;
+            break;
+          }
+          // recovered.kind === 'ok'
+          fmt.log('develop', `  ${fmt.sym.ok} Implementation done`);
+          currentPoint = nextPointAfterImplement(true);
           break;
         }
 
         case 'request_review': {
-          const reviewSignal = safeCall(() => requestReview({ packetId: packet.id, projectRoot }));
-          if (!reviewSignal.ok) {
-            const detail = reviewSignal.error ? `: ${reviewSignal.error}` : '';
-            fmt.log('develop', `  ${fmt.sym.warn} Could not request review${detail}`);
+          // request_review is best-effort observability today (the
+          // CLI may have already been invoked by the agent). The
+          // recovery wrapper still applies because a stale-branch
+          // check at this boundary throws, and the wrapper routes
+          // that through the StaleBranch recipe.
+          const reviewSignal = runWithRecovery<true>(
+            (_attempt: AttemptContext): OperationResult<true> => {
+              try {
+                requestReview({
+                  packetId: packet.id,
+                  projectRoot,
+                  // Phase 6 — opt in to lifecycle stale-branch
+                  // detection. Off by default in the CLI; on for the
+                  // pipeline so a behind-origin/main state surfaces
+                  // through the StaleBranch recipe.
+                  checkStaleBranch: true,
+                  ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+                });
+                return { outcome: 'ok', value: true };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                // Already-recorded review-requested, wrong status, etc.
+                // are normal idempotency or precondition outcomes; keep
+                // the original lifecycle's permissive behavior. We
+                // surface stale-branch errors through the recovery
+                // layer; everything else stays best-effort.
+                if (looksLikeStaleBranchMessage(msg)) {
+                  return {
+                    outcome: 'fail',
+                    failure: failureFromThrow({
+                      error: err,
+                      kind: 'git',
+                      specId: opts.specId ?? null,
+                      packetId: packet.id,
+                      operationLabel: 'develop_phase.request_review',
+                    }),
+                  };
+                }
+                // Other lifecycle errors — log and continue (keeps
+                // legacy permissive behavior; the original loop logged
+                // and proceeded to review unconditionally).
+                fmt.log('develop', `  ${fmt.sym.warn} Could not request review: ${msg}`);
+                return { outcome: 'ok', value: true };
+              }
+            },
+            {
+              runId: recoveryRunId,
+              artifactRoot,
+              dryRun,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'develop_phase.request_review',
+              budget: recoveryBudget,
+            },
+            recoveryOptions,
+          );
+          if (reviewSignal.kind === 'escalated') {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${reviewSignal.scenario}): ${reviewSignal.reason}`)}`);
+            markPacketFailed({
+              packetId: packet.id,
+              artifactRoot,
+              recovery: reviewSignal,
+              runId: opts.runId,
+              dryRun,
+            });
+            escalated = true;
+            break;
           }
-          currentPoint = 'review'; // unconditional: best-effort above
+          currentPoint = 'review';
           break;
         }
 
         case 'review': {
-          // Re-read packet: the previous step (request_review) may have
-          // bumped review_iteration, and the developer agent may have
-          // changed status during implementation.
           const iterationPacket = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`)) ?? freshPacket;
           const reviewIteration = iterationPacket.review_iteration ?? 0;
           if (reviewIteration >= maxReviewIterations) {
@@ -449,23 +679,56 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             break;
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
-          const reviewResult = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
-          const { capCrossed: reviewCapCrossed } = recordInvocationCost(
-            reviewResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-            perPacketCap, packetCostTracker, dryRun,
+          const reviewerRecovered = runWithRecovery<InvokeResult>(
+            (_attempt: AttemptContext): OperationResult<InvokeResult> => {
+              const r = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
+              recordInvocationCost(
+                r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+                perPacketCap, packetCostTracker, dryRun,
+              );
+              if (r.exit_code === 0) return { outcome: 'ok', value: r };
+              return {
+                outcome: 'fail',
+                failure: failureFromSubprocess({
+                  exitCode: r.exit_code,
+                  stdout: r.stdout,
+                  stderr: r.stderr,
+                  kind: 'agent_invocation',
+                  specId: opts.specId ?? null,
+                  packetId: packet.id,
+                  operationLabel: 'develop_phase.review',
+                }),
+              };
+            },
+            {
+              runId: recoveryRunId,
+              artifactRoot,
+              dryRun,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'develop_phase.review',
+              budget: recoveryBudget,
+            },
+            recoveryOptions,
           );
-          if (reviewCapCrossed) {
+          if (packetCostTracker.crossed) {
             fmt.log('review', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
             currentPoint = null;
             break;
           }
-          if (reviewResult.exit_code !== 0) {
-            fmt.log('review', `  ${fmt.sym.fail} Reviewer agent failed`);
-            currentPoint = nextPointAfterReview(false, null);
+          if (reviewerRecovered.kind === 'escalated') {
+            fmt.log('review', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${reviewerRecovered.scenario}): ${reviewerRecovered.reason}`)}`);
+            markPacketFailed({
+              packetId: packet.id,
+              artifactRoot,
+              recovery: reviewerRecovered,
+              runId: opts.runId,
+              dryRun,
+            });
+            escalated = true;
             break;
           }
-          // The reviewer agent may have set status itself (via the review.ts
-          // CLI). Re-read to find out.
+          // recovered.kind === 'ok' — reviewer ran cleanly; check status.
           const afterReview = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
           const afterStatus = afterReview?.status ?? null;
           if (afterStatus === 'review_approved') {
@@ -473,7 +736,6 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           } else if (afterStatus === 'changes_requested') {
             fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
           } else {
-            // Reviewer didn't transition status — force approve.
             safeCall(() => recordReview({ packetId: packet.id, decision: 'approve', projectRoot }));
             fmt.log('review', `  ${fmt.sym.ok} Review complete`);
           }
@@ -483,39 +745,164 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
 
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
-          const reworkResult = invokeAgent(devProvider, buildReworkPrompt(freshPacket, config), config, devTier);
-          const { capCrossed: reworkCapCrossed } = recordInvocationCost(
-            reworkResult, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-            perPacketCap, packetCostTracker, dryRun,
+          const reworkRecovered = runWithRecovery<InvokeResult>(
+            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+              const basePrompt = buildReworkPrompt(freshPacket, config);
+              const finalPrompt = attempt.guardrailPrompt !== undefined
+                ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
+                : basePrompt;
+              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              recordInvocationCost(
+                r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+                perPacketCap, packetCostTracker, dryRun,
+              );
+              if (r.exit_code === 0) return { outcome: 'ok', value: r };
+              return {
+                outcome: 'fail',
+                failure: failureFromSubprocess({
+                  exitCode: r.exit_code,
+                  stdout: r.stdout,
+                  stderr: r.stderr,
+                  kind: 'agent_invocation',
+                  specId: opts.specId ?? null,
+                  packetId: packet.id,
+                  operationLabel: 'develop_phase.rework',
+                }),
+              };
+            },
+            {
+              runId: recoveryRunId,
+              artifactRoot,
+              dryRun,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'develop_phase.rework',
+              budget: recoveryBudget,
+            },
+            recoveryOptions,
           );
-          if (reworkCapCrossed) {
+          if (packetCostTracker.crossed) {
             fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Per-packet cost cap crossed ($${packetCostTracker.total.toFixed(4)} >= $${perPacketCap})`)}`);
             currentPoint = null;
             break;
           }
-          if (reworkResult.exit_code !== 0) fmt.log('develop', `  ${fmt.sym.fail} Rework failed`);
-          currentPoint = nextPointAfterRework(reworkResult.exit_code === 0);
+          if (reworkRecovered.kind === 'escalated') {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${reworkRecovered.scenario}): ${reworkRecovered.reason}`)}`);
+            markPacketFailed({
+              packetId: packet.id,
+              artifactRoot,
+              recovery: reworkRecovered,
+              runId: opts.runId,
+              dryRun,
+            });
+            escalated = true;
+            break;
+          }
+          currentPoint = nextPointAfterRework(true);
           break;
         }
 
         case 'finalize': {
           fmt.log('develop', `  Running verification...`);
-          const completion = safeCall(() => completePacket({ packetId: packet.id, identity: devIdentity, projectRoot }));
-          if (completion.ok) {
-            fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
-            completionIds.add(packet.id);
-          } else {
-            fmt.log('develop', `  ${fmt.sym.fail} Completion failed`);
+          // Wrap completePacket in runWithRecovery so BuildFailed,
+          // LintFailed, TestFailed, CompletionGateBlocked, and
+          // StaleBranch classify correctly at the phase boundary.
+          //
+          // The closure dispatches on TWO failure modes:
+          //   (a) the lib throws (precondition, FI-1, FI-7 / pre-commit
+          //       hook, OR stale-branch when checkStaleBranch is on).
+          //       Stale-branch throws are routed via kind: 'git';
+          //       everything else stays 'lifecycle'.
+          //   (b) the lib returns CompleteResult with ci_pass=false.
+          //       The closure builds the explicit failed_checks list
+          //       so the classifier dispatches authoritatively.
+          const finalizeRecovered = runWithRecovery<true>(
+            (_attempt: AttemptContext): OperationResult<true> => {
+              try {
+                const r = completePacket({
+                  packetId: packet.id,
+                  identity: devIdentity,
+                  projectRoot,
+                  // Phase 6 — opt in to lifecycle stale-branch
+                  // detection at the complete boundary as well.
+                  checkStaleBranch: true,
+                  ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
+                });
+                if (r.already_complete) return { outcome: 'ok', value: true };
+                if (r.ci_pass) return { outcome: 'ok', value: true };
+                const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
+                if (!r.build_pass) failedChecks.push('build');
+                if (!r.lint_pass) failedChecks.push('lint');
+                if (!r.tests_pass) failedChecks.push('tests');
+                if (failedChecks.length === 0) failedChecks.push('ci');
+                return {
+                  outcome: 'fail',
+                  failure: failureFromSubprocess({
+                    exitCode: 1,
+                    stdout: '',
+                    stderr: `Verification failed: ${failedChecks.join(', ')}`,
+                    kind: 'verification',
+                    failedChecks,
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.complete',
+                  }),
+                };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const kind: 'git' | 'lifecycle' = looksLikeStaleBranchMessage(msg)
+                  ? 'git'
+                  : 'lifecycle';
+                return {
+                  outcome: 'fail',
+                  failure: failureFromThrow({
+                    error: err,
+                    kind,
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.complete',
+                  }),
+                };
+              }
+            },
+            {
+              runId: recoveryRunId,
+              artifactRoot,
+              dryRun,
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'develop_phase.complete',
+              budget: recoveryBudget,
+            },
+            recoveryOptions,
+          );
+          if (finalizeRecovered.kind === 'escalated') {
+            fmt.log('develop', `  ${fmt.sym.fail} ${fmt.error(`Escalated (${finalizeRecovered.scenario}): ${finalizeRecovered.reason}`)}`);
+            markPacketFailed({
+              packetId: packet.id,
+              artifactRoot,
+              recovery: finalizeRecovered,
+              runId: opts.runId,
+              dryRun,
+            });
+            escalated = true;
+            break;
           }
-          currentPoint = nextPointAfterFinalize(completion.ok);
+          fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+          completionIds.add(packet.id);
+          currentPoint = nextPointAfterFinalize(true);
           break;
         }
       }
     }
 
-    if (currentPoint === 'completed') {
+    if (currentPoint === 'completed' && !escalated) {
       completed.push(packet.id);
     } else {
+      // Escalation, cap-block, max-review-iterations exhaustion, OR
+      // a recipe-level escalate all land here. The packet is in the
+      // failed list; the per-packet state machine has stopped; the
+      // outer for-loop continues to the next independent packet.
       failed.push(packet.id);
     }
   }
