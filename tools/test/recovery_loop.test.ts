@@ -157,7 +157,14 @@ describe('runWithRecovery — ProviderTransient', () => {
     expect(events).toEqual(['recovery.attempt_started', 'recovery.succeeded']);
   });
 
-  it('3 transients exhaust the budget (2 retries) -> exhausted -> escalated', () => {
+  it('3 transients exhaust the budget -> recovery.exhausted -> RECLASSIFY -> ProviderUnavailable cascade fires', () => {
+    // Phase 7 — when ProviderTransient exhausts (2 retries used, a
+    // 3rd transient failure observed), the loop reclassifies to
+    // ProviderUnavailable so the cascade walk begins. With no
+    // cascade attached to the failure context, the cascade recipe
+    // escalates with a no-cascade-supplied reason. The exhausted
+    // event still fires (the transient budget IS exhausted — that's
+    // honest); the escalation scenario is ProviderUnavailable.
     const ctx = defaultCtx();
     const r = runWithRecovery(
       queuedOp<string>([
@@ -170,14 +177,61 @@ describe('runWithRecovery — ProviderTransient', () => {
     );
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
-      expect(r.scenario).toBe('ProviderTransient');
-      expect(r.reason).toMatch(/Retry budget exhausted/);
+      expect(r.scenario).toBe('ProviderUnavailable');
+      expect(r.reason).toMatch(/no cascade/i);
       expect(r.attempts).toBe(3);
     }
 
     const events = readEventStream(ctx.artifactRoot, ctx.runId).map((e) => e.event_type);
     expect(events).toContain('recovery.exhausted');
     expect(events.indexOf('recovery.exhausted')).toBeLessThan(events.indexOf('recovery.escalated'));
+  });
+
+  it('Phase 7 reclassification: 2 transients then ProviderUnavailable cascade succeeds on next hop', () => {
+    // Cascade has 2 hops. Primary: 2 transient failures (consumed
+    // by ProviderTransient retries). 3rd failure exhausts the
+    // transient budget; loop reclassifies to ProviderUnavailable;
+    // recipe returns cascade[1]; that hop succeeds.
+    const ctx = defaultCtx();
+    const cascade = [
+      { provider: 'codex' as const, model: 'A' },
+      { provider: 'claude' as const, model: 'B' },
+    ];
+    const calls: AttemptContext[] = [];
+    const op = (attempt: AttemptContext): OperationResult<string> => {
+      calls.push(attempt);
+      // Calls 1, 2, 3 all transient (HTTP 503). Call 4 succeeds
+      // (the cascade hop).
+      if (attempt.attemptNumber <= 3) {
+        return {
+          outcome: 'fail',
+          failure: {
+            ...failureFromSubprocess({
+              exitCode: 1,
+              stdout: '',
+              stderr: 'HTTP 503',
+              kind: 'agent_invocation',
+            }),
+            cascade,
+          },
+        };
+      }
+      return ok('cascade-recovered');
+    };
+    const r = runWithRecovery(op, ctx, noWait);
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value).toBe('cascade-recovered');
+    expect(calls.length).toBe(4);
+    // Call 1 = primary; calls 2-3 = ProviderTransient retries;
+    // call 4 = cascade_provider hop on the second CLI.
+    expect(calls[1]?.action).toBe('retry_same');
+    expect(calls[2]?.action).toBe('retry_same');
+    expect(calls[3]?.action).toBe('cascade_provider');
+    expect(calls[3]?.cascade).toEqual({ provider: 'claude', model: 'B' });
+    const types = readEventStream(ctx.artifactRoot, ctx.runId).map((e) => e.event_type);
+    expect(types).toContain('recovery.exhausted');     // transient budget exhausted
+    expect(types).toContain('recovery.attempt_started'); // cascade attempt
+    expect(types).toContain('recovery.succeeded');     // cascade succeeded
   });
 });
 
@@ -524,7 +578,12 @@ describe('runWithRecovery — cap-blocked retry', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — per-packet budget across calls', () => {
-  it('shared budget: 2 ProviderTransient retries used; 3rd transient call escalates', () => {
+  it('shared budget: 2 ProviderTransient retries used; 3rd transient call reclassifies to ProviderUnavailable', () => {
+    // Phase 7 — when the per-packet ProviderTransient budget is
+    // already exhausted (used across earlier runWithRecovery calls
+    // in the same packet), the next transient failure reclassifies
+    // to ProviderUnavailable so the cascade fires. Without a cascade
+    // attached, the recipe escalates with no-cascade reason.
     const ctx = defaultCtx();
     // First call: 1 transient -> 1 retry succeeds (1 retry used)
     const r1 = runWithRecovery(
@@ -542,14 +601,19 @@ describe('runWithRecovery — per-packet budget across calls', () => {
     );
     expect(r2.kind).toBe('ok');
 
-    // Third call: 1 transient -> budget=0 left -> escalate
+    // Third call: 1 transient -> budget=0 left -> RECLASSIFY to
+    // ProviderUnavailable -> recipe escalates because no cascade was
+    // attached to the failure context.
     const r3 = runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503')]),
       ctx,
       noWait,
     );
     expect(r3.kind).toBe('escalated');
-    if (r3.kind === 'escalated') expect(r3.scenario).toBe('ProviderTransient');
+    if (r3.kind === 'escalated') {
+      expect(r3.scenario).toBe('ProviderUnavailable');
+      expect(r3.reason).toMatch(/no cascade/i);
+    }
   });
 
   it('mixed scenarios tracked independently: 1 BuildFailed retry + 2 transient retries all succeed', () => {
