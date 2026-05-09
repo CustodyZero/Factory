@@ -1,0 +1,61 @@
+# Phase 7 Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** phase-7-failover (commits 70a4a9b, 208f6b8, 6af05e2, faea18a, b79432a, 17b1b84)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. Primary invocation doesn't use cascade[0] — model_failover[0] is silently skipped
+
+**Files:** `tools/pipeline/develop_phase.ts:592-593` (and the same pattern in plan/verify), `tools/pipeline/develop_phase.ts:821`, `tools/pipeline/plan_phase.ts:271`, `tools/pipeline/verify_phase.ts:285`
+
+`computeCascade()` defines `cascade[0]` as the primary attempt. For a provider with `model_failover`, `cascade[0].model = model_failover[0]`. But the phase closures construct the primary as:
+
+```ts
+? invokeAgent(useProvider, finalPrompt, config, devTier, useModel)  // cascade retry
+: invokeAgent(devProvider, finalPrompt, config, devTier);            // primary — NO modelOverride
+```
+
+The primary uses `devProvider` (persona_providers[0]) and `devTier` (which resolves via model_map), with NO modelOverride. If `model_map[devTier] !== model_failover[0]`, the first invocation uses the wrong model. Recovery then assumes the primary failed at cascade[0] and starts at cascade[1] — having silently skipped the actual configured first model.
+
+**Fix:** Derive each persona's primary from `cascade[0]`:
+```ts
+const devPrimary = devCascade[0] ?? { provider: devProvider, model: undefined };
+invokeAgent(devPrimary.provider, prompt, config, devTier, devPrimary.model)
+```
+Apply consistently to planner, developer implement/rework, reviewer, and QA closures. Add a test where `model_map[tier] !== model_failover[0]` and assert the FIRST call uses `model_failover[0]`.
+
+### 2. Cascade dispatch not honored for BuildFailed remediation agent failures
+
+**Files:** `tools/pipeline/develop_phase.ts:924`, `tools/pipeline/verify_phase.ts:510`
+
+When `completePacket` fails build, the closure invokes the dev remediation agent with the guardrail prompt. If THAT agent invocation fails with ProviderUnavailable, the failure carries `devCascade` info but the next `cascade_provider` retry skips the remediation step — it just re-runs `completePacket` against unchanged code. The remediation prompt is lost across the recovery boundary, so:
+
+- Primary remediation agent fails → cascade fires → next remediation never runs → completePacket retries unchanged → BuildFailed budget exhausts → escalate.
+
+The pattern: recovery state isn't preserved across cascade hops for compound retry actions.
+
+**Fix:** Preserve the remediation prompt across recovery attempts inside the finalize closure. On `retry_with_guardrail_prompt`, set the prompt and invoke the primary dev cascade step. On `cascade_provider` WITH a pending remediation prompt, invoke `attempt.cascade.provider` + `attempt.cascade.model` with that same remediation prompt before retrying `completePacket`. Tests for both develop finalize and verify finalize: primary remediation provider fails → next cascade hop succeeds.
+
+### 3. `PROVIDER_UNAVAILABLE_BUDGET_SENTINEL = 99` is unbounded by schema
+
+**File:** `tools/pipeline/recovery.ts:767`
+
+Comment says "max config is 3 CLIs × 3 models = 9" — but the schema has no `maxItems`/`uniqueItems` on `persona_providers` or `model_failover`. A valid config can produce cascade > 99, in which case the static budget or loop safety bound stops the recipe before exhaustion. Violates the data-driven cap premise.
+
+**Fix:** Two options:
+- **A.** Remove the static sentinel from enforcement for `ProviderUnavailable`. Let the recipe self-cap and make the loop safety bound dynamic against current cascade length. Cleanest — preserves data-driven design.
+- **B.** Enforce schema maxima that make 99 provably unreachable. Less aligned with data-driven design.
+
+I lean (A).
+
+## What this attempt does well
+
+- The split into `pipeline/cascade.ts` is the right architectural direction: cascade is config-shaped pure computation, recovery remains scenario/recipe-oriented.
+- Backward compat is well-covered: schema accepts string and array forms, loader normalizes legacy strings, existing configs remain in legacy form.
+
+## Round budget remaining
+
+2 rounds.
