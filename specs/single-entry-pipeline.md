@@ -379,26 +379,39 @@ The revised attempt's architectural breakthrough: typed `RecoveryResult<T>` disc
 - Recovery state persistence across runs (today's budget is in-memory per-run; recovery state for resumed runs is out of scope).
 - DSL-style policy composition (per [`recovery_recipes_not_dsl`](../docs/decisions/recovery_recipes_not_dsl.md), recipes stay as TypeScript functions).
 
-### Phase 7 — Two-layer provider failover
+### Phase 7 — Two-layer provider failover ✅ COMPLETE
 
-**Goal:** Implement cross-CLI and within-CLI provider failover.
+**Status:** Merged in commit `83818f5` (2026-05-05). Only Phase 8 (documentation pass) remains.
 
-**Specifically:**
+**What shipped:**
 
-- Update `factory-config.schema.json`: `persona_providers.<persona>` accepts `string | string[]`; provider config gains optional `model_failover: string[]`
-- Update `config.ts` loader to normalize single-string `persona_providers` to one-element array; default `model_failover` to undefined
-- Update `tools/pipeline/agent_invoke.ts` to walk the failover list
-- Wire the cascade: `ProviderUnavailable` recipe consults `model_failover` first, then `persona_providers`
-- Update template `factory.config.json` and the live `factory.config.json` to use the new shape
+- New `tools/pipeline/cascade.ts` (183 lines, pure): `computeCascade(persona, tier, config) → ReadonlyArray<{ provider, model }>` walks within-CLI hops (each provider's `model_failover` list) before cross-CLI fallback (next entry in `persona_providers`). Direct providers (codex, claude) without `model_failover` contribute exactly one cascade entry; abstraction providers (copilot) contribute one entry per failover model. Zero fs imports.
+- `schemas/factory-config.schema.json` updated: `persona_providers.<persona>` now accepts `string | string[]`; `pipeline_provider` gains optional `model_failover: string[]`. Schema validates both old and new shapes.
+- `tools/config.ts`: `normalizePersonaProvider` normalizes single-string entries to one-element arrays; loader hydrates `model_failover` defaulting to undefined.
+- `tools/pipeline/agent_invoke.ts`: new optional 5th argument `modelOverride?: string` bypasses the `modelTier` → `model_map` resolution. Cascade hops pass through this to invoke specific models.
+- `tools/pipeline/recovery.ts`: new `cascade_provider` action on `RecoveryAttempt` carrying `{ provider, model }`. New `recipeProviderUnavailable` consults the cascade computed from config; self-caps at `cascade.length` exhaustion. `SCENARIO_RETRY_BUDGET.ProviderUnavailable = 0` (was the Phase 6 escalate-immediately default; the cap is now data-driven via the recipe).
+- `tools/pipeline/recovery_loop.ts`:
+  - `skipBudgetCheck = scenario === 'ProviderUnavailable'` exempts the scenario from the static budget — recipe is the single source of truth for exhaustion.
+  - `ProviderTransient` exhaustion reclassifies to `ProviderUnavailable` via `scenarioOverride` flag (keeps classifier as pure pattern-matcher).
+  - **Dynamic safety bound:** `computeSafetyBound(cascadeLen) = STATIC_BUDGET_SUM + cascadeLen + 1`, seeded from initial failure's cascade and grown monotonically via `Math.max` after each failure observation. Late-discovered cascades (e.g., `BuildFailed → remediation ProviderUnavailable`) grow the bound rather than tripping it.
+- All 5 phase closures (planner, developer implement/rework/finalize, code reviewer, QA) derive `<persona>Primary = cascade[0] ?? { provider, model: undefined }` and use `target = attempt.cascade ?? <persona>Primary` at every `invokeAgent` call. Eliminates the silent-skip bug where `model_map[tier]` differed from `model_failover[0]`.
+- BuildFailed remediation prompt preserved across cascade hops via closure-scoped `pendingRemediationPrompt` + `lastRemediationTarget`. When the dev-agent remediation fails with ProviderUnavailable, the cascade hop re-invokes remediation against the new provider/model BEFORE retrying `completePacket`. Applies to both develop finalize and verify finalize closures.
+- `FailureScenario` closed enum unchanged (8 variants). Phase 6's forward-compat seam delivered as designed — only the recipe behavior changed.
 
-**Acceptance:**
+**Iteration record:**
 
-- `persona_providers.developer = "codex"` (string) still works (backward compatible)
-- `persona_providers.developer = ["copilot", "claude", "codex"]` works; primary failure falls through
-- A copilot config with `model_failover: ["claude-opus-4-6", "GPT-5.4"]` falls through to GPT-5.4 when claude-opus-4-6 fails on copilot
-- Direct providers (codex, claude) fall through to the next CLI without trying alternate models
-- Schema validates both the old and new shapes
-- Tests cover the cascade and the backward-compat path
+- 3 review rounds used (codex GPT-5.5):
+  - Round 1 REQUEST-CHANGES: three substantive correctness bugs — primary invocation bypassed cascade[0]; BuildFailed remediation prompt was lost across cascade boundaries; `PROVIDER_UNAVAILABLE_BUDGET_SENTINEL = 99` was unbounded by schema. All three the same shape: data flowed as labels but didn't control behavior.
+  - Round 2 REQUEST-CHANGES: one residual finding — safety bound snapshotted `cascade.length` from the initial failure only, missing late-discovered cascades when `BuildFailed → remediation ProviderUnavailable` produced a long cascade after the loop's bound was set.
+  - Round 3 APPROVE.
+- Independent QA verification (separate Opus, FI-7) APPROVE on all 20 acceptance criteria + 17 specific checks. TZ-invariance independently verified under `TZ=Pacific/Kiritimati` (681/681 pass).
+
+**Tests:** 630 → 681 (+51 across 10 commits). All existing tests still pass. Backward compat: existing single-string `persona_providers` configs (including the live `factory.config.json` and `templates/factory.config.json`) work unchanged.
+
+**What this does NOT include (still deferred):**
+
+- Live `factory.config.json` upgraded to multi-CLI failover — backward compat is the load-bearing invariant; operators with the old shape continue to work. The new shape is *supported*, not *required*.
+- Templates updated to demonstrate the new shape — kept the `templates/factory.config.json` in legacy form to preserve plug-in compatibility for operators who lift it directly.
 
 ### Phase 8 — Documentation pass
 
