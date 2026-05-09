@@ -92,24 +92,86 @@ type CompleteEntry = CompleteOutcome | (() => CompleteOutcome);
 const __completeQueue: CompleteEntry[] = [];
 const __completeCalls: Array<Record<string, unknown>> = [];
 
+/**
+ * The completePacket mock mirrors the real lifecycle code's
+ * atomic-completion contract (Phase 6, Option A):
+ *   - ci_pass=true: write a completion record AND set packet status
+ *     to 'completed'. The next call sees existsSync(completionPath)
+ *     and would short-circuit on already_complete=true.
+ *   - ci_pass=false: do NOT write a record; do NOT mutate packet
+ *     status. The next call re-runs the queue.
+ *
+ * Without this realism, tests that exercise the "first call fails,
+ * second call succeeds" path can't catch the round-2 idempotency bug
+ * where a stale completion record falsely short-circuits a retry.
+ */
 vi.mock('../lifecycle/complete.js', () => ({
   completePacket: (opts: Record<string, unknown>) => {
     __completeCalls.push(opts);
-    const next = __completeQueue.shift();
-    if (next === undefined) {
-      // Default: success.
-      return {
-        packet_id: opts['packetId'] as string,
-        ci_pass: true,
-        build_pass: true,
-        lint_pass: true,
-        tests_pass: true,
-        files_changed: [],
-        already_complete: false,
-      };
+    const packetId = opts['packetId'] as string;
+    const projectRoot = opts['projectRoot'] as string | undefined;
+
+    // Idempotency: if a completion record exists, return its values
+    // without consuming the queue (matches real completePacket).
+    if (typeof projectRoot === 'string') {
+      const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
+      if (existsSync(completionPath)) {
+        const existing = JSON.parse(readFileSync(completionPath, 'utf-8')) as {
+          packet_id: string;
+          verification?: { ci_pass?: boolean; build_pass?: boolean; lint_pass?: boolean; tests_pass?: boolean };
+        };
+        const v = existing.verification ?? {};
+        return {
+          packet_id: existing.packet_id,
+          ci_pass: v.ci_pass ?? false,
+          build_pass: v.build_pass ?? false,
+          lint_pass: v.lint_pass ?? false,
+          tests_pass: v.tests_pass ?? false,
+          files_changed: [],
+          already_complete: true,
+        };
+      }
     }
-    if (typeof next === 'function') return next();
-    return next;
+
+    const next = __completeQueue.shift();
+    const outcome: CompleteOutcome = next === undefined
+      ? { ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true }
+      : (typeof next === 'function' ? next() : next);
+
+    // Atomic write: only on success.
+    if (outcome.ci_pass && typeof projectRoot === 'string') {
+      const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
+      writeFileSync(completionPath, JSON.stringify({
+        packet_id: packetId,
+        completed_at: '2024-01-01T00:00:00Z',
+        completed_by: { kind: 'agent', id: 'test' },
+        summary: 'mock completion',
+        files_changed: [],
+        verification: {
+          ci_pass: outcome.ci_pass,
+          build_pass: outcome.build_pass,
+          lint_pass: outcome.lint_pass,
+          tests_pass: outcome.tests_pass,
+          notes: 'ok',
+        },
+      }, null, 2) + '\n', 'utf-8');
+      const packetPath = join(projectRoot, 'packets', `${packetId}.json`);
+      if (existsSync(packetPath)) {
+        const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+        data['status'] = 'completed';
+        writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      }
+    }
+
+    return {
+      packet_id: packetId,
+      ci_pass: outcome.ci_pass,
+      build_pass: outcome.build_pass,
+      lint_pass: outcome.lint_pass,
+      tests_pass: outcome.tests_pass,
+      files_changed: [],
+      already_complete: false,
+    };
   },
 }));
 
@@ -274,6 +336,38 @@ function readPacket(root: string, id: string): Record<string, unknown> {
 
 const noopGit: GitRunner = () => ({ exitCode: 0, stdout: '', stderr: '' });
 
+/**
+ * The four post-escalation invariants every escalation integration
+ * test must pin (Phase 6 round-2 codex finding):
+ *
+ *   (1) result.failed contains the packet
+ *   (2) result.completed does NOT contain the packet
+ *   (3) packets/<id>.json has status === 'failed'
+ *   (4) NO packet.completed event was emitted for that packet
+ *
+ * Asserting only labels (in failed list, scenario set) misses
+ * controlling-vs-observable gaps. This helper enforces the full set.
+ */
+function expectEscalationInvariants(
+  result: { readonly failed: readonly string[]; readonly completed: readonly string[] },
+  root: string,
+  runId: string,
+  packetId: string,
+): void {
+  // (1)
+  expect(result.failed).toContain(packetId);
+  // (2)
+  expect(result.completed).not.toContain(packetId);
+  // (3)
+  const packet = readPacket(root, packetId);
+  expect(packet['status']).toBe('failed');
+  // (4)
+  const completedEvents = readEvents(runId, root).filter(
+    (e) => e.event_type === 'packet.completed' && e.payload['packet_id'] === packetId,
+  );
+  expect(completedEvents.length).toBe(0);
+}
+
 // ---------------------------------------------------------------------------
 // ESCALATION-PATH INTEGRATION TESTS
 //
@@ -306,33 +400,24 @@ describe('runDevelopPhase — TestFailed escalates: post-escalation invariants',
       gitRunner: noopGit,
     });
 
-    // (1) Post-escalation invariant: in failed list, NOT completed.
-    expect(result.failed).toEqual(['pkt-test']);
-    expect(result.completed).toEqual([]);
+    // FOUR-INVARIANT post-escalation: failed list, not completed,
+    // packet status, and no packet.completed event.
+    expectEscalationInvariants(result, root, 'run-test-failed', 'pkt-test');
 
-    // (2) Controlling contract: packet status is 'failed'.
     const packet = readPacket(root, 'pkt-test');
-    expect(packet['status']).toBe('failed');
     expect(packet['failure']).toBeDefined();
     const failure = packet['failure'] as Record<string, unknown>;
     expect(failure['scenario']).toBe('TestFailed');
 
-    // (3) Observable contract: recovery.escalated AND packet.failed
-    // events fired; NO packet.completed for this packet.
-    const events = readEvents('run-test-failed', root);
-    const types = events.map((e) => e.event_type);
-    expect(types).toContain('recovery.escalated');
-    expect(types).toContain('packet.failed');
-    // No packet.completed for the escalated packet.
-    const completedEvents = events.filter(
-      (e) => e.event_type === 'packet.completed' && e.payload['packet_id'] === 'pkt-test',
-    );
-    expect(completedEvents.length).toBe(0);
+    // recovery.escalated AND packet.failed events fired.
+    const events = readEvents('run-test-failed', root).map((e) => e.event_type);
+    expect(events).toContain('recovery.escalated');
+    expect(events).toContain('packet.failed');
   });
 });
 
 describe('runDevelopPhase — LintFailed escalates immediately, no retry', () => {
-  it('packet marked failed; recovery scenario is LintFailed; no recovery.attempt_started', () => {
+  it('packet marked failed; recovery scenario is LintFailed; no recovery.attempt_started; FOUR-INVARIANT', () => {
     const root = mkRoot();
     writePacket(root, 'pkt-lint', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     __completeQueue.push({
@@ -351,10 +436,10 @@ describe('runDevelopPhase — LintFailed escalates immediately, no retry', () =>
       specId: 'spec-x',
       gitRunner: noopGit,
     });
-    expect(result.failed).toEqual(['pkt-lint']);
+
+    expectEscalationInvariants(result, root, 'run-lint', 'pkt-lint');
 
     const packet = readPacket(root, 'pkt-lint');
-    expect(packet['status']).toBe('failed');
     expect((packet['failure'] as Record<string, unknown>)['scenario']).toBe('LintFailed');
 
     const events = readEvents('run-lint', root);
@@ -367,7 +452,7 @@ describe('runDevelopPhase — LintFailed escalates immediately, no retry', () =>
 });
 
 describe('runDevelopPhase — CompletionGateBlocked escalates immediately', () => {
-  it('completePacket throws FI-7 -> CompletionGateBlocked -> packet failed', () => {
+  it('completePacket throws FI-7 -> CompletionGateBlocked -> packet failed; FOUR-INVARIANT', () => {
     const root = mkRoot();
     writePacket(root, 'pkt-fi7', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     __completeQueue.push(() => {
@@ -383,7 +468,8 @@ describe('runDevelopPhase — CompletionGateBlocked escalates immediately', () =
       specId: 'spec-x',
       gitRunner: noopGit,
     });
-    expect(result.failed).toEqual(['pkt-fi7']);
+
+    expectEscalationInvariants(result, root, 'run-fi7', 'pkt-fi7');
 
     const packet = readPacket(root, 'pkt-fi7');
     expect((packet['failure'] as Record<string, unknown>)['scenario']).toBe('CompletionGateBlocked');
@@ -395,7 +481,7 @@ describe('runDevelopPhase — CompletionGateBlocked escalates immediately', () =
 });
 
 describe('runDevelopPhase — ProviderUnavailable escalates immediately', () => {
-  it('agent stderr says provider disabled -> ProviderUnavailable -> packet failed', () => {
+  it('agent stderr says provider disabled -> ProviderUnavailable -> packet failed; FOUR-INVARIANT', () => {
     const root = mkRoot();
     writePacket(root, 'pkt-pu');
     __invokeQueue.push({
@@ -412,7 +498,8 @@ describe('runDevelopPhase — ProviderUnavailable escalates immediately', () => 
       specId: 'spec-x',
       gitRunner: noopGit,
     });
-    expect(result.failed).toEqual(['pkt-pu']);
+
+    expectEscalationInvariants(result, root, 'run-pu', 'pkt-pu');
 
     const packet = readPacket(root, 'pkt-pu');
     expect((packet['failure'] as Record<string, unknown>)['scenario']).toBe('ProviderUnavailable');
@@ -463,9 +550,11 @@ describe('runDevelopPhase — StaleBranch rebase conflict escalates', () => {
     expect(result.failed).toEqual(['pkt-a-stale']);
     expect(result.completed).toEqual(['pkt-b-ok']);
 
-    // Stale-branch packet marked failed with StaleBranch scenario.
+    // Full FOUR-INVARIANT post-escalation assertion on the failed packet.
+    expectEscalationInvariants(result, root, 'run-stale', 'pkt-a-stale');
+
+    // Stale-branch packet has the right scenario stamped.
     const stalePacket = readPacket(root, 'pkt-a-stale');
-    expect(stalePacket['status']).toBe('failed');
     expect((stalePacket['failure'] as Record<string, unknown>)['scenario']).toBe('StaleBranch');
 
     const events = readEvents('run-stale', root).map((e) => e.event_type);
@@ -511,7 +600,7 @@ describe('runDevelopPhase — ProviderTransient retry succeeds; packet completed
 });
 
 describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => {
-  it('first finalize fails build; retry sees the guardrail; build passes; packet completed', () => {
+  it('first finalize fails build; dev agent re-invoked with guardrail BEFORE retry; build passes; packet completed', () => {
     const root = mkRoot();
     writePacket(root, 'pkt-b', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     // First completePacket: build_pass=false. Second: success.
@@ -541,6 +630,20 @@ describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => 
 
     // completePacket called twice.
     expect(__completeCalls.length).toBe(2);
+
+    // Round-2 controlling contract: BEFORE the retry of completePacket,
+    // the dev agent (codex) must have been invoked with the BuildFailed
+    // guardrail prompt appended. Without this step, the retry would
+    // observe the same failure forever — the round-2 codex finding.
+    // Pin the EXACT guardrail text and assert the order: the dev
+    // remediation invocation comes AFTER the failing completePacket
+    // and BEFORE the retrying completePacket.
+    const guardrailCalls = __invokeCalls.filter(
+      (c) => c.provider === 'codex' && c.prompt.includes(
+        'The previous implementation failed the build. Fix the implementation.',
+      ),
+    );
+    expect(guardrailCalls.length).toBe(1);
 
     const events = readEvents('run-build', root).map((e) => e.event_type);
     expect(events).toContain('recovery.attempt_started');

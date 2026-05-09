@@ -76,23 +76,77 @@ type CompleteEntry = CompleteOutcome | (() => CompleteOutcome);
 const __completeQueue: CompleteEntry[] = [];
 const __completeCalls: Array<Record<string, unknown>> = [];
 
+/**
+ * Atomic-completion mock (Phase 6, Option A): write completion record
+ * + status='completed' ONLY when ci_pass=true. On retry, the existing
+ * record short-circuits via already_complete=true. Without this
+ * realism, the round-2 idempotency bug — a stale failed-completion
+ * falsely succeeding on retry — slips past the test.
+ */
 vi.mock('../lifecycle/complete.js', () => ({
   completePacket: (opts: Record<string, unknown>) => {
     __completeCalls.push(opts);
-    const next = __completeQueue.shift();
-    if (next === undefined) {
-      return {
-        packet_id: opts['packetId'] as string,
-        ci_pass: true,
-        build_pass: true,
-        lint_pass: true,
-        tests_pass: true,
-        files_changed: [],
-        already_complete: false,
-      };
+    const packetId = opts['packetId'] as string;
+    const projectRoot = opts['projectRoot'] as string | undefined;
+
+    if (typeof projectRoot === 'string') {
+      const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
+      if (existsSync(completionPath)) {
+        const existing = JSON.parse(readFileSync(completionPath, 'utf-8')) as {
+          packet_id: string;
+          verification?: { ci_pass?: boolean; build_pass?: boolean; lint_pass?: boolean; tests_pass?: boolean };
+        };
+        const v = existing.verification ?? {};
+        return {
+          packet_id: existing.packet_id,
+          ci_pass: v.ci_pass ?? false,
+          build_pass: v.build_pass ?? false,
+          lint_pass: v.lint_pass ?? false,
+          tests_pass: v.tests_pass ?? false,
+          files_changed: [],
+          already_complete: true,
+        };
+      }
     }
-    if (typeof next === 'function') return next();
-    return next;
+
+    const next = __completeQueue.shift();
+    const outcome: CompleteOutcome = next === undefined
+      ? { ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true }
+      : (typeof next === 'function' ? next() : next);
+
+    if (outcome.ci_pass && typeof projectRoot === 'string') {
+      const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
+      writeFileSync(completionPath, JSON.stringify({
+        packet_id: packetId,
+        completed_at: '2024-01-01T00:00:00Z',
+        completed_by: { kind: 'agent', id: 'test' },
+        summary: 'mock completion',
+        files_changed: [],
+        verification: {
+          ci_pass: outcome.ci_pass,
+          build_pass: outcome.build_pass,
+          lint_pass: outcome.lint_pass,
+          tests_pass: outcome.tests_pass,
+          notes: 'ok',
+        },
+      }, null, 2) + '\n', 'utf-8');
+      const packetPath = join(projectRoot, 'packets', `${packetId}.json`);
+      if (existsSync(packetPath)) {
+        const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+        data['status'] = 'completed';
+        writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      }
+    }
+
+    return {
+      packet_id: packetId,
+      ci_pass: outcome.ci_pass,
+      build_pass: outcome.build_pass,
+      lint_pass: outcome.lint_pass,
+      tests_pass: outcome.tests_pass,
+      files_changed: [],
+      already_complete: false,
+    };
   },
 }));
 
@@ -241,12 +295,35 @@ function readPacket(root: string, id: string): Record<string, unknown> {
 
 const noopGit: GitRunner = () => ({ exitCode: 0, stdout: '', stderr: '' });
 
+/**
+ * The four post-escalation invariants (Phase 6 round-2 codex finding):
+ *   (1) result.failed contains the packet
+ *   (2) result.completed does NOT contain the packet
+ *   (3) packets/<id>.json has status === 'failed'
+ *   (4) NO packet.completed event was emitted for that packet
+ */
+function expectEscalationInvariants(
+  result: { readonly failed: readonly string[]; readonly completed: readonly string[] },
+  root: string,
+  runId: string,
+  packetId: string,
+): void {
+  expect(result.failed).toContain(packetId);
+  expect(result.completed).not.toContain(packetId);
+  const packet = readPacket(root, packetId);
+  expect(packet['status']).toBe('failed');
+  const completedEvents = readEvents(runId, root).filter(
+    (e) => e.event_type === 'packet.completed' && e.payload['packet_id'] === packetId,
+  );
+  expect(completedEvents.length).toBe(0);
+}
+
 // ---------------------------------------------------------------------------
 // ESCALATION-PATH INTEGRATION TESTS
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — TestFailed escalates: post-escalation invariants', () => {
-  it('packet marked failed; in failed list; packet.failed emitted; no packet.completed for escalated packet', () => {
+  it('packet marked failed; in failed list; packet.failed emitted; no packet.completed for escalated packet; FOUR-INVARIANT', () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
@@ -264,26 +341,20 @@ describe('runVerifyPhase — TestFailed escalates: post-escalation invariants', 
       specId: 'spec-x',
       gitRunner: noopGit,
     });
-    expect(result.failed).toEqual(['pkt-q']);
-    expect(result.completed).toEqual([]);
+
+    expectEscalationInvariants(result, root, 'run-qa-test-failed', 'pkt-q');
 
     const packet = readPacket(root, 'pkt-q');
-    expect(packet['status']).toBe('failed');
     expect((packet['failure'] as Record<string, unknown>)['scenario']).toBe('TestFailed');
 
-    const events = readEvents('run-qa-test-failed', root);
-    const types = events.map((e) => e.event_type);
+    const types = readEvents('run-qa-test-failed', root).map((e) => e.event_type);
     expect(types).toContain('recovery.escalated');
     expect(types).toContain('packet.failed');
-    const completedEvents = events.filter(
-      (e) => e.event_type === 'packet.completed' && e.payload['packet_id'] === 'pkt-q',
-    );
-    expect(completedEvents.length).toBe(0);
   });
 });
 
 describe('runVerifyPhase — LintFailed escalates immediately, no retry', () => {
-  it('completePacket lint fail -> escalated; no recovery.attempt_started', () => {
+  it('completePacket lint fail -> escalated; no recovery.attempt_started; FOUR-INVARIANT', () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
@@ -300,7 +371,8 @@ describe('runVerifyPhase — LintFailed escalates immediately, no retry', () => 
       specId: 'spec-x',
       gitRunner: noopGit,
     });
-    expect(result.failed).toEqual(['pkt-q']);
+
+    expectEscalationInvariants(result, root, 'run-qa-lint', 'pkt-q');
 
     const events = readEvents('run-qa-lint', root).map((e) => e.event_type);
     expect(events).not.toContain('recovery.attempt_started');
@@ -335,7 +407,8 @@ describe('runVerifyPhase — StaleBranch from completePacket throw is reachable'
       specId: 'spec-x',
       gitRunner,
     });
-    expect(result.failed).toEqual(['pkt-q']);
+    expectEscalationInvariants(result, root, 'run-qa-stale', 'pkt-q');
+
     const packet = readPacket(root, 'pkt-q');
     expect((packet['failure'] as Record<string, unknown>)['scenario']).toBe('StaleBranch');
     // Recovery layer ran git fetch + rebase before escalating.
@@ -419,5 +492,59 @@ describe('runVerifyPhase — ProviderTransient retry succeeds', () => {
     expect(events).toContain('recovery.attempt_started');
     expect(events).toContain('recovery.succeeded');
     expect(events).not.toContain('recovery.escalated');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — QA packet whose dev dependency is `status: "failed"` is
+// terminated, NOT left waiting indefinitely as a skipped packet.
+// ---------------------------------------------------------------------------
+
+describe('runVerifyPhase — QA packet whose dev dependency failed is terminated', () => {
+  it('dev packet status=failed (no completion) -> QA packet placed in failed list with cascaded scenario', () => {
+    const root = mkRoot();
+    // Write a dev packet in terminal-failed state with NO completion record.
+    writeFileSync(
+      join(root, 'packets', 'pkt-d-bad.json'),
+      JSON.stringify({
+        id: 'pkt-d-bad',
+        kind: 'dev',
+        title: 'Dev that failed',
+        status: 'failed',
+        started_at: '2024-01-01T00:00:00Z',
+        failure: {
+          scenario: 'TestFailed',
+          reason: 'tests failed',
+          attempts: 1,
+          escalation_path: null,
+        },
+      }, null, 2),
+      'utf-8',
+    );
+    writeQaPacket(root, 'pkt-q', 'pkt-d-bad');
+
+    const result = runVerifyPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-d-bad', 'pkt-q']),
+      config: makeConfig(),
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-cascade',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+
+    // The QA packet is failed, NOT skipped (would otherwise wait forever).
+    expect(result.failed).toContain('pkt-q');
+    expect(result.skipped).not.toContain('pkt-q');
+    expect(result.completed).not.toContain('pkt-q');
+
+    // The QA packet was stamped with the cascade scenario.
+    const qaPacket = readPacket(root, 'pkt-q');
+    expect(qaPacket['status']).toBe('failed');
+    expect((qaPacket['failure'] as Record<string, unknown>)['scenario']).toBe('CascadedFromDependency');
+
+    // The QA agent was NEVER invoked — there is nothing to verify.
+    expect(__invokeCalls.length).toBe(0);
   });
 });
