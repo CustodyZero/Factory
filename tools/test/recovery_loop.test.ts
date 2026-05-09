@@ -344,6 +344,66 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
       expect(r.reason).toContain('claude:B');
     }
   });
+
+  it('Phase 7 round-2: cascade of length 5 exhausts after EXACTLY 5 attempts (data-driven cap, not a static sentinel)', () => {
+    // Pin Issue 3: ProviderUnavailable's cap is the cascade length,
+    // not the static SCENARIO_RETRY_BUDGET entry. A 5-element
+    // cascade must produce 5 closure invocations (primary + 4
+    // cascade hops) before escalating, regardless of any static
+    // per-scenario number.
+    //
+    // Before round-2 the budget map carried a static "high
+    // sentinel" of 99 and the loop's safety bound was static; a
+    // long cascade would still work in practice but the cap was
+    // not data-driven and the schema had no max enforcing it.
+    // After round-2, the loop SKIPS the per-scenario check for
+    // ProviderUnavailable entirely; the recipe's cascade-length
+    // self-cap is authoritative.
+    const ctx = defaultCtx();
+    const cascade = [
+      { provider: 'codex' as const, model: 'm0' },
+      { provider: 'claude' as const, model: 'm1' },
+      { provider: 'copilot' as const, model: 'm2' },
+      { provider: 'codex' as const, model: 'm3' },
+      { provider: 'claude' as const, model: 'm4' },
+    ];
+    const calls: AttemptContext[] = [];
+    const opWithCascade = (attempt: AttemptContext): OperationResult<string> => {
+      calls.push(attempt);
+      return {
+        outcome: 'fail',
+        failure: {
+          ...failureFromSubprocess({
+            exitCode: 1,
+            stdout: '',
+            stderr: "Provider 'X' is disabled",
+            kind: 'agent_invocation',
+          }),
+          cascade,
+        },
+      };
+    };
+    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    expect(r.kind).toBe('escalated');
+    if (r.kind === 'escalated') {
+      expect(r.scenario).toBe('ProviderUnavailable');
+      expect(r.reason).toMatch(/cascade exhausted/i);
+      // Reason names every hop attempted.
+      for (const hop of cascade) {
+        expect(r.reason).toContain(`${hop.provider}:${hop.model}`);
+      }
+    }
+    // Exactly 5 closure invocations: primary + 4 cascade hops.
+    expect(calls.length).toBe(5);
+    // First call has no action (primary). Subsequent 4 are
+    // cascade_provider hops in order.
+    expect(calls[0]?.action).toBeUndefined();
+    expect(calls[1]?.action).toBe('cascade_provider');
+    expect(calls[1]?.cascade).toEqual({ provider: 'claude', model: 'm1' });
+    expect(calls[2]?.cascade).toEqual({ provider: 'copilot', model: 'm2' });
+    expect(calls[3]?.cascade).toEqual({ provider: 'codex', model: 'm3' });
+    expect(calls[4]?.cascade).toEqual({ provider: 'claude', model: 'm4' });
+  });
 });
 
 // ---------------------------------------------------------------------------

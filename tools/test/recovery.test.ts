@@ -433,11 +433,15 @@ describe('SCENARIO_RETRY_BUDGET', () => {
     expect(SCENARIO_RETRY_BUDGET.LintFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.TestFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.CompletionGateBlocked).toBe(0);
-    // Phase 7 — ProviderUnavailable is now data-driven via the
-    // cascade. The recipe self-caps at cascade.length; the budget
-    // here is a high sentinel so the orchestration loop never
-    // short-circuits the cascade walk.
-    expect(SCENARIO_RETRY_BUDGET.ProviderUnavailable).toBe(99);
+    // Phase 7 round-2 — ProviderUnavailable is fully data-driven via
+    // the cascade attached to the FailureContext. The recipe self-
+    // caps at cascade.length; the orchestration loop SKIPS the
+    // per-scenario budget check for this scenario. The map entry is
+    // intentionally 0 so any code path that *did* consult this
+    // (in violation of the contract) would short-circuit on the
+    // first hop — failing loudly rather than silently capping at
+    // a number that doesn't know the cascade length.
+    expect(SCENARIO_RETRY_BUDGET.ProviderUnavailable).toBe(0);
   });
 
   it('has an entry for every scenario in ALL_SCENARIOS', () => {

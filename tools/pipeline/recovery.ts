@@ -738,41 +738,44 @@ export const RECIPES: Readonly<Record<FailureScenario, RecoveryRecipe>> = {
 // "n retries" means n attempts AFTER the first failure. Budget is
 // per-packet, per-scenario; see recovery_loop.ts for enforcement.
 //
-// Most numbers come straight from the brief. The exception is
-// ProviderUnavailable: Phase 7 made its cap data-driven (= cascade
-// length minus 1). The recipe self-caps when the cascade is
-// exhausted; we set the budget here to a high sentinel
-// (PROVIDER_UNAVAILABLE_BUDGET_SENTINEL) so the orchestration loop
-// never short-circuits the cascade before the recipe has a chance
-// to walk it.
+// All numbers come straight from the brief.
 //
-// Trade-off considered: the alternative was threading the data-
-// driven cap into the loop (compute cascade length per call,
-// pass it as the cap). That couples the loop to the cascade and
-// adds plumbing. The sentinel keeps the loop ignorant of cascade
-// shape; the recipe is the single source of truth for "the cascade
-// is exhausted." Downside: the loop's defensive iteration cap
-// (sum of per-scenario budgets + 1) grows; we keep that bounded
-// by capping the sentinel at 99, which is far above any realistic
-// cascade length.
+// EXCEPTION — ProviderUnavailable:
+//   The cap is fully data-driven (= cascade length - 1, where the
+//   cascade is attached to the FailureContext at the call site).
+//   The recipe self-caps via `cascade_attempt_index`: when the
+//   index exceeds `cascade.length - 1` it returns an `escalate`
+//   output naming the exhausted cascade. The orchestration layer
+//   honors this by SKIPPING the per-scenario budget check entirely
+//   when the scenario is ProviderUnavailable (see recovery_loop.ts).
+//
+//   We deliberately set this entry to 0 so any code path that
+//   *did* consult it (in violation of the contract) would
+//   short-circuit on the very first hop — failing loudly at the
+//   typecheck/test boundary rather than letting an off-by-one cap
+//   silently bound the cascade. The orchestration layer's
+//   ProviderUnavailable branch is the authoritative bound.
+//
+//   Round-2 fix: previously we set this to a "high sentinel" (99)
+//   and relied on the assumption that no realistic config would
+//   produce a cascade longer than 99. The schema had no maxItems
+//   constraint, making that assumption unenforced. Option A
+//   (preferred): remove the sentinel; let the recipe self-cap;
+//   give the orchestration loop a dynamic safety bound based on
+//   the actual cascade length. See docs/decisions/single_entry_pipeline.md.
 // ---------------------------------------------------------------------------
-
-/**
- * High sentinel for ProviderUnavailable. The recipe self-caps based
- * on cascade length. This number must exceed any realistic cascade
- * length — the schema's `minItems` for both `persona_providers` and
- * `model_failover` is 1, so even a maxed-out config (3 CLIs * 3
- * models each = 9 hops) is well below 99.
- */
-export const PROVIDER_UNAVAILABLE_BUDGET_SENTINEL = 99;
 
 export const SCENARIO_RETRY_BUDGET: Readonly<Record<FailureScenario, number>> = {
   ProviderTransient: 2,
   AgentNonResponsive: 2,
   BuildFailed: 1,
   StaleBranch: 1,
-  // Phase 7 — sentinel cap; recipe self-caps via cascade length.
-  ProviderUnavailable: PROVIDER_UNAVAILABLE_BUDGET_SENTINEL,
+  // Phase 7 round-2 — the orchestration layer SKIPS this check for
+  // ProviderUnavailable; the recipe self-caps via cascade length.
+  // The 0 here is intentional: any caller that consults this map
+  // for ProviderUnavailable is violating the contract and should
+  // observe a failure on the first hop.
+  ProviderUnavailable: 0,
   LintFailed: 0,
   TestFailed: 0,
   CompletionGateBlocked: 0,

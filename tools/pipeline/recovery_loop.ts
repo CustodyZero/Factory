@@ -322,12 +322,36 @@ export function runWithRecovery<T>(
 
   // Retry loop. We re-classify on every failure because the failure
   // shape can change between attempts (transient -> stable error).
-  // Bounded by SCENARIO_RETRY_BUDGET and any caller-supplied cost
-  // cap. The loop has a hard upper bound of (sum of all per-scenario
-  // budgets + 1) iterations to defend against pathological recipe
-  // outputs.
+  // Bounded by SCENARIO_RETRY_BUDGET, the cascade length (Phase 7
+  // round-2), and any caller-supplied cost cap.
+  //
+  // SAFETY BOUND (Phase 7 round-2):
+  //   Sum of static per-scenario budgets PLUS the cascade length
+  //   PLUS slack. The cascade is data-driven (a config-supplied
+  //   array attached to FailureContext) and can have any length
+  //   the operator configures. The previous approach used a
+  //   static "sentinel" (99) for the ProviderUnavailable budget
+  //   plus a static loop bound; that bound silently capped the
+  //   cascade if the operator ever configured persona_providers +
+  //   model_failover > 99.
+  //
+  //   The ProviderUnavailable branch is the authoritative cap:
+  //   - The recipe escalates when cascade_attempt_index reaches
+  //     cascade.length - 1 (the cascade is exhausted).
+  //   - The orchestration loop SKIPS the per-scenario budget
+  //     check for ProviderUnavailable (the static budget is 0;
+  //     the cascade is the cap).
+  //
+  //   The safety bound below is the OUTER backstop only — it
+  //   exists so a pathological recipe (one that returned `attempt`
+  //   forever instead of escalating) cannot loop indefinitely.
+  //   It must accommodate the real cascade length, so we read it
+  //   off the failure context.
+  const cascadeLen = (lastFailure.cascade?.length ?? 0);
   const maxIterations =
-    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0) + 1;
+    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0)
+    + cascadeLen
+    + 1;
 
   for (let iter = 0; iter < maxIterations; iter += 1) {
     const failure = lastFailure;
@@ -372,9 +396,19 @@ export function runWithRecovery<T>(
     }
 
     // Recipe says retry. Check the budget BEFORE incrementing.
+    //
+    // Phase 7 round-2 — ProviderUnavailable is exempt from the static
+    // per-scenario budget. The recipe self-caps based on the cascade
+    // attached to the FailureContext (length = config-driven). When
+    // the cascade is exhausted the recipe returns `escalate`, which
+    // is handled above; reaching this branch with
+    // scenario === 'ProviderUnavailable' means the recipe still has
+    // cascade hops left. Skip the static check so the cascade is
+    // never bounded by a number that doesn't know its length.
     const usedSoFar = ctx.budget.get(scenario) ?? 0;
     const allowed = SCENARIO_RETRY_BUDGET[scenario];
-    if (usedSoFar >= allowed) {
+    const skipBudgetCheck = scenario === 'ProviderUnavailable';
+    if (!skipBudgetCheck && usedSoFar >= allowed) {
       // Budget exhausted for this scenario in this packet's lifetime.
       //
       // Phase 7 — RECLASSIFICATION:
