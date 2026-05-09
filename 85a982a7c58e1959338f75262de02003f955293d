@@ -40,3 +40,37 @@
 ## Round budget remaining
 
 1 round. The two findings are narrow schema/validator drift fixes. APPROVE expected after round 3.
+
+# Phase 6 (revised) Code Review — Round 3 (FINAL)
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-05
+**Branch:** worktree-agent-ae1b27e7f8caf42df (round-3 commits b0b034f, 8484dc6)
+**Verdict:** APPROVE
+
+## Summary
+
+No blocking findings. Both round-2 issues fixed cleanly:
+
+- `tools/validate.ts:132` accepts `status: "failed"` and validates the optional `failure` object shape when present.
+- `schemas/packet.schema.json:151` declares `failure` under the top-level `additionalProperties: false` schema, with required `scenario` + `reason`, optional `attempts` + `escalation_path`, and nested `additionalProperties: false`.
+
+## Cross-checks performed
+
+- Write sites match the schema: develop escalation (`develop_phase.ts:362`), verify escalation (`verify_phase.ts:197`), QA cascade (`verify_phase.ts:340` — writes `CascadedFromDependency`, `attempts: 0`, `escalation_path: null`).
+- `FailureScenario` remains the 8-member closed type at `recovery.ts:66`. `CascadedFromDependency` is only a packet failure label, not a recipe key.
+- `'Unclassified'` is legitimate: schema names it; recovery loop escalates unknown classifications immediately at `recovery_loop.ts:315`.
+
+## Non-blocking follow-up observations
+
+- `failure` is optional, so `status: "failed"` without `failure` isn't currently rejected by the schema/validator despite the description implying they're paired. Could be tightened in a future schema update.
+- No direct `validate.test.ts` fixture for `failure.scenario: "Unclassified"`; it validates by design because `scenario` is intentionally an open non-empty string.
+
+## Strongest improvements over the previous (reverted) attempt
+
+- Escalation is now **controlling**, not just observable, through the `RecoveryResult<T>` discriminator (compile-time enforcement of state-machine dispatch).
+- Schema, validator, and recovery write sites now share a concrete failure artifact shape instead of drifting silently.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
