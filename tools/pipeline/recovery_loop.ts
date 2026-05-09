@@ -325,15 +325,11 @@ export function runWithRecovery<T>(
   // Bounded by SCENARIO_RETRY_BUDGET, the cascade length (Phase 7
   // round-2), and any caller-supplied cost cap.
   //
-  // SAFETY BOUND (Phase 7 round-2):
-  //   Sum of static per-scenario budgets PLUS the cascade length
-  //   PLUS slack. The cascade is data-driven (a config-supplied
-  //   array attached to FailureContext) and can have any length
-  //   the operator configures. The previous approach used a
-  //   static "sentinel" (99) for the ProviderUnavailable budget
-  //   plus a static loop bound; that bound silently capped the
-  //   cascade if the operator ever configured persona_providers +
-  //   model_failover > 99.
+  // SAFETY BOUND (Phase 7 round-3 — dynamic, monotonic):
+  //   Sum of static per-scenario budgets PLUS the longest cascade
+  //   observed so far PLUS slack. The cascade is data-driven (a
+  //   config-supplied array attached to FailureContext) and can
+  //   have any length the operator configures.
   //
   //   The ProviderUnavailable branch is the authoritative cap:
   //   - The recipe escalates when cascade_attempt_index reaches
@@ -345,13 +341,23 @@ export function runWithRecovery<T>(
   //   The safety bound below is the OUTER backstop only — it
   //   exists so a pathological recipe (one that returned `attempt`
   //   forever instead of escalating) cannot loop indefinitely.
-  //   It must accommodate the real cascade length, so we read it
-  //   off the failure context.
-  const cascadeLen = (lastFailure.cascade?.length ?? 0);
-  const maxIterations =
-    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0)
-    + cascadeLen
-    + 1;
+  //
+  //   Why DYNAMIC (round-3): the initial failure may carry no
+  //   cascade (e.g. BuildFailed) and only LATER fail with
+  //   ProviderUnavailable when the remediation step trips its
+  //   own provider failover. Snapshotting `cascade.length` at
+  //   loop entry would silently cap a cascade discovered
+  //   mid-flight. Instead, the bound is data-driven by observed
+  //   cascade lengths and grows monotonically as larger cascades
+  //   are discovered (Option A from round-3 review). The
+  //   recipe's "cascade exhausted" escalation remains
+  //   authoritative; the safety bound never fires before it
+  //   under a realistic config.
+  const STATIC_BUDGET_SUM =
+    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0);
+  const computeSafetyBound = (cascadeLen: number): number =>
+    STATIC_BUDGET_SUM + cascadeLen + 1;
+  let maxIterations = computeSafetyBound(lastFailure.cascade?.length ?? 0);
 
   for (let iter = 0; iter < maxIterations; iter += 1) {
     const failure = lastFailure;
@@ -535,6 +541,16 @@ export function runWithRecovery<T>(
       return { kind: 'ok', value: result.value };
     }
     lastFailure = result.failure;
+    // Round-3: a failure may attach a cascade that the initial
+    // failure didn't have (e.g. BuildFailed primary -> remediation
+    // ProviderUnavailable with a long cascade). Grow the safety
+    // bound monotonically so it accommodates the cascade the
+    // recipe is about to walk. Math.max keeps it monotonic — we
+    // never shrink the bound mid-flight.
+    const observedCascadeLen = lastFailure.cascade?.length ?? 0;
+    if (observedCascadeLen > 0) {
+      maxIterations = Math.max(maxIterations, computeSafetyBound(observedCascadeLen));
+    }
   }
 
   // Defensive: the loop should have returned by now. Escalate with

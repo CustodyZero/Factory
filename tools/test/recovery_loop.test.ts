@@ -404,6 +404,101 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
     expect(calls[3]?.cascade).toEqual({ provider: 'codex', model: 'm3' });
     expect(calls[4]?.cascade).toEqual({ provider: 'claude', model: 'm4' });
   });
+
+  it('Phase 7 round-3: BuildFailed then remediation ProviderUnavailable with long cascade exhausts via recipe (not safety bound)', () => {
+    // Pin the round-3 finding: the safety bound must be DYNAMIC.
+    //
+    // Setup mirrors the BuildFailed-then-ProviderUnavailable
+    // cascade pattern from the verify/develop finalize closures:
+    //
+    //   1. Primary attempt fails BuildFailed (no cascade attached).
+    //   2. The recipe asks for retry_with_guardrail_prompt; the
+    //      remediation step fails ProviderUnavailable with a long
+    //      cascade (length 8 — strictly greater than the static
+    //      budget sum of 6 = 2 transient + 2 nonresponsive + 1
+    //      build + 1 stale + 0/0/0/0).
+    //   3. The recipe walks the entire cascade until it self-caps
+    //      with "cascade exhausted: ...".
+    //
+    // Before round-3: maxIterations was snapshotted from the
+    // INITIAL failure's cascade length (= 0 here, because
+    // BuildFailed carries no cascade). The static cap of
+    // (sumStaticBudgets + 0 + 1) = 7 would have stopped the loop
+    // at iter=7 — call 8 with cascade[6] failing — emitting the
+    // generic "exceeded safety bound" message. cascade[7] would
+    // never be tried, and the recipe's authoritative
+    // "cascade exhausted" escalation would never run.
+    //
+    // After round-3 (Option A): the loop recomputes the bound
+    // monotonically after every failed attempt that carries a
+    // cascade, growing it to (sumStaticBudgets + cascade.length + 1)
+    // = 15 here. The recipe walks the full cascade and escalates
+    // with its own reason naming every hop attempted.
+    const ctx = defaultCtx();
+    // 8 cascade entries — corresponds to a config like
+    // persona_providers = ["copilot", "claude", "codex"] each
+    // with model_failover producing 8+ total entries after
+    // computeCascade flattens them.
+    const cascade = [
+      { provider: 'copilot' as const, model: 'cp-m0' },
+      { provider: 'copilot' as const, model: 'cp-m1' },
+      { provider: 'copilot' as const, model: 'cp-m2' },
+      { provider: 'claude' as const, model: 'cl-m0' },
+      { provider: 'claude' as const, model: 'cl-m1' },
+      { provider: 'claude' as const, model: 'cl-m2' },
+      { provider: 'codex' as const, model: 'cx-m0' },
+      { provider: 'codex' as const, model: 'cx-m1' },
+    ];
+    const calls: AttemptContext[] = [];
+    const op = (attempt: AttemptContext): OperationResult<string> => {
+      calls.push(attempt);
+      // First call: BuildFailed (no cascade). The recipe will
+      // dispatch retry_with_guardrail_prompt for the second call.
+      if (attempt.attemptNumber === 1) {
+        return fail(1, 'error TS2304: Cannot find name', '', 'verification', ['build']);
+      }
+      // Second call onwards: ProviderUnavailable. The closure
+      // attaches the cascade — this is the pattern verify/develop
+      // finalize closures use (build their FailureContext via
+      // failureFromSubprocess, then spread `cascade` on top).
+      return {
+        outcome: 'fail',
+        failure: {
+          ...failureFromSubprocess({
+            exitCode: 1,
+            stdout: '',
+            stderr: "Provider 'copilot' is disabled",
+            kind: 'agent_invocation',
+          }),
+          cascade,
+        },
+      };
+    };
+    const r = runWithRecovery(op, ctx, noWait);
+    expect(r.kind).toBe('escalated');
+    if (r.kind === 'escalated') {
+      // Authoritative escalation source: the recipe, not the loop.
+      expect(r.scenario).toBe('ProviderUnavailable');
+      expect(r.reason).toMatch(/cascade exhausted/i);
+      // Loop's own safety-bound message must NOT appear.
+      expect(r.reason).not.toMatch(/safety bound/i);
+      // Recipe names every cascade entry attempted.
+      for (const hop of cascade) {
+        expect(r.reason).toContain(`${hop.provider}:${hop.model}`);
+      }
+    }
+    // Exactly 9 closure invocations:
+    //   - 1 BuildFailed primary
+    //   - 1 BuildFailed remediation (which fails ProviderUnavailable)
+    //   - 7 cascade hops (cascade[1] through cascade[7])
+    // Then the recipe escalates without invoking again.
+    expect(calls.length).toBe(9);
+    expect(calls[0]?.action).toBeUndefined();
+    expect(calls[1]?.action).toBe('retry_with_guardrail_prompt');
+    expect(calls[2]?.action).toBe('cascade_provider');
+    expect(calls[2]?.cascade).toEqual({ provider: 'copilot', model: 'cp-m1' });
+    expect(calls[8]?.cascade).toEqual({ provider: 'codex', model: 'cx-m1' });
+  });
 });
 
 // ---------------------------------------------------------------------------
