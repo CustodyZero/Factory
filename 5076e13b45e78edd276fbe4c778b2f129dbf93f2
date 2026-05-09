@@ -31,3 +31,62 @@ Orchestrator will hotfix both as small post-merge commits on main.
 ## Round budget
 
 3 of 3 rounds used. Bounded-iteration model honored.
+
+# Phase 8 QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-05
+**Verdict:** APPROVE
+
+All 3 acceptance criteria PASS, Option B requirements PASS, all 12 specific checks PASS.
+
+## Critical verifications
+
+- **AC1**: No operator-facing direct lifecycle invocation. Lifecycle scripts only appear in clearly-labeled "Agent protocol" sections.
+- **AC2**: Explicit "Agents call these; operators do not" framing in README:556, AGENTS:142, CLAUDE:29-31, integration:33-36.
+- **AC3**: Spec authoring guide at `docs/integration.md` §"Authoring specs" (lines 64-153) covers location, frontmatter, dependencies, body conventions. Frontmatter shape matches `tools/pipeline/spec_parse.ts:KNOWN_KEYS` exactly.
+- **TL;DRs anchored to source-of-truth byte-for-byte:**
+  - Cost summary 4 cases match `run.ts:120,122,124` exactly
+  - Event taxonomy matches `events.ts:95-124` `EventType` union
+  - Recovery budgets match `SCENARIO_RETRY_BUDGET` (Transient=2, AgentNonResp=2, Build/Stale=1, Lint/Test/CompletionGate=0, ProviderUnavailable data-driven via cascade)
+  - Failover claims match `tools/config.ts` + `tools/pipeline/cascade.ts`
+- **Templates parallel** with only path-prefix differences (`.factory/tools/` vs `tools/`).
+- **No source files changed**; tests unchanged at 681; validate PASS.
+- **Global `~/CLAUDE.md` correctly NOT modified** — it's a project-agnostic AI Operator Profile, not a factory Quick Reference.
+- **Phase.failed**: exactly one hit at `integration.md:417` (the explicit disclaimer); no other operator doc names a non-existent event type.
+
+## Strongest qualities (independent assessment)
+
+1. **Operator vs agent partition is structurally consistent.** Every operator-facing doc puts lifecycle scripts in a clearly labeled "Agent protocol" section with explicit framing. AGENTS rule 3.2 was the round-1 facade risk and now reads as an agent-scope rule routing operators back to `run.ts`.
+2. **TL;DRs anchored to source-of-truth.** No facade risk: cost format strings, event types, recovery budgets, frontmatter shape are all byte-for-byte traceable to the implementation.
+
+# Phase 8 Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-05
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Phase 8 ships the documentation pass with Option B scope:
+- Lifecycle reframing across operator docs (README, AGENTS, CLAUDE, integration)
+- Spec-authoring guide added to `docs/integration.md`
+- Operator-facing TL;DRs for events, cost, recovery, failover with cross-references to decision docs
+- Templates kept in sync (`templates/AGENTS.md`, `templates/CLAUDE.md`)
+
+5 commits across 3 review rounds (REQUEST-CHANGES, REQUEST-CHANGES, APPROVE). Independent QA APPROVE on all criteria + 12 checks.
+
+3 of 3 review rounds used. Bounded-iteration model honored.
+
+## Two non-blocking hotfix items for post-merge
+
+These are outside Phase 8's branch but worth fixing as a small commit on main:
+
+1. `docs/decisions/event_observability.md:57` — lists `phase.failed` in phase-lifecycle bullet (event doesn't exist; payload uses `outcome: 'ok' | 'failed'` on `phase.completed`).
+2. `specs/single-entry-pipeline.md:289` — historical shorthand for the cost summary that doesn't reflect the actual 4-case format.
+
+Both are 1-2 line corrections that align the source-of-truth docs with the implementation.
+
+## Operational note
+
+Codex CLI hung 5 of 10 times across this session's Phase 6/7/8 review chains. The `perl alarm 360` SIGKILL watchdog reliably caught hangs. Worth carrying into a separate workflow-reliability discussion (separate from the pipeline architecture).
