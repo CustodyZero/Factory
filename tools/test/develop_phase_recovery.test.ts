@@ -652,6 +652,78 @@ describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => 
   });
 });
 
+describe('runDevelopPhase — Phase 7 round-2: BuildFailed remediation preserved across cascade', () => {
+  it('completePacket fails build -> primary remediation agent fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', () => {
+    const root = mkRoot();
+    writePacket(root, 'pkt-bcr', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
+
+    // Sequence the closure observes:
+    //   1. completePacket -> ci_pass=false (build failure)
+    //   2. recipe -> retry_with_guardrail_prompt; closure runs dev
+    //      agent on devPrimary (codex). Mock: agent fails with
+    //      "Provider 'codex' is disabled" -> ProviderUnavailable.
+    //   3. recipe -> cascade_provider hop to claude. Closure must
+    //      RE-RUN remediation against claude with the SAME guardrail
+    //      prompt — the load-bearing fix. Mock: claude succeeds.
+    //   4. closure falls through to completePacket -> ci_pass=true.
+    //
+    // Without the fix, step 3 would skip remediation: the closure
+    // would receive cascade_provider but only the
+    // retry_with_guardrail_prompt branch ran remediation, so the
+    // closure would go straight to completePacket against
+    // unchanged code, observing the same build failure forever
+    // (until BuildFailed budget exhausts -> escalate).
+    __completeQueue.push({
+      ci_pass: false, build_pass: false, lint_pass: true, tests_pass: true,
+    });
+    __completeQueue.push({
+      ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
+    });
+    // Dev-agent invocations:
+    //   first remediation (codex primary): ProviderUnavailable.
+    //   second remediation (claude cascade hop): success.
+    __invokeQueue.push({ exit_code: 1, stderr: "Provider 'codex' is disabled" });
+    __invokeQueue.push({ exit_code: 0 });
+
+    // persona_providers.developer = ['codex', 'claude'] so the
+    // cascade has a second hop available.
+    const cfg = (() => {
+      const c = makeConfig() as unknown as Record<string, unknown>;
+      const pipeline = c['pipeline'] as Record<string, unknown>;
+      const personaProviders = pipeline['persona_providers'] as Record<string, unknown>;
+      personaProviders['developer'] = ['codex', 'claude'];
+      return c as unknown as FactoryConfig;
+    })();
+
+    const result = runDevelopPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-bcr']),
+      config: cfg,
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-bcr',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+    expect(result.completed).toEqual(['pkt-bcr']);
+    expect(__completeCalls.length).toBe(2);
+
+    // Pin: TWO dev-agent invocations, each carrying the BuildFailed
+    // guardrail prompt. The first hit codex (primary, failed); the
+    // second hit claude (cascade hop, succeeded) — the load-bearing
+    // assertion that the remediation prompt was preserved across
+    // the cascade boundary.
+    const guardrailCalls = __invokeCalls.filter(
+      (c) => c.prompt.includes(
+        'The previous implementation failed the build. Fix the implementation.',
+      ),
+    );
+    expect(guardrailCalls.length).toBe(2);
+    expect(guardrailCalls[0]?.provider).toBe('codex');
+    expect(guardrailCalls[1]?.provider).toBe('claude');
+  });
+});
+
 describe('runDevelopPhase — StaleBranch successful rebase + retry', () => {
   it('first finalize throws stale-branch; rebase succeeds; retry succeeds; packet completed', () => {
     const root = mkRoot();

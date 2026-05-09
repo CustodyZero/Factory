@@ -919,54 +919,116 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // success, and the prior `if (r.already_complete) ok`
           // short-circuit (which used to false-succeed a failed
           // completion) is gone.
+          // Phase 7 round-2 fix — BuildFailed remediation has a
+          // *compound* recovery action (run the dev agent, then re-
+          // run completePacket). When the recovery layer dispatches
+          // `cascade_provider` *during* a remediation cycle (i.e.
+          // the dev-agent invocation just failed ProviderUnavailable),
+          // the next closure invocation must STILL run the
+          // remediation step against the new (provider, model)
+          // before re-trying completePacket. Otherwise the
+          // remediation prompt is lost across the cascade boundary
+          // and completePacket re-runs against unchanged code.
+          //
+          // The fix: closure-scoped state.
+          //   - `pendingRemediationPrompt`: set when
+          //     `retry_with_guardrail_prompt` first fires; cleared
+          //     after the remediation+completePacket pair succeeds.
+          //     While it's non-null, every attempt re-issues the
+          //     remediation step before falling through to
+          //     completePacket.
+          //   - `lastRemediationTarget`: the (provider, model) the
+          //     last remediation invocation used. A retry_same after
+          //     a transient remediation failure must re-issue against
+          //     the SAME hop; a cascade_provider issues against the
+          //     new hop.
+          //
+          // Lifetime: closure level (per-finalize-invocation), not
+          // per-packet. The recovery loop returns on success; the
+          // closure won't be re-entered after a clean ci_pass.
+          let pendingRemediationPrompt: string | null = null;
+          let lastRemediationTarget: typeof devPrimary | null = null;
+
+          const runRemediation = (
+            target: typeof devPrimary,
+            guardrail: string,
+          ): OperationResult<true> | null => {
+            // Returns null on success (caller proceeds to
+            // completePacket); returns OperationResult<true> with
+            // outcome='fail' on agent failure.
+            const basePrompt = buildDevPrompt(freshPacket, config);
+            const remediationPrompt =
+              `${basePrompt}\n\n---\n${guardrail}`;
+            lastRemediationTarget = target;
+            const r = invokeAgent(
+              target.provider, remediationPrompt, config, devTier, target.model,
+            );
+            recordInvocationCost(
+              r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+              perPacketCap, packetCostTracker, dryRun,
+            );
+            if (r.exit_code !== 0) {
+              return {
+                outcome: 'fail',
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.complete.remediation',
+                  }),
+                  // Attach the dev cascade so a remediation-step
+                  // ProviderUnavailable failure can fail over.
+                  cascade: devCascade,
+                },
+              };
+            }
+            return null;
+          };
+
           const finalizeRecovered = runWithRecovery<true>(
             (attempt: AttemptContext): OperationResult<true> => {
+              // Step 1: handle the remediation half of the compound
+              // action. Three cases keep state coherent across
+              // recovery action boundaries:
+              //
+              //  (a) recipe just dispatched retry_with_guardrail_prompt:
+              //      capture the prompt and run remediation against
+              //      devPrimary.
+              //  (b) recipe dispatched cascade_provider AND we have a
+              //      pending remediation prompt: run remediation
+              //      against the new cascade hop with the SAME
+              //      guardrail prompt the BuildFailed recipe issued.
+              //      Load-bearing fix: without this, a remediation-
+              //      step ProviderUnavailable would silently lose the
+              //      guardrail prompt and completePacket would
+              //      re-fail forever.
+              //  (c) recipe dispatched retry_same (ProviderTransient
+              //      on the remediation agent) AND we have a pending
+              //      remediation prompt: re-issue against the SAME
+              //      target as the last remediation attempt.
               if (attempt.action === 'retry_with_guardrail_prompt'
                 && attempt.guardrailPrompt !== undefined) {
-                // BuildFailed remediation: re-invoke the dev agent
-                // with the guardrail prompt before re-running
-                // completePacket. The dev agent edits code; the next
-                // completePacket then re-runs verification against
-                // the new tree.
-                //
-                // Phase 7 — the BuildFailed remediation closure is
-                // NOT a cascade hop (BuildFailed is a different
-                // recipe). But if a future ProviderUnavailable hop
-                // dispatches THIS closure (cascade_provider while
-                // we're still in the finalize boundary), we honor
-                // the override here too. The two recovery actions
-                // are independent — guardrail prompt vs cascade
-                // provider — so we layer both checks.
-                const basePrompt = buildDevPrompt(freshPacket, config);
-                const remediationPrompt =
-                  `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`;
-                const r = invokeAgent(
-                  devProvider, remediationPrompt, config, devTier,
-                );
-                recordInvocationCost(
-                  r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-                  perPacketCap, packetCostTracker, dryRun,
-                );
-                if (r.exit_code !== 0) {
-                  return {
-                    outcome: 'fail',
-                    failure: {
-                      ...failureFromSubprocess({
-                        exitCode: r.exit_code,
-                        stdout: r.stdout,
-                        stderr: r.stderr,
-                        kind: 'agent_invocation',
-                        specId: opts.specId ?? null,
-                        packetId: packet.id,
-                        operationLabel: 'develop_phase.complete.remediation',
-                      }),
-                      // Attach the dev cascade so a remediation-step
-                      // ProviderUnavailable failure can fail over.
-                      cascade: devCascade,
-                    },
-                  };
-                }
+                pendingRemediationPrompt = attempt.guardrailPrompt;
+                const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+                if (fail !== null) return fail;
+              } else if (attempt.action === 'cascade_provider'
+                && attempt.cascade !== undefined
+                && pendingRemediationPrompt !== null) {
+                const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+                if (fail !== null) return fail;
+              } else if (attempt.action === 'retry_same'
+                && pendingRemediationPrompt !== null
+                && lastRemediationTarget !== null) {
+                const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+                if (fail !== null) return fail;
               }
+              // (No special-case for the very first attempt:
+              // pendingRemediationPrompt remains null on first entry,
+              // so we go straight to completePacket.)
               try {
                 const r = completePacket({
                   packetId: packet.id,
@@ -977,7 +1039,17 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
                   checkStaleBranch: true,
                   ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
                 });
-                if (r.ci_pass) return { outcome: 'ok', value: true };
+                if (r.ci_pass) {
+                  // Clear the pending remediation prompt: the
+                  // recipe's promise (run dev agent + retry
+                  // completePacket) has been kept. The loop returns
+                  // ok and the closure isn't re-entered, so this is
+                  // primarily a contract-clarity reset rather than a
+                  // correctness one.
+                  pendingRemediationPrompt = null;
+                  lastRemediationTarget = null;
+                  return { outcome: 'ok', value: true };
+                }
                 const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
                 if (!r.build_pass) failedChecks.push('build');
                 if (!r.lint_pass) failedChecks.push('lint');
