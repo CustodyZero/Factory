@@ -63,12 +63,13 @@
         },
         "persona_providers": {
           "type": "object",
+          "description": "Each persona maps to either a single provider name (legacy single-string form, kept for backward compatibility) OR an ordered list of provider names representing the cross-CLI failover order. Phase 7 of single-entry-pipeline.",
           "required": ["planner", "developer", "code_reviewer", "qa"],
           "properties": {
-            "planner": { "$ref": "#/$defs/provider_name" },
-            "developer": { "$ref": "#/$defs/provider_name" },
-            "code_reviewer": { "$ref": "#/$defs/provider_name" },
-            "qa": { "$ref": "#/$defs/provider_name" }
+            "planner": { "$ref": "#/$defs/persona_provider_value" },
+            "developer": { "$ref": "#/$defs/persona_provider_value" },
+            "code_reviewer": { "$ref": "#/$defs/persona_provider_value" },
+            "qa": { "$ref": "#/$defs/persona_provider_value" }
           },
           "additionalProperties": false
         },
@@ -138,6 +139,17 @@
       "type": "string",
       "enum": ["codex", "claude", "copilot"]
     },
+    "persona_provider_value": {
+      "description": "Either a single provider name (single-string form) or an ordered list of provider names (cross-CLI failover order). Phase 7 of single-entry-pipeline.",
+      "oneOf": [
+        { "$ref": "#/$defs/provider_name" },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provider_name" }
+        }
+      ]
+    },
     "pipeline_provider": {
       "type": "object",
       "required": ["enabled", "command"],
@@ -146,7 +158,13 @@
         "command": { "type": "string", "minLength": 1 },
         "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
         "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] },
-        "model_map": { "$ref": "#/$defs/model_map" }
+        "model_map": { "$ref": "#/$defs/model_map" },
+        "model_failover": {
+          "type": "array",
+          "description": "Phase 7 of single-entry-pipeline. Optional within-CLI model failover order for ABSTRACTION providers (those that route to multiple underlying models, e.g. copilot). Each element is a model id; the first element is tried first, then the next on failure, and so on. Direct providers (codex, claude — one CLI maps to one upstream provider) do NOT set this field; the absence of model_failover means 'on failure, fall through to the next CLI in persona_providers without trying alternate models'.",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
       },
       "additionalProperties": false
     },

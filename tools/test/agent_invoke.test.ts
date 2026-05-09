@@ -140,6 +140,97 @@ function makeMinimalConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfi
   } as FactoryConfig;
 }
 
+// ---------------------------------------------------------------------------
+// invokeAgent — Phase 7 modelOverride argument
+//
+// The override bypasses tier resolution against model_map. We can't
+// run a real spawn deterministically, so we verify the contract by
+// asserting on the InvokeResult.cost.model — which invokeAgent
+// populates from the same `modelId` value it passes to spawnSync.
+// (When modelOverride is supplied, modelId === modelOverride.) This
+// also pins the report shape: cost.model in the result is always the
+// model that was actually targeted, not the tier.
+//
+// To avoid spawning a real CLI, the tests below use a provider whose
+// `command` is a no-op: 'true' (POSIX) returns exit_code 0 with no
+// output. Windows hosts could fail this test, but the rest of the
+// factory test suite already assumes a POSIX-like /bin/sh shell
+// (e.g. recovery_loop.test.ts uses `git`, lifecycle tests use shell
+// strings).
+// ---------------------------------------------------------------------------
+
+describe('invokeAgent — Phase 7 modelOverride', () => {
+  function configWith(provider: string, providerConfig: { enabled: boolean; command: string; model_map?: Record<string, string>; model_failover?: ReadonlyArray<string> }): FactoryConfig {
+    return makeMinimalConfig({
+      pipeline: {
+        providers: { [provider]: providerConfig },
+        persona_providers: {
+          planner: [provider as never],
+          developer: [provider as never],
+          code_reviewer: [provider as never],
+          qa: [provider as never],
+        },
+        completion_identities: { developer: 'x', code_reviewer: 'x', qa: 'x' },
+        max_review_iterations: 3,
+      },
+    } as Partial<FactoryConfig>);
+  }
+
+  it('uses modelOverride as cost.model when supplied (bypasses tier resolution)', () => {
+    const cfg = configWith('claude', {
+      enabled: true,
+      command: 'true',
+      model_map: { high: 'tier-resolved-model' },
+    });
+    const result = invokeAgent('claude', 'p', cfg, 'high', 'override-model');
+    // Spawn ran (true exits 0); cost.model reports the override, not
+    // the tier-resolved value. This is the load-bearing contract:
+    // when the cascade selects (provider, model), invokeAgent invokes
+    // EXACTLY that model.
+    expect(result.cost.model).toBe('override-model');
+  });
+
+  it('falls back to tier resolution when modelOverride is undefined', () => {
+    const cfg = configWith('claude', {
+      enabled: true,
+      command: 'true',
+      model_map: { high: 'tier-resolved-model' },
+    });
+    const result = invokeAgent('claude', 'p', cfg, 'high');
+    expect(result.cost.model).toBe('tier-resolved-model');
+  });
+
+  it('reports cost.model = null when neither override nor tier-resolved id is available', () => {
+    const cfg = configWith('claude', {
+      enabled: true,
+      command: 'true',
+      // No model_map -> tier resolution returns undefined.
+    });
+    const result = invokeAgent('claude', 'p', cfg, 'high');
+    expect(result.cost.model).toBeNull();
+  });
+
+  it('override wins even when modelTier is omitted', () => {
+    const cfg = configWith('claude', {
+      enabled: true,
+      command: 'true',
+      model_map: { high: 'tier-resolved-model' },
+    });
+    const result = invokeAgent('claude', 'p', cfg, undefined, 'override-only');
+    expect(result.cost.model).toBe('override-only');
+  });
+
+  it('override is ignored on early-return paths (no spawn, no override observable)', () => {
+    // Provider disabled — early return fires before resolution. The
+    // override is silently dropped (the contract: no spawn means no
+    // model is reported); cost.model is null.
+    const cfg = configWith('claude', { enabled: false, command: 'true' });
+    const result = invokeAgent('claude', 'p', cfg, 'high', 'override-model');
+    expect(result.exit_code).toBe(1);
+    expect(result.cost.model).toBeNull();
+  });
+});
+
 describe('invokeAgent — configuration-error early returns', () => {
   it('returns exit_code 1 with a clear stderr when pipeline config is missing', () => {
     const cfg = makeMinimalConfig({ pipeline: undefined });
@@ -162,7 +253,7 @@ describe('invokeAgent — configuration-error early returns', () => {
       pipeline: {
         providers: {},
         persona_providers: {
-          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          planner: ['claude'], developer: ['claude'], code_reviewer: ['claude'], qa: ['claude'],
         },
         completion_identities: {
           developer: 'claude', code_reviewer: 'claude', qa: 'claude',
@@ -184,7 +275,7 @@ describe('invokeAgent — configuration-error early returns', () => {
           claude: { enabled: false, command: 'claude' },
         },
         persona_providers: {
-          planner: 'claude', developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          planner: ['claude'], developer: ['claude'], code_reviewer: ['claude'], qa: ['claude'],
         },
         completion_identities: {
           developer: 'claude', code_reviewer: 'claude', qa: 'claude',

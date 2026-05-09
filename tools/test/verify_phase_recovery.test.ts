@@ -205,10 +205,10 @@ function makeConfig(): FactoryConfig {
         claude: { enabled: true, command: 'claude' },
       },
       persona_providers: {
-        planner: 'claude',
-        developer: 'codex',
-        code_reviewer: 'claude',
-        qa: 'claude',
+        planner: ['claude'],
+        developer: ['codex'],
+        code_reviewer: ['claude'],
+        qa: ['claude'],
       },
       completion_identities: {
         developer: 'codex-dev',
@@ -462,6 +462,87 @@ describe('runVerifyPhase — QA BuildFailed remediation invokes the DEV packet',
     // Persona instructions of the dev are present (developer prompt
     // builds with developer instructions).
     expect(remediationPrompt).toContain('DEV_INSTRUCTIONS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7 round-2: BuildFailed remediation preserved across cascade
+// ---------------------------------------------------------------------------
+
+describe('runVerifyPhase — Phase 7 round-2: BuildFailed dev-agent remediation preserved across cascade', () => {
+  it('completePacket fails build -> primary dev-remediation fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', () => {
+    const root = mkRoot();
+    writeDevPacket(root, 'pkt-d-rem', 'Dev packet implementation');
+    writeQaPacket(root, 'pkt-q-rem', 'pkt-d-rem');
+
+    // Sequence the closure observes:
+    //   1. QA agent (claude) succeeds.
+    //   2. completePacket -> ci_pass=false (build failure).
+    //   3. recipe -> retry_with_guardrail_prompt; closure runs the
+    //      DEV agent against the dev packet at devPrimary (codex).
+    //      Mock: dev agent fails with ProviderUnavailable.
+    //   4. recipe -> cascade_provider hop to claude. The closure
+    //      MUST re-run dev-agent remediation against claude with
+    //      the SAME guardrail prompt. Mock: claude succeeds.
+    //   5. completePacket -> ci_pass=true.
+    __completeQueue.push({
+      ci_pass: false, build_pass: false, lint_pass: true, tests_pass: true,
+    });
+    __completeQueue.push({
+      ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
+    });
+    // Invoke queue:
+    //   QA agent call (claude): success.
+    //   First dev remediation (codex primary): ProviderUnavailable.
+    //   Second dev remediation (claude cascade hop): success.
+    __invokeQueue.push({ exit_code: 0 });
+    __invokeQueue.push({ exit_code: 1, stderr: "Provider 'codex' is disabled" });
+    __invokeQueue.push({ exit_code: 0 });
+
+    // persona_providers.developer = ['codex', 'claude'] so the dev
+    // cascade has a second hop available.
+    const cfg = (() => {
+      const c = makeConfig() as unknown as Record<string, unknown>;
+      const pipeline = c['pipeline'] as Record<string, unknown>;
+      const personaProviders = pipeline['persona_providers'] as Record<string, unknown>;
+      personaProviders['developer'] = ['codex', 'claude'];
+      return c as unknown as FactoryConfig;
+    })();
+
+    const result = runVerifyPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-d-rem', 'pkt-q-rem']),
+      config: cfg,
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-vqa-bcr',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+    expect(result.completed).toEqual(['pkt-q-rem']);
+    expect(__completeCalls.length).toBe(2);
+
+    // Pin: TWO dev-agent remediation invocations, each carrying the
+    // BuildFailed guardrail prompt. The first hit codex (primary,
+    // failed); the second hit claude (cascade hop, succeeded). The
+    // guardrail prompt must be present on BOTH — that's the
+    // load-bearing assertion that the remediation prompt was
+    // preserved across the cascade boundary.
+    const guardrailCalls = __invokeCalls.filter(
+      (c) => c.prompt.includes(
+        'The previous implementation failed the build. Fix the implementation.',
+      ),
+    );
+    expect(guardrailCalls.length).toBe(2);
+    expect(guardrailCalls[0]?.provider).toBe('codex');
+    expect(guardrailCalls[1]?.provider).toBe('claude');
+    // Both remediation prompts target the DEV packet (verifies),
+    // not the QA packet — pinning the round-3 fix that's already
+    // in place. Both prompts also contain the QA context.
+    for (const c of guardrailCalls) {
+      expect(c.prompt).toContain('Dev packet implementation');
+      expect(c.prompt).toContain('pkt-q-rem');
+    }
   });
 });
 

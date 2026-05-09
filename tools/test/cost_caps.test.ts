@@ -162,10 +162,10 @@ function makeBaseConfig(overrides: Partial<FactoryConfig['pipeline']> = {}): Fac
         claude: { enabled: true, command: 'claude' },
       },
       persona_providers: {
-        planner: 'claude',
-        developer: 'codex',
-        code_reviewer: 'claude',
-        qa: 'claude',
+        planner: ['claude'],
+        developer: ['codex'],
+        code_reviewer: ['claude'],
+        qa: ['claude'],
       },
       completion_identities: {
         developer: 'codex-dev',

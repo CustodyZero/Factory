@@ -44,6 +44,8 @@ function ctx(overrides: Partial<FailureContext> = {}): FailureContext {
     ...(overrides.spec_id !== undefined ? { spec_id: overrides.spec_id } : {}),
     ...(overrides.packet_id !== undefined ? { packet_id: overrides.packet_id } : {}),
     ...(overrides.operation_label !== undefined ? { operation_label: overrides.operation_label } : {}),
+    ...(overrides.cascade !== undefined ? { cascade: overrides.cascade } : {}),
+    ...(overrides.cascade_attempt_index !== undefined ? { cascade_attempt_index: overrides.cascade_attempt_index } : {}),
   };
 }
 
@@ -317,11 +319,66 @@ describe('RECIPES — shape and behavior', () => {
     }
   });
 
-  it('ProviderUnavailable -> escalate (Phase-7-deferred)', () => {
+  it('ProviderUnavailable with no cascade context -> escalate naming missing-cascade reason', () => {
+    // Phase 7 — when the call site supplies no cascade (length 0
+    // or undefined), the recipe escalates with an explicit reason.
+    // This branch fires for non-agent operations that surface as
+    // ProviderUnavailable (e.g. configuration errors at call sites
+    // that don't compute a cascade).
     const out = RECIPES.ProviderUnavailable('ProviderUnavailable', ctx());
     expect(out.kind).toBe('escalate');
     if (out.kind === 'escalate') {
-      expect(out.reason).toMatch(/Phase 7/);
+      expect(out.reason).toMatch(/no cascade/i);
+    }
+  });
+
+  it('ProviderUnavailable with cascade not exhausted -> cascade_provider for the next hop', () => {
+    // The recipe receives a cascade and an attempt index. Index 0
+    // means "primary just failed"; the recipe returns cascade[1].
+    const out = RECIPES.ProviderUnavailable('ProviderUnavailable', ctx({
+      cascade: [
+        { provider: 'codex', model: 'm-primary' },
+        { provider: 'claude', model: 'm-failover' },
+      ],
+      cascade_attempt_index: 0,
+    }));
+    expect(out.kind).toBe('attempt');
+    if (out.kind === 'attempt') {
+      expect(out.action).toBe('cascade_provider');
+      expect(out.cascade).toEqual({ provider: 'claude', model: 'm-failover' });
+    }
+  });
+
+  it('ProviderUnavailable returns successive cascade hops as attempt index advances', () => {
+    const cascade = [
+      { provider: 'copilot' as const, model: 'M1' },
+      { provider: 'copilot' as const, model: 'M2' },
+      { provider: 'codex' as const, model: undefined },
+    ];
+    // After primary (M1) fails: index=0 -> return cascade[1] (M2 on copilot).
+    let out = RECIPES.ProviderUnavailable('ProviderUnavailable', ctx({ cascade, cascade_attempt_index: 0 }));
+    expect(out.kind).toBe('attempt');
+    if (out.kind === 'attempt') expect(out.cascade).toEqual({ provider: 'copilot', model: 'M2' });
+    // After M2 fails: index=1 -> return cascade[2] (codex, default model).
+    out = RECIPES.ProviderUnavailable('ProviderUnavailable', ctx({ cascade, cascade_attempt_index: 1 }));
+    expect(out.kind).toBe('attempt');
+    if (out.kind === 'attempt') expect(out.cascade).toEqual({ provider: 'codex', model: undefined });
+  });
+
+  it('ProviderUnavailable with cascade exhausted -> escalate naming the attempted list', () => {
+    const cascade = [
+      { provider: 'codex' as const, model: 'A' },
+      { provider: 'claude' as const, model: 'B' },
+    ];
+    const out = RECIPES.ProviderUnavailable('ProviderUnavailable', ctx({
+      cascade,
+      cascade_attempt_index: 1,
+    }));
+    expect(out.kind).toBe('escalate');
+    if (out.kind === 'escalate') {
+      expect(out.reason).toMatch(/cascade exhausted/i);
+      expect(out.reason).toContain('codex:A');
+      expect(out.reason).toContain('claude:B');
     }
   });
 
@@ -368,7 +425,7 @@ describe('RECIPES — shape and behavior', () => {
 // ---------------------------------------------------------------------------
 
 describe('SCENARIO_RETRY_BUDGET', () => {
-  it('matches the brief: 2/2/1/1/0/0/0/0', () => {
+  it('matches the brief: 2/2/1/1/0/0/0; ProviderUnavailable uses the data-driven sentinel (Phase 7)', () => {
     expect(SCENARIO_RETRY_BUDGET.ProviderTransient).toBe(2);
     expect(SCENARIO_RETRY_BUDGET.AgentNonResponsive).toBe(2);
     expect(SCENARIO_RETRY_BUDGET.BuildFailed).toBe(1);
@@ -376,6 +433,14 @@ describe('SCENARIO_RETRY_BUDGET', () => {
     expect(SCENARIO_RETRY_BUDGET.LintFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.TestFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.CompletionGateBlocked).toBe(0);
+    // Phase 7 round-2 — ProviderUnavailable is fully data-driven via
+    // the cascade attached to the FailureContext. The recipe self-
+    // caps at cascade.length; the orchestration loop SKIPS the
+    // per-scenario budget check for this scenario. The map entry is
+    // intentionally 0 so any code path that *did* consult this
+    // (in violation of the contract) would short-circuit on the
+    // first hop — failing loudly rather than silently capping at
+    // a number that doesn't know the cascade length.
     expect(SCENARIO_RETRY_BUDGET.ProviderUnavailable).toBe(0);
   });
 

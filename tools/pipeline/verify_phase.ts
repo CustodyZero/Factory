@@ -20,6 +20,7 @@ import type { Feature, RawPacket } from '../execute.js';
 import type { FactoryConfig, ModelTier } from '../config.js';
 import * as fmt from '../output.js';
 import { invokeAgent } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildQaPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
@@ -277,14 +278,27 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
 
   fmt.log('verify', `${qaPackets.length} QA packet(s) to process`);
 
-  const qaProvider = config.pipeline?.persona_providers.qa ?? 'claude';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI; the rest form
+  // the cross-CLI failover order consumed by the ProviderUnavailable
+  // cascade. Read [0] for the initial invocation.
+  const qaProvider = config.pipeline?.persona_providers.qa[0] ?? 'claude';
   const qaTier: ModelTier = config.personas.qa.model ?? 'medium';
   const qaIdentity = config.pipeline?.completion_identities.qa ?? 'claude-qa';
   // For BuildFailed remediation in the QA flow, the dev agent must
   // be invoked against the DEV packet (the `verifies` target), NOT
   // the QA packet. Resolve the developer config up front.
-  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  const devProvider = config.pipeline?.persona_providers.developer[0] ?? 'codex';
   const devTier: ModelTier = config.personas.developer.model ?? 'high';
+  // Phase 7 — compute persona cascades once. Closures attach these
+  // to every failure context so the ProviderUnavailable recipe can
+  // walk the failover order.
+  const qaCascade = computeCascade('qa', qaTier, config);
+  const devCascade = computeCascade('developer', devTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. See
+  // develop_phase.ts for full rationale.
+  const qaPrimary = qaCascade[0] ?? { provider: qaProvider, model: undefined };
+  const devPrimary = devCascade[0] ?? { provider: devProvider, model: undefined };
 
   for (const packet of qaPackets) {
     // Same external-mutation model as the develop phase: an external
@@ -383,8 +397,14 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
     // expected to produce those classifications until completePacket
     // runs verification).
     const qaRecovered = runWithRecovery<InvokeResult>(
-      (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-        const r = invokeAgent(qaProvider, buildQaPrompt(packet, config), config, qaTier);
+      (attempt: AttemptContext): OperationResult<InvokeResult> => {
+        // Phase 7 round-2 — primary derived from cascade[0]; see
+        // develop_phase.ts for the rationale.
+        const target = attempt.cascade ?? qaPrimary;
+        const qaPromptStr = buildQaPrompt(packet, config);
+        const r = invokeAgent(
+          target.provider, qaPromptStr, config, qaTier, target.model,
+        );
         recordInvocationCost(
           r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
           perPacketCap, packetCostTracker, dryRun,
@@ -392,15 +412,18 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
         if (r.exit_code === 0) return { outcome: 'ok', value: r };
         return {
           outcome: 'fail',
-          failure: failureFromSubprocess({
-            exitCode: r.exit_code,
-            stdout: r.stdout,
-            stderr: r.stderr,
-            kind: 'agent_invocation',
-            specId: opts.specId ?? null,
-            packetId: packet.id,
-            operationLabel: 'verify_phase.qa',
-          }),
+          failure: {
+            ...failureFromSubprocess({
+              exitCode: r.exit_code,
+              stdout: r.stdout,
+              stderr: r.stderr,
+              kind: 'agent_invocation',
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'verify_phase.qa',
+            }),
+            cascade: qaCascade,
+          },
         };
       },
       {
@@ -459,54 +482,97 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
       return direct ?? null;
     })();
 
+    // Phase 7 round-2 fix — remediation prompt preservation across
+    // recovery actions. Mirrors develop_phase.ts; see that file for
+    // the full rationale. Briefly: when a remediation-step dev-agent
+    // failure triggers a cascade_provider hop, the next closure
+    // invocation must STILL re-issue the remediation against the new
+    // hop with the SAME guardrail prompt — otherwise completePacket
+    // re-runs against unchanged code and the QA packet eventually
+    // exhausts its BuildFailed budget without the dev-agent ever
+    // running on the cascade hop.
+    let pendingRemediationPrompt: string | null = null;
+    let lastRemediationTarget: typeof devPrimary | null = null;
+
+    const runRemediation = (
+      target: typeof devPrimary,
+      guardrail: string,
+    ): OperationResult<true> | null => {
+      if (devPacketForRemediation === null) {
+        return {
+          outcome: 'fail',
+          failure: {
+            exit_code: null,
+            stdout: '',
+            stderr:
+              `Cannot dispatch dev-agent remediation: QA packet ${packet.id} ` +
+              `references missing dev packet '${String(packet.verifies)}'.`,
+            error_message: 'orphan QA packet',
+            kind: 'lifecycle',
+            spec_id: opts.specId ?? null,
+            packet_id: packet.id,
+            operation_label: 'verify_phase.complete.remediation',
+          },
+        };
+      }
+      const basePrompt = buildDevPrompt(devPacketForRemediation, config);
+      const qaContext =
+        `This dev packet is being verified by QA packet ${packet.id} ` +
+        `("${packet.title}"); QA reported build failure.`;
+      const remediationPrompt =
+        `${basePrompt}\n\n---\n${qaContext}\n\n${guardrail}`;
+      lastRemediationTarget = target;
+      const r = invokeAgent(
+        target.provider, remediationPrompt, config, devTier, target.model,
+      );
+      recordInvocationCost(
+        r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+        perPacketCap, packetCostTracker, dryRun,
+      );
+      if (r.exit_code !== 0) {
+        return {
+          outcome: 'fail',
+          failure: {
+            ...failureFromSubprocess({
+              exitCode: r.exit_code,
+              stdout: r.stdout,
+              stderr: r.stderr,
+              kind: 'agent_invocation',
+              specId: opts.specId ?? null,
+              packetId: packet.id,
+              operationLabel: 'verify_phase.complete.remediation',
+            }),
+            // Attach the dev cascade so a remediation-step
+            // ProviderUnavailable failure can fail over.
+            cascade: devCascade,
+          },
+        };
+      }
+      return null;
+    };
+
     const completeRecovered = runWithRecovery<true>(
       (attempt: AttemptContext): OperationResult<true> => {
+        // Step 1: handle the remediation half of the compound
+        // BuildFailed action. See develop_phase.ts for the three-
+        // case rationale (retry_with_guardrail_prompt /
+        // cascade_provider mid-remediation / retry_same mid-
+        // remediation).
         if (attempt.action === 'retry_with_guardrail_prompt'
           && attempt.guardrailPrompt !== undefined) {
-          // BuildFailed remediation step: the dev agent re-implements
-          // against the DEV packet, NOT the QA packet.
-          if (devPacketForRemediation === null) {
-            return {
-              outcome: 'fail',
-              failure: {
-                exit_code: null,
-                stdout: '',
-                stderr:
-                  `Cannot dispatch dev-agent remediation: QA packet ${packet.id} ` +
-                  `references missing dev packet '${String(packet.verifies)}'.`,
-                error_message: 'orphan QA packet',
-                kind: 'lifecycle',
-                spec_id: opts.specId ?? null,
-                packet_id: packet.id,
-                operation_label: 'verify_phase.complete.remediation',
-              },
-            };
-          }
-          const basePrompt = buildDevPrompt(devPacketForRemediation, config);
-          const qaContext =
-            `This dev packet is being verified by QA packet ${packet.id} ` +
-            `("${packet.title}"); QA reported build failure.`;
-          const remediationPrompt =
-            `${basePrompt}\n\n---\n${qaContext}\n\n${attempt.guardrailPrompt}`;
-          const r = invokeAgent(devProvider, remediationPrompt, config, devTier);
-          recordInvocationCost(
-            r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-            perPacketCap, packetCostTracker, dryRun,
-          );
-          if (r.exit_code !== 0) {
-            return {
-              outcome: 'fail',
-              failure: failureFromSubprocess({
-                exitCode: r.exit_code,
-                stdout: r.stdout,
-                stderr: r.stderr,
-                kind: 'agent_invocation',
-                specId: opts.specId ?? null,
-                packetId: packet.id,
-                operationLabel: 'verify_phase.complete.remediation',
-              }),
-            };
-          }
+          pendingRemediationPrompt = attempt.guardrailPrompt;
+          const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+          if (fail !== null) return fail;
+        } else if (attempt.action === 'cascade_provider'
+          && attempt.cascade !== undefined
+          && pendingRemediationPrompt !== null) {
+          const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+          if (fail !== null) return fail;
+        } else if (attempt.action === 'retry_same'
+          && pendingRemediationPrompt !== null
+          && lastRemediationTarget !== null) {
+          const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+          if (fail !== null) return fail;
         }
         try {
           const r = completePacket({
@@ -522,7 +588,11 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
           // appears on success (existing successful completion) and
           // never as a false-success short-circuit on a failed
           // verification. Branch on ci_pass alone.
-          if (r.ci_pass) return { outcome: 'ok', value: true };
+          if (r.ci_pass) {
+            pendingRemediationPrompt = null;
+            lastRemediationTarget = null;
+            return { outcome: 'ok', value: true };
+          }
           const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
           if (!r.build_pass) failedChecks.push('build');
           if (!r.lint_pass) failedChecks.push('lint');

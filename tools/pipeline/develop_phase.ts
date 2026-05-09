@@ -27,6 +27,7 @@ import type { FactoryConfig, ModelTier } from '../config.js';
 import * as fmt from '../output.js';
 import { topoSort } from './topo.js';
 import { invokeAgent } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildReviewPrompt, buildReworkPrompt } from './prompts.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
@@ -440,11 +441,37 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
   fmt.log('develop', `${sorted.length} dev packet(s) to process`);
 
   const maxReviewIterations = config.pipeline?.max_review_iterations ?? 3;
-  const devProvider = config.pipeline?.persona_providers.developer ?? 'codex';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI for the persona;
+  // the rest form the cross-CLI failover order consumed by the
+  // ProviderUnavailable cascade. We read [0] here so the initial
+  // invocation targets the primary; the cascade is consulted only on
+  // failure (via the recovery layer).
+  const devProvider = config.pipeline?.persona_providers.developer[0] ?? 'codex';
   const devTier: ModelTier = config.personas.developer.model ?? 'high';
   const devIdentity = config.pipeline?.completion_identities.developer ?? 'codex-dev';
-  const reviewProvider = config.pipeline?.persona_providers.code_reviewer ?? 'claude';
+  const reviewProvider = config.pipeline?.persona_providers.code_reviewer[0] ?? 'claude';
   const reviewTier: ModelTier = config.personas.code_reviewer.model ?? 'medium';
+  // Phase 7 — compute persona cascades once per phase invocation.
+  // The closures attach these to every failure context so the
+  // ProviderUnavailable recipe can walk the failover order. Pure
+  // computation; no I/O.
+  const devCascade = computeCascade('developer', devTier, config);
+  const reviewerCascade = computeCascade('code_reviewer', reviewTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. When
+  // the persona has `model_failover` configured, cascade[0].model is
+  // the configured first model; using devProvider/reviewProvider
+  // alone (with NO modelOverride) silently invokes the persona's
+  // tier-mapped model and skips the operator-configured first model.
+  // Recovery would then start at cascade[1] thinking cascade[0] had
+  // been tried — observably wrong.
+  //
+  // The fallback (when cascade is empty, i.e. pipeline is absent)
+  // preserves legacy behavior: tier-resolved model id with no
+  // explicit override.
+  const devPrimary = devCascade[0] ?? { provider: devProvider, model: undefined };
+  const reviewerPrimary =
+    reviewerCascade[0] ?? { provider: reviewProvider, model: undefined };
 
   for (const packet of sorted) {
     // Re-read packet from disk each iteration (a previous packet's agent
@@ -570,23 +597,40 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 round-2 — the PRIMARY (initial / retry_same)
+              // invocation must come from cascade[0]. The recovery
+              // layer's cascade index assumes cascade[0] is what the
+              // call site already invoked; using devProvider+devTier
+              // alone (with no modelOverride) would invoke the
+              // tier-mapped model and SKIP cascade[0].model when the
+              // persona has model_failover configured. The cascade[1]
+              // hop would then re-try a model the operator never
+              // intended as primary.
+              const target = attempt.cascade ?? devPrimary;
+              const r = invokeAgent(
+                target.provider, finalPrompt, config, devTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
               );
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
+              // Phase 7 — attach cascade so ProviderUnavailable recipe
+              // can walk the failover order.
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.implement',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.implement',
+                  }),
+                  cascade: devCascade,
+                },
               };
             },
             {
@@ -709,8 +753,14 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewerRecovered = runWithRecovery<InvokeResult>(
-            (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-              const r = invokeAgent(reviewProvider, buildReviewPrompt(freshPacket, config), config, reviewTier);
+            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+              // Phase 7 round-2 — primary derived from cascade[0]; see
+              // implement closure for the rationale.
+              const target = attempt.cascade ?? reviewerPrimary;
+              const reviewPromptStr = buildReviewPrompt(freshPacket, config);
+              const r = invokeAgent(
+                target.provider, reviewPromptStr, config, reviewTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -718,15 +768,18 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.review',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.review',
+                  }),
+                  cascade: reviewerCascade,
+                },
               };
             },
             {
@@ -780,7 +833,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              const r = invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 round-2 — primary derived from cascade[0]; see
+              // implement closure for the rationale.
+              const target = attempt.cascade ?? devPrimary;
+              const r = invokeAgent(
+                target.provider, finalPrompt, config, devTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -788,15 +846,18 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (r.exit_code === 0) return { outcome: 'ok', value: r };
               return {
                 outcome: 'fail',
-                failure: failureFromSubprocess({
-                  exitCode: r.exit_code,
-                  stdout: r.stdout,
-                  stderr: r.stderr,
-                  kind: 'agent_invocation',
-                  specId: opts.specId ?? null,
-                  packetId: packet.id,
-                  operationLabel: 'develop_phase.rework',
-                }),
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.rework',
+                  }),
+                  cascade: devCascade,
+                },
               };
             },
             {
@@ -858,40 +919,116 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // success, and the prior `if (r.already_complete) ok`
           // short-circuit (which used to false-succeed a failed
           // completion) is gone.
+          // Phase 7 round-2 fix — BuildFailed remediation has a
+          // *compound* recovery action (run the dev agent, then re-
+          // run completePacket). When the recovery layer dispatches
+          // `cascade_provider` *during* a remediation cycle (i.e.
+          // the dev-agent invocation just failed ProviderUnavailable),
+          // the next closure invocation must STILL run the
+          // remediation step against the new (provider, model)
+          // before re-trying completePacket. Otherwise the
+          // remediation prompt is lost across the cascade boundary
+          // and completePacket re-runs against unchanged code.
+          //
+          // The fix: closure-scoped state.
+          //   - `pendingRemediationPrompt`: set when
+          //     `retry_with_guardrail_prompt` first fires; cleared
+          //     after the remediation+completePacket pair succeeds.
+          //     While it's non-null, every attempt re-issues the
+          //     remediation step before falling through to
+          //     completePacket.
+          //   - `lastRemediationTarget`: the (provider, model) the
+          //     last remediation invocation used. A retry_same after
+          //     a transient remediation failure must re-issue against
+          //     the SAME hop; a cascade_provider issues against the
+          //     new hop.
+          //
+          // Lifetime: closure level (per-finalize-invocation), not
+          // per-packet. The recovery loop returns on success; the
+          // closure won't be re-entered after a clean ci_pass.
+          let pendingRemediationPrompt: string | null = null;
+          let lastRemediationTarget: typeof devPrimary | null = null;
+
+          const runRemediation = (
+            target: typeof devPrimary,
+            guardrail: string,
+          ): OperationResult<true> | null => {
+            // Returns null on success (caller proceeds to
+            // completePacket); returns OperationResult<true> with
+            // outcome='fail' on agent failure.
+            const basePrompt = buildDevPrompt(freshPacket, config);
+            const remediationPrompt =
+              `${basePrompt}\n\n---\n${guardrail}`;
+            lastRemediationTarget = target;
+            const r = invokeAgent(
+              target.provider, remediationPrompt, config, devTier, target.model,
+            );
+            recordInvocationCost(
+              r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
+              perPacketCap, packetCostTracker, dryRun,
+            );
+            if (r.exit_code !== 0) {
+              return {
+                outcome: 'fail',
+                failure: {
+                  ...failureFromSubprocess({
+                    exitCode: r.exit_code,
+                    stdout: r.stdout,
+                    stderr: r.stderr,
+                    kind: 'agent_invocation',
+                    specId: opts.specId ?? null,
+                    packetId: packet.id,
+                    operationLabel: 'develop_phase.complete.remediation',
+                  }),
+                  // Attach the dev cascade so a remediation-step
+                  // ProviderUnavailable failure can fail over.
+                  cascade: devCascade,
+                },
+              };
+            }
+            return null;
+          };
+
           const finalizeRecovered = runWithRecovery<true>(
             (attempt: AttemptContext): OperationResult<true> => {
+              // Step 1: handle the remediation half of the compound
+              // action. Three cases keep state coherent across
+              // recovery action boundaries:
+              //
+              //  (a) recipe just dispatched retry_with_guardrail_prompt:
+              //      capture the prompt and run remediation against
+              //      devPrimary.
+              //  (b) recipe dispatched cascade_provider AND we have a
+              //      pending remediation prompt: run remediation
+              //      against the new cascade hop with the SAME
+              //      guardrail prompt the BuildFailed recipe issued.
+              //      Load-bearing fix: without this, a remediation-
+              //      step ProviderUnavailable would silently lose the
+              //      guardrail prompt and completePacket would
+              //      re-fail forever.
+              //  (c) recipe dispatched retry_same (ProviderTransient
+              //      on the remediation agent) AND we have a pending
+              //      remediation prompt: re-issue against the SAME
+              //      target as the last remediation attempt.
               if (attempt.action === 'retry_with_guardrail_prompt'
                 && attempt.guardrailPrompt !== undefined) {
-                // BuildFailed remediation: re-invoke the dev agent
-                // with the guardrail prompt before re-running
-                // completePacket. The dev agent edits code; the next
-                // completePacket then re-runs verification against
-                // the new tree.
-                const basePrompt = buildDevPrompt(freshPacket, config);
-                const remediationPrompt =
-                  `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`;
-                const r = invokeAgent(
-                  devProvider, remediationPrompt, config, devTier,
-                );
-                recordInvocationCost(
-                  r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
-                  perPacketCap, packetCostTracker, dryRun,
-                );
-                if (r.exit_code !== 0) {
-                  return {
-                    outcome: 'fail',
-                    failure: failureFromSubprocess({
-                      exitCode: r.exit_code,
-                      stdout: r.stdout,
-                      stderr: r.stderr,
-                      kind: 'agent_invocation',
-                      specId: opts.specId ?? null,
-                      packetId: packet.id,
-                      operationLabel: 'develop_phase.complete.remediation',
-                    }),
-                  };
-                }
+                pendingRemediationPrompt = attempt.guardrailPrompt;
+                const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+                if (fail !== null) return fail;
+              } else if (attempt.action === 'cascade_provider'
+                && attempt.cascade !== undefined
+                && pendingRemediationPrompt !== null) {
+                const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+                if (fail !== null) return fail;
+              } else if (attempt.action === 'retry_same'
+                && pendingRemediationPrompt !== null
+                && lastRemediationTarget !== null) {
+                const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+                if (fail !== null) return fail;
               }
+              // (No special-case for the very first attempt:
+              // pendingRemediationPrompt remains null on first entry,
+              // so we go straight to completePacket.)
               try {
                 const r = completePacket({
                   packetId: packet.id,
@@ -902,7 +1039,17 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
                   checkStaleBranch: true,
                   ...(opts.gitRunner !== undefined ? { gitRunner: opts.gitRunner } : {}),
                 });
-                if (r.ci_pass) return { outcome: 'ok', value: true };
+                if (r.ci_pass) {
+                  // Clear the pending remediation prompt: the
+                  // recipe's promise (run dev agent + retry
+                  // completePacket) has been kept. The loop returns
+                  // ok and the closure isn't re-entered, so this is
+                  // primarily a contract-clarity reset rather than a
+                  // correctness one.
+                  pendingRemediationPrompt = null;
+                  lastRemediationTarget = null;
+                  return { outcome: 'ok', value: true };
+                }
                 const failedChecks: Array<'build' | 'lint' | 'tests' | 'ci'> = [];
                 if (!r.build_pass) failedChecks.push('build');
                 if (!r.lint_pass) failedChecks.push('lint');

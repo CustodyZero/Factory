@@ -27,6 +27,7 @@ import * as fmt from '../output.js';
 import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
 import type { InvokeResult } from './agent_invoke.js';
+import { computeCascade } from './cascade.js';
 import type { CostRecord } from './cost.js';
 import { recordCost, localDateString } from '../cost.js';
 import {
@@ -262,15 +263,29 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
     return { feature_id: null };
   }
 
-  const provider = config.pipeline?.persona_providers.planner ?? 'claude';
+  // Phase 7 — `persona_providers.<persona>` is an ordered list after
+  // loader normalization. Index 0 is the PRIMARY CLI; the rest form
+  // the cross-CLI failover order. Read [0] for the initial attempt;
+  // the cascade (computed once below) is consulted on failure via
+  // the recovery layer.
+  const provider = config.pipeline?.persona_providers.planner[0] ?? 'claude';
   const plannerTier = config.personas.planner.model ?? 'high';
+  // Phase 7 — compute the persona cascade once. The recovery layer
+  // walks this list when ProviderUnavailable fires. Pure: same
+  // inputs, same output.
+  const plannerCascade = computeCascade('planner', plannerTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. See
+  // develop_phase.ts for full rationale. The fallback (cascade
+  // empty / pipeline absent) preserves legacy behavior.
+  const plannerPrimary =
+    plannerCascade[0] ?? { provider, model: undefined };
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
   // Phase 6 — wrap the planner invocation in runWithRecovery.
   // Per-spec budget (the planner runs once per spec, so the budget
   // is fresh per call by construction). ProviderTransient and
-  // AgentNonResponsive failures retry; ProviderUnavailable escalates
-  // immediately. Cost recording happens on every attempt via the
+  // AgentNonResponsive failures retry; ProviderUnavailable consults
+  // the cascade. Cost recording happens on every attempt via the
   // closure so retried planner runs still flow into the cost stream.
   const recoveryBudget = newPacketRecoveryBudget();
   const recoveryOptions = {
@@ -282,24 +297,38 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   const recoveryRunId = opts.runId ?? 'no-run';
 
   const recovered = runWithRecovery<InvokeResult>(
-    (_attempt: AttemptContext): OperationResult<InvokeResult> => {
-      const r = invokeAgent(provider, prompt, config, plannerTier);
+    (attempt: AttemptContext): OperationResult<InvokeResult> => {
+      // Phase 7 round-2 — primary derived from cascade[0]. Cascade
+      // hops use attempt.cascade (set by the recovery layer); the
+      // initial call and `retry_same` retries use cascade[0] so
+      // recovery's cascade-walking index stays consistent with
+      // what was actually invoked.
+      const target = attempt.cascade ?? plannerPrimary;
+      const r = invokeAgent(
+        target.provider, prompt, config, plannerTier, target.model,
+      );
       // Persist a CostRecord regardless of outcome — a failed planner
       // still consumed tokens. Done inside the closure so retried
       // calls record one row each.
       recordPlanCost(r, opts.runId, opts.specId ?? intent.id, artifactRoot);
       if (r.exit_code === 0) return { outcome: 'ok', value: r };
+      // Phase 7 — attach the cascade to the failure context so the
+      // ProviderUnavailable recipe can walk it. Recipes that don't
+      // consult `cascade` (Build/Lint/Test/Stale/...) ignore it.
       return {
         outcome: 'fail',
-        failure: failureFromSubprocess({
-          exitCode: r.exit_code,
-          stdout: r.stdout,
-          stderr: r.stderr,
-          kind: 'agent_invocation',
-          specId: opts.specId ?? intent.id,
-          packetId: null,
-          operationLabel: 'plan_phase.invoke_planner',
-        }),
+        failure: {
+          ...failureFromSubprocess({
+            exitCode: r.exit_code,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            kind: 'agent_invocation',
+            specId: opts.specId ?? intent.id,
+            packetId: null,
+            operationLabel: 'plan_phase.invoke_planner',
+          }),
+          cascade: plannerCascade,
+        },
       };
     },
     {

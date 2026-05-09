@@ -186,12 +186,24 @@ export interface InvokeResult {
  *   - cwd is the project root; timeout is 10 minutes per agent;
  *     stdio is fully piped so stdout/stderr are captured into the
  *     return value.
+ *
+ * Phase 7 of single-entry-pipeline — the optional `modelOverride`
+ * argument lets the caller pin a concrete model id, bypassing the
+ * `modelTier` -> `model_map` resolution. The cascade closure
+ * (`develop_phase` / `verify_phase` / `plan_phase`, when handling
+ * `attempt.action === 'cascade_provider'`) passes the cascade's
+ * resolved model id here so the failover hop targets the exact
+ * (provider, model) the recipe selected. When `modelOverride` is
+ * undefined or null, tier resolution applies as before (backward
+ * compatible). When BOTH `modelOverride` and `modelTier` are
+ * supplied, the override wins — it is, by definition, an override.
  */
 export function invokeAgent(
   provider: PipelineProvider,
   prompt: string,
   config: FactoryConfig,
   modelTier?: ModelTier,
+  modelOverride?: string,
 ): InvokeResult {
   // Phase 5.7: every early-return path returns a populated cost field
   // (null tokens/dollars). The cost shape is part of the contract
@@ -224,7 +236,13 @@ export function invokeAgent(
     };
   }
 
-  const modelId = modelTier ? resolveModelId(providerConfig, modelTier) : undefined;
+  // Phase 7 — modelOverride wins over modelTier when both are
+  // supplied. The cascade closure pre-resolves the model id from the
+  // cascade step and passes it here; tier resolution against
+  // model_map is bypassed in that case.
+  const modelId = modelOverride !== undefined
+    ? modelOverride
+    : (modelTier ? resolveModelId(providerConfig, modelTier) : undefined);
   const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
   // Copilot: prompt via stdin to avoid OS command-line length limits.
   const useStdin = provider === 'copilot';

@@ -228,11 +228,18 @@ export type OperationResult<T> =
  *     dev agent for a BuildFailed remediation in QA flow).
  *   - `attempt.guardrailPrompt`: when the action is
  *     retry_with_guardrail_prompt, the prompt suffix to append.
+ *   - `attempt.cascade`: when the action is `cascade_provider`, the
+ *     (provider, model) pair the closure must invoke against,
+ *     bypassing the persona's default provider/tier. Phase 7.
  */
 export interface AttemptContext {
   readonly attemptNumber: number;
   readonly action?: RecoveryActionKind;
   readonly guardrailPrompt?: string;
+  readonly cascade?: {
+    readonly provider: import('../config.js').PipelineProvider;
+    readonly model: string | undefined;
+  };
 }
 
 export type RecoverableOperation<T> = (attempt: AttemptContext) => OperationResult<T>;
@@ -296,18 +303,77 @@ export function runWithRecovery<T>(
   let lastFailure: FailureContext = result.failure;
   let lastScenario: FailureScenario | null = null;
 
+  // Phase 7 — cascade-walking state. `cascadeIndex` is the index of
+  // the most-recently-ATTEMPTED cascade step. The primary attempt
+  // corresponds to index 0 (cascade[0] is what the call site invoked
+  // before threading into the recovery loop). The recipe reads this
+  // value (via `cascade_attempt_index` on FailureContext) to pick
+  // the next hop. After each cascade_provider attempt, we increment
+  // this counter regardless of outcome — the next failure-classification
+  // pass needs to know we've now consumed cascade[cascadeIndex+1].
+  let cascadeIndex = 0;
+  // Phase 7 — scenario reclassification override. When the loop
+  // exhausts the ProviderTransient (or AgentNonResponsive) budget
+  // and decides to fall through to the ProviderUnavailable cascade,
+  // it sets this to 'ProviderUnavailable' for the next iteration so
+  // the recipe lookup ignores the classifier's verdict on the same
+  // failure text. Cleared back to null when the next recipe runs.
+  let scenarioOverride: FailureScenario | null = null;
+
   // Retry loop. We re-classify on every failure because the failure
   // shape can change between attempts (transient -> stable error).
-  // Bounded by SCENARIO_RETRY_BUDGET and any caller-supplied cost
-  // cap. The loop has a hard upper bound of (sum of all per-scenario
-  // budgets + 1) iterations to defend against pathological recipe
-  // outputs.
-  const maxIterations =
-    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0) + 1;
+  // Bounded by SCENARIO_RETRY_BUDGET, the cascade length (Phase 7
+  // round-2), and any caller-supplied cost cap.
+  //
+  // SAFETY BOUND (Phase 7 round-3 — dynamic, monotonic):
+  //   Sum of static per-scenario budgets PLUS the longest cascade
+  //   observed so far PLUS slack. The cascade is data-driven (a
+  //   config-supplied array attached to FailureContext) and can
+  //   have any length the operator configures.
+  //
+  //   The ProviderUnavailable branch is the authoritative cap:
+  //   - The recipe escalates when cascade_attempt_index reaches
+  //     cascade.length - 1 (the cascade is exhausted).
+  //   - The orchestration loop SKIPS the per-scenario budget
+  //     check for ProviderUnavailable (the static budget is 0;
+  //     the cascade is the cap).
+  //
+  //   The safety bound below is the OUTER backstop only — it
+  //   exists so a pathological recipe (one that returned `attempt`
+  //   forever instead of escalating) cannot loop indefinitely.
+  //
+  //   Why DYNAMIC (round-3): the initial failure may carry no
+  //   cascade (e.g. BuildFailed) and only LATER fail with
+  //   ProviderUnavailable when the remediation step trips its
+  //   own provider failover. Snapshotting `cascade.length` at
+  //   loop entry would silently cap a cascade discovered
+  //   mid-flight. Instead, the bound is data-driven by observed
+  //   cascade lengths and grows monotonically as larger cascades
+  //   are discovered (Option A from round-3 review). The
+  //   recipe's "cascade exhausted" escalation remains
+  //   authoritative; the safety bound never fires before it
+  //   under a realistic config.
+  const STATIC_BUDGET_SUM =
+    ALL_SCENARIOS.reduce((sum, s) => sum + SCENARIO_RETRY_BUDGET[s], 0);
+  const computeSafetyBound = (cascadeLen: number): number =>
+    STATIC_BUDGET_SUM + cascadeLen + 1;
+  let maxIterations = computeSafetyBound(lastFailure.cascade?.length ?? 0);
 
   for (let iter = 0; iter < maxIterations; iter += 1) {
     const failure = lastFailure;
-    const scenario = classifyFailure(failure);
+    // Phase 7 — when the previous iteration set scenarioOverride
+    // (e.g. ProviderTransient budget exhaustion handing off to the
+    // cascade), use it instead of re-classifying the same failure
+    // text. Otherwise classify normally. The override is consumed
+    // and cleared on the SAME iteration; subsequent iterations
+    // re-classify based on the operation's new failure shape.
+    let scenario: FailureScenario | null;
+    if (scenarioOverride !== null) {
+      scenario = scenarioOverride;
+      scenarioOverride = null;
+    } else {
+      scenario = classifyFailure(failure);
+    }
 
     // Unclassifiable failure: escalate immediately. Honest "we don't
     // know" per CLAUDE.md sec 3.1 / 3.5. NO recovery.attempt_started
@@ -319,7 +385,14 @@ export function runWithRecovery<T>(
 
     lastScenario = scenario;
     const recipe = RECIPES[scenario];
-    const recipeOutput: RecipeOutput = recipe(scenario, failure);
+    // Phase 7 — enrich the failure context with the cascade-walking
+    // index so the ProviderUnavailable recipe knows which hop just
+    // failed. Recipes that don't consult `cascade` ignore this field.
+    const enrichedFailure: FailureContext = {
+      ...failure,
+      cascade_attempt_index: cascadeIndex,
+    };
+    const recipeOutput: RecipeOutput = recipe(scenario, enrichedFailure);
 
     // Recipe says escalate (LintFailed, TestFailed, ProviderUnavailable,
     // CompletionGateBlocked under the Phase-6 contract). Immediate
@@ -329,11 +402,37 @@ export function runWithRecovery<T>(
     }
 
     // Recipe says retry. Check the budget BEFORE incrementing.
+    //
+    // Phase 7 round-2 — ProviderUnavailable is exempt from the static
+    // per-scenario budget. The recipe self-caps based on the cascade
+    // attached to the FailureContext (length = config-driven). When
+    // the cascade is exhausted the recipe returns `escalate`, which
+    // is handled above; reaching this branch with
+    // scenario === 'ProviderUnavailable' means the recipe still has
+    // cascade hops left. Skip the static check so the cascade is
+    // never bounded by a number that doesn't know its length.
     const usedSoFar = ctx.budget.get(scenario) ?? 0;
     const allowed = SCENARIO_RETRY_BUDGET[scenario];
-    if (usedSoFar >= allowed) {
+    const skipBudgetCheck = scenario === 'ProviderUnavailable';
+    if (!skipBudgetCheck && usedSoFar >= allowed) {
       // Budget exhausted for this scenario in this packet's lifetime.
-      // Emit recovery.exhausted then escalate.
+      //
+      // Phase 7 — RECLASSIFICATION:
+      //   When the exhausted scenario is ProviderTransient (or
+      //   AgentNonResponsive, which Phase 6 treats as transient),
+      //   the next step per the spec is to escalate to
+      //   ProviderUnavailable so the cascade fires. We emit
+      //   recovery.exhausted (the transient budget IS exhausted —
+      //   that's an honest fact the operator should see) and then
+      //   continue the loop with the ProviderUnavailable recipe.
+      //   The cascade walks; on its own exhaustion the
+      //   ProviderUnavailable escalate path runs.
+      //
+      //   Other always-escalate scenarios (Lint/Test/CompletionGate)
+      //   never reach this branch — their recipes return
+      //   `escalate` directly above. ProviderUnavailable itself
+      //   uses a sentinel budget so this branch never fires for
+      //   it.
       appendEvent(
         makeRecoveryExhausted(eventBase, {
           scenario,
@@ -343,6 +442,23 @@ export function runWithRecovery<T>(
         }),
         ctx.artifactRoot,
       );
+      if (scenario === 'ProviderTransient' || scenario === 'AgentNonResponsive') {
+        // Reclassification: hand off to ProviderUnavailable on the
+        // next iteration. The override flag bypasses the classifier
+        // (which would otherwise re-emit the same scenario from the
+        // unchanged failure text) and forces the loop to look up the
+        // ProviderUnavailable recipe directly.
+        //
+        // cascadeIndex is left at 0: a Transient -> Unavailable
+        // handoff means the primary cascade step (the original CLI)
+        // has just failed terminally. The recipe's first
+        // ProviderUnavailable dispatch will return cascade[1]
+        // (cascade_attempt_index=0 -> next index = 1).
+        scenarioOverride = 'ProviderUnavailable';
+        // lastFailure is unchanged; the cascade attached to the
+        // failure (set by the closure) carries forward.
+        continue;
+      }
       return escalate(
         ctx,
         eventBase,
@@ -399,7 +515,18 @@ export function runWithRecovery<T>(
       ...(recipeOutput.guardrail_prompt !== undefined
         ? { guardrailPrompt: recipeOutput.guardrail_prompt }
         : {}),
+      ...(recipeOutput.cascade !== undefined
+        ? { cascade: recipeOutput.cascade }
+        : {}),
     };
+    // Phase 7 — bump the cascade index BEFORE invoking the closure
+    // so the next failure-classification pass sees the correct
+    // "most-recently-attempted" index. Done here (rather than after
+    // the call returns) because the index reflects what the closure
+    // is about to attempt, regardless of outcome.
+    if (recipeOutput.action === 'cascade_provider') {
+      cascadeIndex += 1;
+    }
     result = operation(attemptCtx);
     if (result.outcome === 'ok') {
       appendEvent(
@@ -414,6 +541,16 @@ export function runWithRecovery<T>(
       return { kind: 'ok', value: result.value };
     }
     lastFailure = result.failure;
+    // Round-3: a failure may attach a cascade that the initial
+    // failure didn't have (e.g. BuildFailed primary -> remediation
+    // ProviderUnavailable with a long cascade). Grow the safety
+    // bound monotonically so it accommodates the cascade the
+    // recipe is about to walk. Math.max keeps it monotonic — we
+    // never shrink the bound mid-flight.
+    const observedCascadeLen = lastFailure.cascade?.length ?? 0;
+    if (observedCascadeLen > 0) {
+      maxIterations = Math.max(maxIterations, computeSafetyBound(observedCascadeLen));
+    }
   }
 
   // Defensive: the loop should have returned by now. Escalate with
