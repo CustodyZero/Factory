@@ -458,6 +458,20 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
   // computation; no I/O.
   const devCascade = computeCascade('developer', devTier, config);
   const reviewerCascade = computeCascade('code_reviewer', reviewTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. When
+  // the persona has `model_failover` configured, cascade[0].model is
+  // the configured first model; using devProvider/reviewProvider
+  // alone (with NO modelOverride) silently invokes the persona's
+  // tier-mapped model and skips the operator-configured first model.
+  // Recovery would then start at cascade[1] thinking cascade[0] had
+  // been tried — observably wrong.
+  //
+  // The fallback (when cascade is empty, i.e. pipeline is absent)
+  // preserves legacy behavior: tier-resolved model id with no
+  // explicit override.
+  const devPrimary = devCascade[0] ?? { provider: devProvider, model: undefined };
+  const reviewerPrimary =
+    reviewerCascade[0] ?? { provider: reviewProvider, model: undefined };
 
   for (const packet of sorted) {
     // Re-read packet from disk each iteration (a previous packet's agent
@@ -583,14 +597,19 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              // Phase 7 — when the recovery layer dispatches a
-              // cascade hop, invoke against the cascade-supplied
-              // (provider, model). Otherwise use the persona defaults.
-              const useProvider = attempt.cascade?.provider ?? devProvider;
-              const useModel = attempt.cascade?.model;
-              const r = attempt.cascade !== undefined
-                ? invokeAgent(useProvider, finalPrompt, config, devTier, useModel)
-                : invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 round-2 — the PRIMARY (initial / retry_same)
+              // invocation must come from cascade[0]. The recovery
+              // layer's cascade index assumes cascade[0] is what the
+              // call site already invoked; using devProvider+devTier
+              // alone (with no modelOverride) would invoke the
+              // tier-mapped model and SKIP cascade[0].model when the
+              // persona has model_failover configured. The cascade[1]
+              // hop would then re-try a model the operator never
+              // intended as primary.
+              const target = attempt.cascade ?? devPrimary;
+              const r = invokeAgent(
+                target.provider, finalPrompt, config, devTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -735,13 +754,13 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
           const reviewerRecovered = runWithRecovery<InvokeResult>(
             (attempt: AttemptContext): OperationResult<InvokeResult> => {
-              // Phase 7 — cascade-aware reviewer invocation.
-              const useProvider = attempt.cascade?.provider ?? reviewProvider;
-              const useModel = attempt.cascade?.model;
+              // Phase 7 round-2 — primary derived from cascade[0]; see
+              // implement closure for the rationale.
+              const target = attempt.cascade ?? reviewerPrimary;
               const reviewPromptStr = buildReviewPrompt(freshPacket, config);
-              const r = attempt.cascade !== undefined
-                ? invokeAgent(useProvider, reviewPromptStr, config, reviewTier, useModel)
-                : invokeAgent(reviewProvider, reviewPromptStr, config, reviewTier);
+              const r = invokeAgent(
+                target.provider, reviewPromptStr, config, reviewTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
@@ -814,12 +833,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
-              // Phase 7 — cascade-aware rework invocation.
-              const useProvider = attempt.cascade?.provider ?? devProvider;
-              const useModel = attempt.cascade?.model;
-              const r = attempt.cascade !== undefined
-                ? invokeAgent(useProvider, finalPrompt, config, devTier, useModel)
-                : invokeAgent(devProvider, finalPrompt, config, devTier);
+              // Phase 7 round-2 — primary derived from cascade[0]; see
+              // implement closure for the rationale.
+              const target = attempt.cascade ?? devPrimary;
+              const r = invokeAgent(
+                target.provider, finalPrompt, config, devTier, target.model,
+              );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,

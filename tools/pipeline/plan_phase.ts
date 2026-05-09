@@ -274,6 +274,11 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   // walks this list when ProviderUnavailable fires. Pure: same
   // inputs, same output.
   const plannerCascade = computeCascade('planner', plannerTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. See
+  // develop_phase.ts for full rationale. The fallback (cascade
+  // empty / pipeline absent) preserves legacy behavior.
+  const plannerPrimary =
+    plannerCascade[0] ?? { provider, model: undefined };
   fmt.log('plan', `Invoking ${provider} planner (${plannerTier})...`);
 
   // Phase 6 — wrap the planner invocation in runWithRecovery.
@@ -293,16 +298,15 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
 
   const recovered = runWithRecovery<InvokeResult>(
     (attempt: AttemptContext): OperationResult<InvokeResult> => {
-      // Phase 7 — when the recovery layer dispatches a cascade hop,
-      // invoke against the cascade-supplied (provider, model)
-      // instead of the persona defaults. The override path bypasses
-      // tier resolution; the model id from the cascade flows
-      // straight into invokeAgent's modelOverride.
-      const useProvider = attempt.cascade?.provider ?? provider;
-      const useModel = attempt.cascade?.model;
-      const r = attempt.cascade !== undefined
-        ? invokeAgent(useProvider, prompt, config, plannerTier, useModel)
-        : invokeAgent(provider, prompt, config, plannerTier);
+      // Phase 7 round-2 — primary derived from cascade[0]. Cascade
+      // hops use attempt.cascade (set by the recovery layer); the
+      // initial call and `retry_same` retries use cascade[0] so
+      // recovery's cascade-walking index stays consistent with
+      // what was actually invoked.
+      const target = attempt.cascade ?? plannerPrimary;
+      const r = invokeAgent(
+        target.provider, prompt, config, plannerTier, target.model,
+      );
       // Persist a CostRecord regardless of outcome — a failed planner
       // still consumed tokens. Done inside the closure so retried
       // calls record one row each.

@@ -464,6 +464,73 @@ describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 7 round-2 fix — primary invocation must use cascade[0]
+//
+// Pin that when `model_map[tier] !== model_failover[0]`, the FIRST
+// invokeAgent call for the implement closure is sent to
+// model_failover[0] (i.e. cascade[0].model), NOT model_map[tier].
+//
+// Before the fix, the closure invoked the primary as
+//   invokeAgent(devProvider, prompt, config, devTier)
+// — no modelOverride — so the resolved model was model_map[tier].
+// Recovery would then fire cascade[1] thinking cascade[0] was
+// already attempted, having silently skipped model_failover[0].
+//
+// The test fixture deliberately differs the two so the bug is
+// observable: model_map.high='fast-model' but
+// model_failover=['careful-model','backup-model']. The first
+// invokeAgent call must record 'careful-model' as the model.
+// ---------------------------------------------------------------------------
+
+describe('runDevelopPhase — Phase 7 round-2: primary uses cascade[0]', () => {
+  it("model_map[high]='fast-model' but model_failover=['careful-model',...]: FIRST invokeAgent call uses 'careful-model'", () => {
+    const root = mkRoot();
+    writePacket(root, 'pkt-primary', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
+    // The primary attempt succeeds. We want to assert the model id
+    // the closure passed to invokeAgent on the FIRST call, so we
+    // intentionally do NOT pre-set `model` on the queued outcome —
+    // the mock falls back to whatever modelOverride was supplied.
+    __invokeQueue.push({ exit_code: 0 });
+    __invokeQueue.push({ exit_code: 0 }); // reviewer
+
+    // Build a config where copilot has BOTH a model_map AND a
+    // model_failover, with DIFFERENT first entries — this is the
+    // shape the bug silently miscounted.
+    const config = makeConfig({
+      developerProviders: ['copilot'],
+      copilotModelFailover: ['careful-model', 'backup-model'],
+    }) as unknown as Record<string, unknown>;
+    // Override model_map.high to a third id distinct from
+    // model_failover[0]. The fixture's makeConfig already sets
+    // model_map = { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: '...' }
+    // so we re-write model_map.high to 'fast-model'.
+    const pipeline = config['pipeline'] as Record<string, unknown>;
+    const providers = pipeline['providers'] as Record<string, unknown>;
+    const copilot = providers['copilot'] as Record<string, unknown>;
+    copilot['model_map'] = { high: 'fast-model', medium: 'fast-model', low: 'fast-model' };
+
+    const result = runDevelopPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-primary']),
+      config: config as unknown as FactoryConfig,
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-primary',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+    expect(result.completed).toEqual(['pkt-primary']);
+
+    // FIRST invokeAgent call = primary attempt of the implement
+    // closure. It MUST record model='careful-model' (cascade[0].model
+    // = model_failover[0]), NOT 'fast-model' (model_map[high]).
+    expect(__invokeCalls.length).toBeGreaterThan(0);
+    expect(__invokeCalls[0]?.provider).toBe('copilot');
+    expect(__invokeCalls[0]?.model).toBe('careful-model');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Backward compatibility — single-element persona_providers
 // ---------------------------------------------------------------------------
 

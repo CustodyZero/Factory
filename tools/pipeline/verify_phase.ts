@@ -295,6 +295,10 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
   // walk the failover order.
   const qaCascade = computeCascade('qa', qaTier, config);
   const devCascade = computeCascade('developer', devTier, config);
+  // Phase 7 round-2 fix — the PRIMARY attempt is `cascade[0]`. See
+  // develop_phase.ts for full rationale.
+  const qaPrimary = qaCascade[0] ?? { provider: qaProvider, model: undefined };
+  const devPrimary = devCascade[0] ?? { provider: devProvider, model: undefined };
 
   for (const packet of qaPackets) {
     // Same external-mutation model as the develop phase: an external
@@ -394,13 +398,13 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
     // runs verification).
     const qaRecovered = runWithRecovery<InvokeResult>(
       (attempt: AttemptContext): OperationResult<InvokeResult> => {
-        // Phase 7 — cascade-aware QA invocation.
-        const useProvider = attempt.cascade?.provider ?? qaProvider;
-        const useModel = attempt.cascade?.model;
+        // Phase 7 round-2 — primary derived from cascade[0]; see
+        // develop_phase.ts for the rationale.
+        const target = attempt.cascade ?? qaPrimary;
         const qaPromptStr = buildQaPrompt(packet, config);
-        const r = attempt.cascade !== undefined
-          ? invokeAgent(useProvider, qaPromptStr, config, qaTier, useModel)
-          : invokeAgent(qaProvider, qaPromptStr, config, qaTier);
+        const r = invokeAgent(
+          target.provider, qaPromptStr, config, qaTier, target.model,
+        );
         recordInvocationCost(
           r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
           perPacketCap, packetCostTracker, dryRun,
