@@ -107,6 +107,36 @@ When `run.ts <spec-id>` is invoked:
 
 The intent is **derived state**. If a human deletes `intents/<spec-id>.json`, the next `run.ts` invocation regenerates it from the spec. The spec is the source of truth.
 
+### Approval gate (spec-driven vs intent-driven)
+
+The post-Phase-8 convergence pass introduced a runtime governance gate
+on intent `status` for the backward-compat intent-driven path
+(`run.ts <intent-id>`). The spec model interacts with that gate as
+follows:
+
+- **Spec-driven runs** (`run.ts <spec-id>`) bypass the gate. The
+  derived intent's `status: "proposed"` is a generator-set artifact,
+  NOT a human-authored governance signal. The human approval
+  happened the moment the spec was written. The orchestrator
+  preserves the `proposed` default to keep the spec → intent
+  translation deterministic and to avoid forcing operators to flip a
+  status field on a derived artifact they did not author.
+
+- **Intent-driven runs** (`run.ts <intent-id>` against a hand-authored
+  `intents/<id>.json`) DO consult the gate. The accepted statuses are
+  `approved`, `planned`, and `delivered`; `proposed`, `superseded`,
+  missing, and unknown values are rejected with an actionable error
+  asking the operator to set `status: "approved"`. This is the only
+  remaining authoring surface where `status` carries human intent —
+  the operator wrote the file, so the operator has to acknowledge
+  the run.
+
+The split keeps spec-as-derived-state honest (rule 4 of "What this
+decides") while restoring an explicit governance signal on the
+hand-authored fallback. Without the split, either every spec-driven
+run would require an extra status-flip step, OR the intent-driven
+path would silently inherit the `proposed` default and never gate.
+
 ### Intent schema change required
 
 The existing `intents/<id>.json` schema does not have a `depends_on` field. This decision adds one:

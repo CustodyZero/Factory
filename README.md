@@ -379,9 +379,26 @@ Required fields:
 - `id` — kebab-case identifier (must match filename)
 - `title` — one-line summary of the requested outcome
 - `spec` (or `spec_path`) — planner input describing the desired system behavior or change
-- `status` — `proposed`, `planned`, `superseded`, or `delivered`
+- `status` — `proposed`, `approved`, `planned`, `delivered`, or `superseded`
 - `created_by` — who created the intent
 - `created_at` — ISO 8601 timestamp
+
+Status semantics by run-input source:
+
+- **Spec-driven runs** (`run.ts <spec-id>`): the orchestrator
+  generates the intent with `status: "proposed"`. That value is a
+  generator-set artifact, NOT a governance signal — the spec
+  authoring is the approval. `run.ts` accepts it and continues.
+- **Intent-driven runs** (`run.ts <intent-id>`, hand-authored
+  intents): `run.ts` checks the status field as a governance gate.
+  - `approved` — grants run authority. This is what an operator
+    sets when hand-authoring an intent for the first time.
+  - `planned` / `delivered` — accepted for idempotent reruns of
+    intents that already progressed past the plan phase.
+  - `proposed` — REJECTED with an actionable error (the operator
+    must edit the file and set `status: "approved"`).
+  - `superseded` — REJECTED; the intent is terminal.
+  - missing / unknown — REJECTED.
 
 Optional fields:
 - `constraints` — planner constraints or non-goals

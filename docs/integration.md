@@ -317,10 +317,25 @@ This runs to completion autonomously:
 
 ### Human Gates
 
-Exactly one — authoring the spec. The intent artifact is derived. (For
-backward compatibility, hand-authored intents continue to work as input
-to `run.ts`; spec-first is the recommended path.) Completion IS
-acceptance.
+The gate depends on the run-input source:
+
+- **Spec-driven runs** (`run.ts <spec-id>`): exactly one human gate —
+  authoring the spec. The intent is a derived artifact materialised
+  by the orchestrator from the spec; its `status` field is a
+  generator-set artifact, NOT a governance gate. The default
+  `proposed` status is accepted automatically.
+- **Intent-driven runs** (`run.ts <intent-id>`, backward-compat path):
+  hand-authored intents are gated by their `status` field. The
+  factory accepts `approved`, `planned`, and `delivered`. The
+  factory rejects `proposed`, `superseded`, missing, and unknown
+  values; the operator must edit the intent file and set
+  `status: "approved"` to grant run authority. (`planned` and
+  `delivered` are accepted for idempotent reruns of intents that
+  already progressed past plan.)
+
+Completion IS acceptance — there is no separate "ready to ship"
+gate after the pipeline succeeds. See the end of this document for
+operator guidance on hand-authoring intents.
 
 ### Agent Identity Separation
 
@@ -378,6 +393,15 @@ The pipeline runs autonomously from spec to completed feature:
    must point at a non-empty file. `validate.ts` enforces the rules;
    `plan.ts` reads the file at plan time and hands its full contents to
    the planner.
+
+   **Hand-authored intents must declare `status: "approved"` to grant
+   `run.ts` the authority to run.** This is the intent-driven approval
+   gate (see [Human Gates](#human-gates) above). `planned` and
+   `delivered` are accepted for idempotent reruns; `proposed`,
+   `superseded`, missing, and unknown values are rejected with an
+   actionable error. Spec-driven runs (`run.ts <spec-id>`) are NOT
+   subject to this check — the spec's authorship IS the approval, and
+   the derived intent's generator-set `status: "proposed"` is accepted.
 2. Run `npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]`
 3. **Plan phase** — orchestrator translates each spec into an intent (1:1);
    the planner agent then writes:
