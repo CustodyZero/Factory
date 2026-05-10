@@ -56,6 +56,16 @@ interface InvokeOutcome {
 
 const __invokeQueue: InvokeOutcome[] = [];
 const __invokeCalls: Array<{ provider: string; prompt: string }> = [];
+// Convergence pass — see comment in develop_phase_cascade.test.ts.
+// The mock mirrors the real reviewer-calls-review.ts behavior so
+// happy-path fixtures don't trip the new ReviewDecisionMissing
+// escalation. Tests opt out via __reviewerAutoApprove=false to
+// exercise the no-decision path explicitly. Tests that need to
+// drive request-changes-then-approve transitions assign
+// __reviewerStatusSequence (one entry consumed per reviewer call).
+let __reviewerArtifactRoot: string | null = null;
+let __reviewerAutoApprove = true;
+let __reviewerStatusSequence: string[] | null = null;
 
 vi.mock('../pipeline/agent_invoke.js', () => ({
   resolveModelId: () => undefined,
@@ -64,6 +74,35 @@ vi.mock('../pipeline/agent_invoke.js', () => ({
     __invokeCalls.push({ provider, prompt });
     const next = __invokeQueue.shift();
     const outcome = next ?? { exit_code: 0 };
+    if (
+      outcome.exit_code === 0 &&
+      __reviewerArtifactRoot !== null &&
+      prompt.startsWith('You are a code reviewer.')
+    ) {
+      // Resolve the per-call target status:
+      //   1. If the test queued a sequence, use the head entry.
+      //   2. Else if auto-approve is on, write 'review_approved'.
+      //   3. Else (auto-approve off, no sequence), do NOT mutate
+      //      disk — the test is exercising the no-decision path.
+      let targetStatus: string | null = null;
+      if (__reviewerStatusSequence !== null && __reviewerStatusSequence.length > 0) {
+        targetStatus = __reviewerStatusSequence.shift() ?? null;
+      } else if (__reviewerAutoApprove) {
+        targetStatus = 'review_approved';
+      }
+      if (targetStatus !== null) {
+        const match = prompt.match(/packet "([^"]+)"/);
+        if (match) {
+          const packetId = match[1]!;
+          const packetPath = join(__reviewerArtifactRoot, 'packets', `${packetId}.json`);
+          if (existsSync(packetPath)) {
+            const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+            data['status'] = targetStatus;
+            writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+          }
+        }
+      }
+    }
     return {
       exit_code: outcome.exit_code,
       stdout: outcome.stdout ?? '',
@@ -241,6 +280,9 @@ beforeEach(() => {
   __completeCalls.length = 0;
   __requestReviewQueue.length = 0;
   __requestReviewCalls.length = 0;
+  __reviewerArtifactRoot = null;
+  __reviewerAutoApprove = true;
+  __reviewerStatusSequence = null;
 });
 
 function mkRoot(): string {
@@ -250,6 +292,8 @@ function mkRoot(): string {
   if (!existsSync(join(root, 'features'))) mkdirSync(join(root, 'features'), { recursive: true });
   if (!existsSync(join(root, 'events'))) mkdirSync(join(root, 'events'), { recursive: true });
   dirs.push(root);
+  // Wire the per-test reviewer-auto-approve mock to this root.
+  __reviewerArtifactRoot = root;
   return root;
 }
 
@@ -796,5 +840,198 @@ describe('runDevelopPhase — independent packets continue after one escalates',
     });
     expect(result.failed).toContain('pkt-a-fail');
     expect(result.completed).toContain('pkt-b-good');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ReviewDecisionMissing — the convergence-pass facade fix
+//
+// Round-2 codex finding: the develop_phase review case used to silently
+// force-approve when the reviewer agent exited 0 without recording a
+// verdict via review.ts. That contradicted the "review.ts is the
+// load-bearing protocol channel" claim in AGENTS.md / README and is
+// exactly the CLAUDE.md §3.1 facade pattern.
+//
+// These tests pin the new behavior:
+//
+//   1. Reviewer exits 0 AND does NOT record a decision (status stays
+//      'review_requested') -> packet is escalated as
+//      ReviewDecisionMissing, NOT silently approved.
+//
+//   2. Reviewer exits 0 AND records 'approve' (status becomes
+//      'review_approved') -> packet completes (happy-path regression
+//      test; the auto-approve mock in this file simulates the
+//      reviewer calling `review.ts --approve`).
+//
+//   3. Reviewer exits 0 AND records 'request-changes' (status becomes
+//      'changes_requested') -> packet enters the rework loop instead
+//      of completing or escalating.
+// ---------------------------------------------------------------------------
+
+describe('runDevelopPhase — ReviewDecisionMissing escalation (no silent approval)', () => {
+  it('reviewer exits 0 without calling review.ts: packet ends up failed; escalation events emitted; status is failed; recordReview NOT called by orchestrator', async () => {
+    const root = mkRoot();
+    // Implementation succeeds; request_review transitions to
+    // 'review_requested' — the realistic on-disk state when the
+    // reviewer is invoked. The test stubs request_review below to
+    // perform that transition.
+    writePacket(root, 'pkt-no-decision', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
+    __requestReviewQueue.push(() => {
+      // Mirror the real lifecycle: write 'review_requested' to disk so
+      // the develop_phase post-condition (review-prompt fires only
+      // when status is 'review_requested') is exercised honestly.
+      const packetPath = join(root, 'packets', 'pkt-no-decision.json');
+      const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+      data['status'] = 'review_requested';
+      writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      return {
+        kind: 'recorded',
+        packet_id: 'pkt-no-decision',
+        branch: 'fake',
+        review_iteration: 1,
+        was_changes_requested: false,
+        already_requested: false,
+      };
+    });
+    // Disable the auto-approve hook in the invokeAgent mock — we
+    // want to simulate the ACTUAL bug: a reviewer that exits 0
+    // without calling review.ts.
+    __reviewerAutoApprove = false;
+    // invokeQueue: dev (success), then reviewer (exit 0 but no
+    // status update because auto-approve is disabled).
+    __invokeQueue.push({ exit_code: 0 }); // dev
+    __invokeQueue.push({ exit_code: 0 }); // reviewer (no decision)
+
+    const result = await runDevelopPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-no-decision']),
+      config: makeConfig(),
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-no-decision',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+
+    // Standard four-invariant escalation pin: NOT in completed list,
+    // IS in failed list, packet status='failed', NO packet.completed
+    // event for this packet.
+    expectEscalationInvariants(result, root, 'run-no-decision', 'pkt-no-decision');
+
+    // Specific to this scenario: the failure was tagged
+    // ReviewDecisionMissing (NOT AgentNonResponsive — the agent ran
+    // and exited 0; it just didn't record a verdict).
+    const packet = readPacket(root, 'pkt-no-decision');
+    const failure = packet['failure'] as Record<string, unknown>;
+    expect(failure['scenario']).toBe('ReviewDecisionMissing');
+
+    // recovery.escalated AND packet.failed events fired.
+    const events = readEvents('run-no-decision', root).map((e) => e.event_type);
+    expect(events).toContain('recovery.escalated');
+    expect(events).toContain('packet.failed');
+    // No retries — the recipe escalates immediately.
+    expect(events).not.toContain('recovery.attempt_started');
+
+    // The escalation reason names review.ts so an operator
+    // reading escalations/<run>/*.json sees the protocol channel.
+    expect(failure['reason']).toMatch(/review\.ts/);
+  });
+
+  it('reviewer happy path: reviewer records "approve" (status becomes review_approved); packet completes (regression pin)', async () => {
+    const root = mkRoot();
+    writePacket(root, 'pkt-happy', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
+    // Mirror real request_review on disk so the review case fires.
+    __requestReviewQueue.push(() => {
+      const packetPath = join(root, 'packets', 'pkt-happy.json');
+      const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+      data['status'] = 'review_requested';
+      writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      return {
+        kind: 'recorded',
+        packet_id: 'pkt-happy',
+        branch: 'fake',
+        review_iteration: 1,
+        was_changes_requested: false,
+        already_requested: false,
+      };
+    });
+    // Auto-approve enabled (default): the invokeAgent mock detects
+    // the reviewer prompt and writes 'review_approved' on success.
+    __invokeQueue.push({ exit_code: 0 }); // dev
+    __invokeQueue.push({ exit_code: 0 }); // reviewer (auto-approves)
+
+    const result = await runDevelopPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-happy']),
+      config: makeConfig(),
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-happy',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+
+    expect(result.completed).toEqual(['pkt-happy']);
+    expect(result.failed).not.toContain('pkt-happy');
+    const events = readEvents('run-happy', root).map((e) => e.event_type);
+    expect(events).not.toContain('recovery.escalated');
+  });
+
+  it('reviewer requests changes: status becomes changes_requested; develop loop enters rework; second review approves; packet completes (regression pin)', async () => {
+    const root = mkRoot();
+    writePacket(root, 'pkt-changes', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
+    const packetPath = join(root, 'packets', 'pkt-changes.json');
+
+    // Both request_review hooks transition the packet to
+    // 'review_requested' on disk so the develop loop's review case
+    // fires for each iteration.
+    const reqReviewHook = (iteration: number, wasChangesRequested: boolean) => () => {
+      const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+      data['status'] = 'review_requested';
+      writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      return {
+        kind: 'recorded' as const,
+        packet_id: 'pkt-changes',
+        branch: 'fake',
+        review_iteration: iteration,
+        was_changes_requested: wasChangesRequested,
+        already_requested: false,
+      };
+    };
+    __requestReviewQueue.push(reqReviewHook(1, false));
+    __requestReviewQueue.push(reqReviewHook(2, true));
+
+    // Drive the per-call reviewer verdict via the test-only sequence
+    // hook in the invokeAgent mock: first reviewer invocation writes
+    // 'changes_requested'; second writes 'review_approved'.
+    __reviewerStatusSequence = ['changes_requested', 'review_approved'];
+
+    __invokeQueue.push({ exit_code: 0 }); // dev (implement)
+    __invokeQueue.push({ exit_code: 0 }); // reviewer 1 -> changes_requested
+    __invokeQueue.push({ exit_code: 0 }); // dev (rework)
+    __invokeQueue.push({ exit_code: 0 }); // reviewer 2 -> review_approved
+
+    const result = await runDevelopPhase({
+      feature: writeFeature(root, 'feat-x', ['pkt-changes']),
+      config: makeConfig(),
+      artifactRoot: root,
+      projectRoot: root,
+      dryRun: false,
+      runId: 'run-changes',
+      specId: 'spec-x',
+      gitRunner: noopGit,
+    });
+
+    expect(result.completed).toEqual(['pkt-changes']);
+    const events = readEvents('run-changes', root).map((e) => e.event_type);
+    expect(events).not.toContain('recovery.escalated');
+    // The sequence was fully consumed — both reviewer calls fired.
+    expect(__reviewerStatusSequence).toEqual([]);
+
+    // The two reviewer prompts left their fingerprint in __invokeCalls.
+    const reviewerCalls = __invokeCalls.filter(
+      (c) => c.prompt.startsWith('You are a code reviewer.'),
+    );
+    expect(reviewerCalls.length).toBe(2);
   });
 });

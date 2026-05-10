@@ -305,12 +305,18 @@ describe('pipeline phase modules — Phase 3 invariants (post-Phase-4.5 scope)',
   const verifyCode = stripComments(readFileSync(VERIFY_PHASE_PATH, 'utf-8'));
 
   it('develop_phase.ts imports the lifecycle libraries it actually uses', () => {
-    // Develop touches all four lifecycle steps: start, request_review,
-    // review (force-approve fallback), complete.
+    // Develop touches three lifecycle steps directly: start,
+    // request_review, complete. The review verdict comes from the
+    // reviewer agent calling review.ts itself (the load-bearing
+    // protocol channel — see prompts.ts:buildReviewPrompt). The
+    // convergence-pass control flow no longer force-approves on
+    // disk from the orchestrator, so the orchestrator does NOT
+    // import review.ts. (A reviewer that exits without recording a
+    // verdict is escalated as ReviewDecisionMissing.)
     expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/start\.js['"]/);
     expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/request_review\.js['"]/);
-    expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/review\.js['"]/);
     expect(developCode).toMatch(/from\s+['"]\.\.\/lifecycle\/complete\.js['"]/);
+    expect(developCode).not.toMatch(/from\s+['"]\.\.\/lifecycle\/review\.js['"]/);
   });
 
   it('verify_phase.ts imports only the lifecycle libraries it uses (start + complete)', () => {

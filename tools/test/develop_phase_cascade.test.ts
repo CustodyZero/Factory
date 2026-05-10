@@ -57,6 +57,18 @@ interface InvokeCall {
 
 const __invokeQueue: InvokeOutcome[] = [];
 const __invokeCalls: InvokeCall[] = [];
+// Convergence pass — the post-Phase-8 control flow no longer
+// silently force-approves when the reviewer agent exits 0 without
+// recording a verdict. To keep the existing happy-path cascade
+// fixtures running, the invokeAgent mock now mirrors the real
+// reviewer behavior: when the prompt is a review prompt AND the
+// invocation succeeds (exit_code 0), the mock writes packet
+// status='review_approved' to the artifact tree using the per-test
+// root configured below. Tests that want to exercise the
+// no-decision path explicitly disable this auto-approve via
+// __reviewerAutoApprove=false.
+let __reviewerArtifactRoot: string | null = null;
+let __reviewerAutoApprove = true;
 
 vi.mock('../pipeline/agent_invoke.js', () => ({
   resolveModelId: () => undefined,
@@ -71,6 +83,26 @@ vi.mock('../pipeline/agent_invoke.js', () => ({
     const next = __invokeQueue.shift() ?? { exit_code: 0 };
     const model = next.model !== undefined ? next.model : (modelOverride ?? null);
     __invokeCalls.push({ provider, model, prompt });
+    // Mirror the real reviewer-calls-review.ts behavior on the
+    // happy path. The reviewer prompt is the only one that begins
+    // with "You are a code reviewer" — see prompts.ts:buildReviewPrompt.
+    if (
+      next.exit_code === 0 &&
+      __reviewerAutoApprove &&
+      __reviewerArtifactRoot !== null &&
+      prompt.startsWith('You are a code reviewer.')
+    ) {
+      const match = prompt.match(/packet "([^"]+)"/);
+      if (match) {
+        const packetId = match[1]!;
+        const packetPath = join(__reviewerArtifactRoot, 'packets', `${packetId}.json`);
+        if (existsSync(packetPath)) {
+          const data = JSON.parse(readFileSync(packetPath, 'utf-8')) as Record<string, unknown>;
+          data['status'] = 'review_approved';
+          writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+        }
+      }
+    }
     return {
       exit_code: next.exit_code,
       stdout: next.stdout ?? '',
@@ -190,6 +222,8 @@ beforeEach(() => {
   __invokeCalls.length = 0;
   __invokeQueue.length = 0;
   __completeQueue.length = 0;
+  __reviewerArtifactRoot = null;
+  __reviewerAutoApprove = true;
 });
 
 function mkRoot(): string {
@@ -198,6 +232,10 @@ function mkRoot(): string {
     if (!existsSync(join(root, d))) mkdirSync(join(root, d), { recursive: true });
   }
   dirs.push(root);
+  // Wire the per-test reviewer-auto-approve mock to this root so the
+  // invokeAgent mock can mirror the real reviewer-calls-review.ts
+  // behavior on the happy path.
+  __reviewerArtifactRoot = root;
   return root;
 }
 
