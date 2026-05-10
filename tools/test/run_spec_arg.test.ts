@@ -162,7 +162,11 @@ describe('run.ts — legacy mode (intent only, no spec)', () => {
           id: 'bar',
           title: 'legacy intent',
           spec: 'inline spec body',
-          status: 'proposed',
+          // Convergence pass: hand-authored intents must be
+          // 'approved' for the orchestrator to run them. Spec-driven
+          // runs (exercised elsewhere in this file) bypass the gate
+          // because authoring the spec IS the approval surface.
+          status: 'approved',
           created_by: { kind: 'cli', id: 'factory-run' },
           created_at: '2026-04-29T00:00:00.000Z',
         },

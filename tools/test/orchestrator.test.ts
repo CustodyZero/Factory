@@ -107,13 +107,18 @@ function writeSpec(
 function writeIntent(
   root: string,
   id: string,
+  status: 'proposed' | 'approved' | 'planned' | 'superseded' | 'delivered' = 'approved',
 ): void {
   if (!existsSync(join(root, 'intents'))) mkdirSync(join(root, 'intents'), { recursive: true });
   const intent = {
     id,
     title: `Legacy intent ${id}`,
     spec: `inline ${id}`,
-    status: 'proposed',
+    // Convergence pass: hand-authored intents must be 'approved' to
+    // run through runOrchestrator. This helper defaults to
+    // 'approved' so legacy fixtures keep working; the per-test
+    // overrides exercise the rejection path explicitly.
+    status,
     created_by: { kind: 'cli', id: 'test' },
     created_at: '2026-04-29T00:00:00.000Z',
   };
