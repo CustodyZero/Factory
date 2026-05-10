@@ -34,10 +34,13 @@ intent artifact from the spec at run time. (Hand-authored
 
 Everything after `run.ts` is autonomous.
 
-> **Operator vs. agent.** The factory has one operator command: `run.ts`.
+> **Operator vs. agent.** Operators run one command: `run.ts <spec-id>`.
 > The lifecycle scripts (`start`, `request-review`, `review`, `complete`)
-> are how agents signal back to the factory during a run — they are not
-> commands operators invoke. See [Agent protocol](#agent-protocol) below.
+> are the underlying protocol surface; in autonomous mode the pipeline
+> calls them as library functions. They are also available as a manual
+> surface for humans or self-driving agents who want to walk a single
+> packet through its states by hand. See [Agent protocol](#agent-protocol)
+> below.
 
 ---
 
@@ -297,6 +300,13 @@ referenced `spec_path`) continue to work. `run.ts` accepts an intent ID
 the same way it accepts a spec ID. New work should prefer specs because
 markdown is easier to author and review than JSON.
 
+**Approval gate.** Hand-authored intents must declare `"status":
+"approved"` before `run.ts` will plan them. The `status` field is the
+human gate for intent-driven runs — the factory rejects anything else
+with a clear error pointing at the intent file. Spec-driven runs do
+NOT consult the derived intent's `status`; authoring the spec at
+`specs/<id>.md` IS the gate.
+
 The two intent shapes still supported during the transition:
 
 **Inline spec** — for short, self-contained intents:
@@ -311,7 +321,7 @@ The two intent shapes still supported during the transition:
     "Preserve the existing public API",
     "Split work into auditable dev/qa packet pairs"
   ],
-  "status": "proposed",
+  "status": "approved",
   "feature_id": null,
   "created_by": { "kind": "human", "id": "alice" },
   "created_at": "2025-01-15T09:00:00Z"
@@ -331,7 +341,7 @@ live in `docs/specs/`:
     "Architectural change — must be phased per the spec",
     "Preserve all invariants listed in the spec's §7"
   ],
-  "status": "proposed",
+  "status": "approved",
   "feature_id": null,
   "created_by": { "kind": "human", "id": "alice" },
   "created_at": "2026-04-11T09:00:00Z"
@@ -554,10 +564,23 @@ Schema validation + referential integrity + invariant enforcement.
 
 ### Agent protocol
 
-The lifecycle scripts below are how agents signal back to the factory.
-**Agents call these; operators do not.** `run.ts` invokes the same
-scripts as library functions when driving the pipeline. All four are
-idempotent — re-invocation on the same state is a no-op.
+The lifecycle scripts below are the protocol surface for moving a
+packet through its states. The same scripts back two modes:
+
+- **Autonomous mode** — `run.ts <spec-id>`. The orchestrator calls
+  `start`, `request-review`, and `complete` as library functions while
+  driving the develop / verify phases. Agents perform the *work* but
+  do **not** invoke those three CLIs themselves; the prompts the
+  factory ships explicitly say so. `review.ts` is the one exception
+  — the code reviewer calls it to record its verdict, because that's
+  how the pipeline learns approve vs. request-changes.
+- **Manual mode** — humans (or self-driving agents) invoke the
+  lifecycle CLIs directly to walk a packet through its states. This
+  is the back-compat surface and the way to drive a stuck packet
+  forward when the autonomous run bailed out.
+
+All four lifecycle scripts are idempotent — re-invocation on the same
+state is a no-op.
 
 #### Start
 
