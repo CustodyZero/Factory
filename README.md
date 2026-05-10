@@ -300,12 +300,16 @@ referenced `spec_path`) continue to work. `run.ts` accepts an intent ID
 the same way it accepts a spec ID. New work should prefer specs because
 markdown is easier to author and review than JSON.
 
-**Approval gate.** Hand-authored intents must declare `"status":
-"approved"` before `run.ts` will plan them. The `status` field is the
-human gate for intent-driven runs — the factory rejects anything else
-with a clear error pointing at the intent file. Spec-driven runs do
-NOT consult the derived intent's `status`; authoring the spec at
-`specs/<id>.md` IS the gate.
+**Approval gate.** For intent-driven runs the `status` field is the
+human governance gate. `run.ts` accepts `approved`, `planned`, and
+`delivered`; it rejects `proposed`, `superseded`, and any missing or
+unknown value with a clear error pointing at the intent file.
+`approved` is what an operator sets on first authoring; `planned` and
+`delivered` are accepted so idempotent reruns of an intent that
+already progressed past planning continue to work. See [Artifact
+Types → Intent](#intent) below for the full per-status semantics.
+Spec-driven runs do NOT consult the derived intent's `status`;
+authoring the spec at `specs/<id>.md` IS the gate.
 
 The two intent shapes still supported during the transition:
 

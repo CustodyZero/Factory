@@ -166,9 +166,13 @@ export async function runSingleSpec(
   //
   //   - spec.source === 'intent': legacy back-compat. There is no
   //     spec; the human edited an `intents/<id>.json` directly. The
-  //     intent's `status` IS the human-authored gate. We require
-  //     `status === 'approved'` before running. Anything else is
-  //     rejected with an actionable message.
+  //     intent's `status` IS the human-authored gate. We accept
+  //     `approved` (first-run authority) and the post-approval
+  //     statuses `planned` and `delivered` (idempotent rerun of an
+  //     intent that already progressed past planning) — see
+  //     `isPostApprovalStatus` above. `proposed`, `superseded`, and
+  //     missing/unknown values are rejected with an actionable
+  //     message that asks the operator to set `status: "approved"`.
   //
   // The previous attempt collapsed both paths into a single check;
   // this commit makes the split explicit so spec-driven runs don't
