@@ -1,0 +1,64 @@
+# Convergence Pass Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-10
+**Branch:** convergence-pass (commits 6752b9b, 7d4f69a, d27cb5f, 5da2791)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. Reviewer no-decision path still force-approves (NEW facade)
+
+**File:** `tools/pipeline/develop_phase.ts:832`
+
+The reviewer-prompt-as-load-bearing-exception design (the developer documented this as Finding B) is defensible only if `review.ts` is the actual protocol boundary. Today, if the reviewer agent exits 0 but does not call `review.ts`, the pipeline at line 832 SILENTLY records approval via the fallback `recordReview(... approve ...)`.
+
+This contradicts:
+- The new docs' claim that the reviewer CLI is how verdicts reach the pipeline.
+- CLAUDE.md §3.1 ("No silent fallbacks that mask failure").
+
+It's a NEW facade introduced (or surfaced) by this convergence pass: by documenting `review.ts` as the verdict channel, the silent-approval fallback becomes an architectural inconsistency.
+
+**Fix:** Replace the fallback `recordReview(... approve ...)` with explicit failure/escalation:
+- Log that the reviewer did not record a decision.
+- Mark the packet failed OR escalate with a clear scenario such as `ReviewDecisionMissing` (or repurpose existing `AgentNonResponsive` if appropriate).
+- Add a regression test where reviewer exits 0 but packet status remains `review_requested` and the pipeline correctly fails it (NOT silently approves).
+
+### 2. Approval-gate docs incomplete in integration.md and spec_artifact_model.md
+
+**Files:** `docs/integration.md:318`, `docs/integration.md:371`, `docs/decisions/spec_artifact_model.md:97`
+
+The code introduces a real governance gate for hand-authored intents. `AGENTS.md` and `README.md` mostly document it. But:
+- `docs/integration.md` still says "the only human gate is authoring the spec" and accepts hand-authored intents that declare `spec`/`spec_path` without mentioning `status: "approved"`.
+- `docs/decisions/spec_artifact_model.md` says generated spec intents use `status: "proposed"` and "continue the pipeline" but doesn't explain why proposed is accepted for spec-derived while rejected for intent-driven runs.
+
+**Fix:** Add the explicit split in BOTH places:
+- Spec-driven runs skip the intent-status gate because spec authoring IS approval.
+- Intent-driven runs require `approved`, `planned`, or `delivered` status. `proposed`, `superseded`, missing, or unknown statuses are rejected.
+
+### 3. README intent-status reference contradicts the new approval gate
+
+**File:** `README.md:382`
+
+The required-fields list omits `approved`, while the new examples and runtime gate require hand-authored intents to use it. Misleading for the exact backward-compat operators affected by this change.
+
+**Fix:** Update the enum text to include `approved`. Ideally annotate first-run intent-driven use:
+- `approved` grants run authority
+- `planned` / `delivered` are accepted for idempotent reruns
+- `superseded` is terminal and rejected by `run.ts`
+
+## Confirmed correct
+
+- Async `invokeAgent` preserves the spawn contract: shell:true, project-root cwd, piped stdio, Copilot stdin, 600s timeout with kill, cost extraction, heartbeat cleanup on close/error.
+- Combined async/recovery commit is defensible: changing `invokeAgent` to Promise-returning necessarily touches recovery closure type AND all phase call sites together.
+- Heartbeat tests pin cadence AND no-short-call noise.
+- `runWithRecovery` async migration is clean.
+
+## Strongest parts
+
+- Clean async migration through `runWithRecovery`.
+- Focused heartbeat tests pinning cadence/no-short-call noise.
+
+## Round budget remaining
+
+2 rounds.
