@@ -85,6 +85,10 @@ export interface PlanPhaseResult {
   readonly feature_id: string | null;
 }
 
+// Convergence pass: invokeAgent migrated to async so long planner runs
+// can yield to heartbeats. The phase functions follow the same shape;
+// callers `await runPlanPhase(...)`.
+
 // ---------------------------------------------------------------------------
 // Private helpers (mirrors of the originals in run.ts)
 //
@@ -181,7 +185,7 @@ function recordPlanCost(
  * nothing for them to do (dry-run, planner failed, planner did not
  * produce a feature artifact).
  */
-export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
+export async function runPlanPhase(opts: PlanPhaseOptions): Promise<PlanPhaseResult> {
   const { intent, config, artifactRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. Best-effort; appendEvent
@@ -201,7 +205,7 @@ export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
     );
   }
 
-  const result = runPlanPhaseInner(opts);
+  const result = await runPlanPhaseInner(opts);
 
   if (eventCtx !== null) {
     // Round-2 fix (Issue 3): the plan phase's outcome must NOT collapse
@@ -233,7 +237,7 @@ export function runPlanPhase(opts: PlanPhaseOptions): PlanPhaseResult {
   return result;
 }
 
-function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
+async function runPlanPhaseInner(opts: PlanPhaseOptions): Promise<PlanPhaseResult> {
   const { intent, config, artifactRoot, dryRun } = opts;
 
   fmt.log('plan', `Intent: ${fmt.bold(intent.id)} — "${intent.title}"`);
@@ -296,16 +300,20 @@ function runPlanPhaseInner(opts: PlanPhaseOptions): PlanPhaseResult {
   };
   const recoveryRunId = opts.runId ?? 'no-run';
 
-  const recovered = runWithRecovery<InvokeResult>(
-    (attempt: AttemptContext): OperationResult<InvokeResult> => {
+  const recovered = await runWithRecovery<InvokeResult>(
+    async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
       // Phase 7 round-2 — primary derived from cascade[0]. Cascade
       // hops use attempt.cascade (set by the recovery layer); the
       // initial call and `retry_same` retries use cascade[0] so
       // recovery's cascade-walking index stays consistent with
       // what was actually invoked.
       const target = attempt.cascade ?? plannerPrimary;
-      const r = invokeAgent(
+      const r = await invokeAgent(
         target.provider, prompt, config, plannerTier, target.model,
+        {
+          message: `planner still running for spec '${opts.specId ?? intent.id}'...`,
+          channel: 'plan',
+        },
       );
       // Persist a CostRecord regardless of outcome — a failed planner
       // still consumed tokens. Done inside the closure so retried

@@ -97,10 +97,10 @@ function writeMalformedIntent(root: string, id: string): void {
 // ---------------------------------------------------------------------------
 
 describe('orchestrator events — sequence', () => {
-  it('emits pipeline -> spec -> phase events in the expected order for a single spec', () => {
+  it('emits pipeline -> spec -> phase events in the expected order for a single spec', async () => {
     const root = mkRoot();
     writeSpec(root, 'foo');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['foo'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -133,7 +133,7 @@ describe('orchestrator events — sequence', () => {
     expect(types[types.length - 1]).toBe('pipeline.finished');
   });
 
-  it('emits all three phase pairs (plan / develop / verify) when planning is short-circuited by an existing feature', () => {
+  it('emits all three phase pairs (plan / develop / verify) when planning is short-circuited by an existing feature', async () => {
     // The dry-run plan path returns early when there is no existing
     // feature for the intent (planning would invoke the real planner,
     // which dry-run skips). To exercise develop and verify too we
@@ -167,7 +167,7 @@ describe('orchestrator events — sequence', () => {
       }, null, 2),
       'utf-8',
     );
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['foo'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -192,10 +192,10 @@ describe('orchestrator events — sequence', () => {
 // ---------------------------------------------------------------------------
 
 describe('orchestrator events — provenance', () => {
-  it('every event under vitest carries provenance: test', () => {
+  it('every event under vitest carries provenance: test', async () => {
     const root = mkRoot();
     writeSpec(root, 'p');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['p'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -209,12 +209,12 @@ describe('orchestrator events — provenance', () => {
     }
   });
 
-  it("'test' provenance is invariant whether dry-run is true or false", () => {
+  it("'test' provenance is invariant whether dry-run is true or false", async () => {
     // Two runs, same setup, opposite dryRun values. Provenance must
     // be 'test' in both cases — vitest beats both branches.
     const root1 = mkRoot();
     writeSpec(root1, 's');
-    const r1 = runOrchestrator({
+    const r1 = await runOrchestrator({
       args: ['s'],
       config: makeBaseConfig(),
       projectRoot: root1,
@@ -225,7 +225,7 @@ describe('orchestrator events — provenance', () => {
 
     const root2 = mkRoot();
     writeSpec(root2, 's');
-    const r2 = runOrchestrator({
+    const r2 = await runOrchestrator({
       args: ['s'],
       config: makeBaseConfig(),
       projectRoot: root2,
@@ -244,10 +244,10 @@ describe('orchestrator events — provenance', () => {
 // ---------------------------------------------------------------------------
 
 describe('orchestrator events — tmpdir isolation', () => {
-  it('writes events to the tmpdir artifactRoot, NOT the host project root', () => {
+  it('writes events to the tmpdir artifactRoot, NOT the host project root', async () => {
     const root = mkRoot();
     writeSpec(root, 'iso');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['iso'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -266,10 +266,10 @@ describe('orchestrator events — tmpdir isolation', () => {
     expect(existsSync(hostEventsFile)).toBe(false);
   });
 
-  it('top-level resolution failure still produces pipeline.started + pipeline.failed in tmpdir', () => {
+  it('top-level resolution failure still produces pipeline.started + pipeline.failed in tmpdir', async () => {
     const root = mkRoot();
     // No spec / intent for 'ghost' — resolution fails.
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['ghost'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -291,11 +291,11 @@ describe('orchestrator events — tmpdir isolation', () => {
 // ---------------------------------------------------------------------------
 
 describe('orchestrator events — spec.blocked', () => {
-  it('emits spec.blocked for a dependent whose upstream failed', () => {
+  it('emits spec.blocked for a dependent whose upstream failed', async () => {
     const root = mkRoot();
     writeMalformedIntent(root, 'a');           // 'a' fails at intent-parse
     writeSpec(root, 'b', { dependsOn: ['a'] }); // 'b' depends on 'a'
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b'],
       config: makeBaseConfig(),
       projectRoot: root,

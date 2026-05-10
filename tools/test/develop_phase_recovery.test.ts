@@ -377,7 +377,7 @@ function expectEscalationInvariants(
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — TestFailed escalates: post-escalation invariants', () => {
-  it('returns the packet in failed list, NOT completed; marks packet failed; emits packet.failed; emits no packet.completed', () => {
+  it('returns the packet in failed list, NOT completed; marks packet failed; emits packet.failed; emits no packet.completed', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-test', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     // completePacket returns ci_pass=false with tests_pass=false ->
@@ -389,7 +389,7 @@ describe('runDevelopPhase — TestFailed escalates: post-escalation invariants',
       tests_pass: false,
     });
     const feature = writeFeature(root, 'feat-x', ['pkt-test']);
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature,
       config: makeConfig(),
       artifactRoot: root,
@@ -417,7 +417,7 @@ describe('runDevelopPhase — TestFailed escalates: post-escalation invariants',
 });
 
 describe('runDevelopPhase — LintFailed escalates immediately, no retry', () => {
-  it('packet marked failed; recovery scenario is LintFailed; no recovery.attempt_started; FOUR-INVARIANT', () => {
+  it('packet marked failed; recovery scenario is LintFailed; no recovery.attempt_started; FOUR-INVARIANT', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-lint', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     __completeQueue.push({
@@ -426,7 +426,7 @@ describe('runDevelopPhase — LintFailed escalates immediately, no retry', () =>
       lint_pass: false,
       tests_pass: true,
     });
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-lint']),
       config: makeConfig(),
       artifactRoot: root,
@@ -452,13 +452,13 @@ describe('runDevelopPhase — LintFailed escalates immediately, no retry', () =>
 });
 
 describe('runDevelopPhase — CompletionGateBlocked escalates immediately', () => {
-  it('completePacket throws FI-7 -> CompletionGateBlocked -> packet failed; FOUR-INVARIANT', () => {
+  it('completePacket throws FI-7 -> CompletionGateBlocked -> packet failed; FOUR-INVARIANT', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-fi7', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     __completeQueue.push(() => {
       throw new Error('pre-commit hook failed (FI-7 enforcement)');
     });
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-fi7']),
       config: makeConfig(),
       artifactRoot: root,
@@ -481,14 +481,14 @@ describe('runDevelopPhase — CompletionGateBlocked escalates immediately', () =
 });
 
 describe('runDevelopPhase — ProviderUnavailable escalates immediately', () => {
-  it('agent stderr says provider disabled -> ProviderUnavailable -> packet failed; FOUR-INVARIANT', () => {
+  it('agent stderr says provider disabled -> ProviderUnavailable -> packet failed; FOUR-INVARIANT', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-pu');
     __invokeQueue.push({
       exit_code: 1,
       stderr: "Provider 'codex' is disabled",
     });
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-pu']),
       config: makeConfig(),
       artifactRoot: root,
@@ -511,7 +511,7 @@ describe('runDevelopPhase — ProviderUnavailable escalates immediately', () => 
 });
 
 describe('runDevelopPhase — StaleBranch rebase conflict escalates', () => {
-  it('completePacket throws stale-branch -> rebase conflict -> packet failed; subsequent independent packet still runs', () => {
+  it('completePacket throws stale-branch -> rebase conflict -> packet failed; subsequent independent packet still runs', async () => {
     const root = mkRoot();
     // Note: readdirSync returns alphabetical order. We use names so
     // the stale-branch packet runs FIRST in the alphabetical order.
@@ -536,7 +536,7 @@ describe('runDevelopPhase — StaleBranch rebase conflict escalates', () => {
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-a-stale', 'pkt-b-ok']),
       config: makeConfig(),
       artifactRoot: root,
@@ -570,7 +570,7 @@ describe('runDevelopPhase — StaleBranch rebase conflict escalates', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — ProviderTransient retry succeeds; packet completed', () => {
-  it('first dev call hits HTTP 503; retry succeeds; packet ends up in completed list', () => {
+  it('first dev call hits HTTP 503; retry succeeds; packet ends up in completed list', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-t');
     // First implement: 503; second: success. Then review (success).
@@ -579,7 +579,7 @@ describe('runDevelopPhase — ProviderTransient retry succeeds; packet completed
     __invokeQueue.push({ exit_code: 0 });
     // After review approves and code is finalized, completePacket
     // succeeds.
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-t']),
       config: makeConfig(),
       artifactRoot: root,
@@ -600,7 +600,7 @@ describe('runDevelopPhase — ProviderTransient retry succeeds; packet completed
 });
 
 describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => {
-  it('first finalize fails build; dev agent re-invoked with guardrail BEFORE retry; build passes; packet completed', () => {
+  it('first finalize fails build; dev agent re-invoked with guardrail BEFORE retry; build passes; packet completed', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-b', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     // First completePacket: build_pass=false. Second: success.
@@ -616,7 +616,7 @@ describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => 
       lint_pass: true,
       tests_pass: true,
     });
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-b']),
       config: makeConfig(),
       artifactRoot: root,
@@ -653,7 +653,7 @@ describe('runDevelopPhase — BuildFailed retry-with-guardrail succeeds', () => 
 });
 
 describe('runDevelopPhase — Phase 7 round-2: BuildFailed remediation preserved across cascade', () => {
-  it('completePacket fails build -> primary remediation agent fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', () => {
+  it('completePacket fails build -> primary remediation agent fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-bcr', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
 
@@ -695,7 +695,7 @@ describe('runDevelopPhase — Phase 7 round-2: BuildFailed remediation preserved
       return c as unknown as FactoryConfig;
     })();
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-bcr']),
       config: cfg,
       artifactRoot: root,
@@ -725,7 +725,7 @@ describe('runDevelopPhase — Phase 7 round-2: BuildFailed remediation preserved
 });
 
 describe('runDevelopPhase — StaleBranch successful rebase + retry', () => {
-  it('first finalize throws stale-branch; rebase succeeds; retry succeeds; packet completed', () => {
+  it('first finalize throws stale-branch; rebase succeeds; retry succeeds; packet completed', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-rb', { status: 'review_approved', started_at: '2024-01-01T00:00:00Z' });
     // First completePacket throws stale-branch; second succeeds.
@@ -743,7 +743,7 @@ describe('runDevelopPhase — StaleBranch successful rebase + retry', () => {
       gitCalls.push([...args]);
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-rb']),
       config: makeConfig(),
       artifactRoot: root,
@@ -771,7 +771,7 @@ describe('runDevelopPhase — StaleBranch successful rebase + retry', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — independent packets continue after one escalates', () => {
-  it('two independent packets: first escalates, second still runs and completes', () => {
+  it('two independent packets: first escalates, second still runs and completes', async () => {
     const root = mkRoot();
     // Names chosen so alphabetical readdir order gives pkt-a-fail
     // BEFORE pkt-b-good, matching the queue we set up below.
@@ -784,7 +784,7 @@ describe('runDevelopPhase — independent packets continue after one escalates',
     __completeQueue.push({
       ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
     });
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-a-fail', 'pkt-b-good']),
       config: makeConfig(),
       artifactRoot: root,

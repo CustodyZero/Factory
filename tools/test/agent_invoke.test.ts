@@ -176,13 +176,13 @@ describe('invokeAgent — Phase 7 modelOverride', () => {
     } as Partial<FactoryConfig>);
   }
 
-  it('uses modelOverride as cost.model when supplied (bypasses tier resolution)', () => {
+  it('uses modelOverride as cost.model when supplied (bypasses tier resolution)', async () => {
     const cfg = configWith('claude', {
       enabled: true,
       command: 'true',
       model_map: { high: 'tier-resolved-model' },
     });
-    const result = invokeAgent('claude', 'p', cfg, 'high', 'override-model');
+    const result = await invokeAgent('claude', 'p', cfg, 'high', 'override-model');
     // Spawn ran (true exits 0); cost.model reports the override, not
     // the tier-resolved value. This is the load-bearing contract:
     // when the cascade selects (provider, model), invokeAgent invokes
@@ -190,51 +190,51 @@ describe('invokeAgent — Phase 7 modelOverride', () => {
     expect(result.cost.model).toBe('override-model');
   });
 
-  it('falls back to tier resolution when modelOverride is undefined', () => {
+  it('falls back to tier resolution when modelOverride is undefined', async () => {
     const cfg = configWith('claude', {
       enabled: true,
       command: 'true',
       model_map: { high: 'tier-resolved-model' },
     });
-    const result = invokeAgent('claude', 'p', cfg, 'high');
+    const result = await invokeAgent('claude', 'p', cfg, 'high');
     expect(result.cost.model).toBe('tier-resolved-model');
   });
 
-  it('reports cost.model = null when neither override nor tier-resolved id is available', () => {
+  it('reports cost.model = null when neither override nor tier-resolved id is available', async () => {
     const cfg = configWith('claude', {
       enabled: true,
       command: 'true',
       // No model_map -> tier resolution returns undefined.
     });
-    const result = invokeAgent('claude', 'p', cfg, 'high');
+    const result = await invokeAgent('claude', 'p', cfg, 'high');
     expect(result.cost.model).toBeNull();
   });
 
-  it('override wins even when modelTier is omitted', () => {
+  it('override wins even when modelTier is omitted', async () => {
     const cfg = configWith('claude', {
       enabled: true,
       command: 'true',
       model_map: { high: 'tier-resolved-model' },
     });
-    const result = invokeAgent('claude', 'p', cfg, undefined, 'override-only');
+    const result = await invokeAgent('claude', 'p', cfg, undefined, 'override-only');
     expect(result.cost.model).toBe('override-only');
   });
 
-  it('override is ignored on early-return paths (no spawn, no override observable)', () => {
+  it('override is ignored on early-return paths (no spawn, no override observable)', async () => {
     // Provider disabled — early return fires before resolution. The
     // override is silently dropped (the contract: no spawn means no
     // model is reported); cost.model is null.
     const cfg = configWith('claude', { enabled: false, command: 'true' });
-    const result = invokeAgent('claude', 'p', cfg, 'high', 'override-model');
+    const result = await invokeAgent('claude', 'p', cfg, 'high', 'override-model');
     expect(result.exit_code).toBe(1);
     expect(result.cost.model).toBeNull();
   });
 });
 
 describe('invokeAgent — configuration-error early returns', () => {
-  it('returns exit_code 1 with a clear stderr when pipeline config is missing', () => {
+  it('returns exit_code 1 with a clear stderr when pipeline config is missing', async () => {
     const cfg = makeMinimalConfig({ pipeline: undefined });
-    const result = invokeAgent('claude', 'hello', cfg);
+    const result = await invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/pipeline config/i);
     // Phase 5.7 — InvokeResult.cost is always populated. Early-return
@@ -248,7 +248,7 @@ describe('invokeAgent — configuration-error early returns', () => {
     });
   });
 
-  it('returns exit_code 1 with a clear stderr when the requested provider is not configured', () => {
+  it('returns exit_code 1 with a clear stderr when the requested provider is not configured', async () => {
     const cfg = makeMinimalConfig({
       pipeline: {
         providers: {},
@@ -261,14 +261,14 @@ describe('invokeAgent — configuration-error early returns', () => {
         max_review_iterations: 3,
       },
     } as Partial<FactoryConfig>);
-    const result = invokeAgent('claude', 'hello', cfg);
+    const result = await invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/not configured/i);
     expect(result.cost.provider).toBe('claude');
     expect(result.cost.dollars).toBeNull();
   });
 
-  it('returns exit_code 1 with a clear stderr when the provider is configured but disabled', () => {
+  it('returns exit_code 1 with a clear stderr when the provider is configured but disabled', async () => {
     const cfg = makeMinimalConfig({
       pipeline: {
         providers: {
@@ -283,7 +283,7 @@ describe('invokeAgent — configuration-error early returns', () => {
         max_review_iterations: 3,
       },
     } as Partial<FactoryConfig>);
-    const result = invokeAgent('claude', 'hello', cfg);
+    const result = await invokeAgent('claude', 'hello', cfg);
     expect(result.exit_code).toBe(1);
     expect(result.stderr).toMatch(/disabled/i);
     expect(result.cost.provider).toBe('claude');

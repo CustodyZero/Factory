@@ -72,10 +72,10 @@ describe('runVerifyPhase — structural shape', () => {
     expect(typeof runVerifyPhase).toBe('function');
   });
 
-  it('returns { completed, failed, skipped } with empty arrays for an empty feature', () => {
+  it('returns { completed, failed, skipped } with empty arrays for an empty feature', async () => {
     const root = setupArtifactRoot();
     try {
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature: makeFeature([]),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -92,7 +92,7 @@ describe('runVerifyPhase — structural shape', () => {
 });
 
 describe('runVerifyPhase — already-complete short-circuit', () => {
-  it('reports a pre-completed QA packet without invoking the QA agent', () => {
+  it('reports a pre-completed QA packet without invoking the QA agent', async () => {
     const root = setupArtifactRoot();
     try {
       writeFileSync(
@@ -112,7 +112,7 @@ describe('runVerifyPhase — already-complete short-circuit', () => {
         'utf-8',
       );
 
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature: makeFeature(['qa-done']),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -130,7 +130,7 @@ describe('runVerifyPhase — already-complete short-circuit', () => {
 });
 
 describe('runVerifyPhase — blocked-by-dev', () => {
-  it('reports a QA packet whose `verifies` target is not complete as skipped (not failed)', () => {
+  it('reports a QA packet whose `verifies` target is not complete as skipped (not failed)', async () => {
     const root = setupArtifactRoot();
     try {
       // The dev packet referenced by `verifies` is NOT in completions.
@@ -145,7 +145,7 @@ describe('runVerifyPhase — blocked-by-dev', () => {
         'utf-8',
       );
 
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature: makeFeature(['qa-pending']),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -163,7 +163,7 @@ describe('runVerifyPhase — blocked-by-dev', () => {
 });
 
 describe('runVerifyPhase — dry-run', () => {
-  it('does not invoke any agent or write a completion file in dry-run mode', () => {
+  it('does not invoke any agent or write a completion file in dry-run mode', async () => {
     const root = setupArtifactRoot();
     try {
       // QA packet whose dev-side dependency IS complete (so it would
@@ -184,7 +184,7 @@ describe('runVerifyPhase — dry-run', () => {
         'utf-8',
       );
 
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature: makeFeature(['qa-dry']),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -208,7 +208,7 @@ describe('runVerifyPhase — dry-run', () => {
 });
 
 describe('runVerifyPhase — only operates on QA packets', () => {
-  it('ignores dev packets even when listed on the feature', () => {
+  it('ignores dev packets even when listed on the feature', async () => {
     const root = setupArtifactRoot();
     try {
       writeFileSync(
@@ -227,7 +227,7 @@ describe('runVerifyPhase — only operates on QA packets', () => {
       expect(readFileSync(join(root, 'packets', 'pkt-dev.json'), 'utf-8'))
         .toMatch(/"kind": "dev"/);
 
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature: makeFeature(['pkt-dev']),
         config: makeMinimalConfig(),
         artifactRoot: root,

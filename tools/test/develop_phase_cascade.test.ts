@@ -289,7 +289,7 @@ const noopGit: GitRunner = () => ({ exitCode: 0, stdout: '', stderr: '' });
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
-  it('persona_providers = [copilot, claude, codex]: primary (copilot) ProviderUnavailable -> falls through to claude -> succeeds', () => {
+  it('persona_providers = [copilot, claude, codex]: primary (copilot) ProviderUnavailable -> falls through to claude -> succeeds', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-cross', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // Implement closure: copilot fails ProviderUnavailable, claude succeeds.
@@ -298,7 +298,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
     // Reviewer runs (claude), then complete on success.
     __invokeQueue.push({ exit_code: 0 });
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-cross']),
       config: makeConfig({ developerProviders: ['copilot', 'claude', 'codex'] }),
       artifactRoot: root,
@@ -318,7 +318,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
     expect(devCalls[1]?.provider).toBe('claude');
   });
 
-  it('cascade exhausted (all CLIs in persona_providers fail): packet escalates with cascade-exhausted reason', () => {
+  it('cascade exhausted (all CLIs in persona_providers fail): packet escalates with cascade-exhausted reason', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-exhausted', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // All three CLIs fail ProviderUnavailable.
@@ -326,7 +326,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
     __invokeQueue.push({ exit_code: 1, stderr: "Provider 'claude' is disabled" });
     __invokeQueue.push({ exit_code: 1, stderr: "Provider 'codex' is disabled" });
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-exhausted']),
       config: makeConfig({ developerProviders: ['copilot', 'claude', 'codex'] }),
       artifactRoot: root,
@@ -347,7 +347,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
     expect(String(failure['reason'])).toContain('codex');
   });
 
-  it('direct providers (codex, claude) without model_failover go straight to next CLI without alternates', () => {
+  it('direct providers (codex, claude) without model_failover go straight to next CLI without alternates', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-direct', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // codex fails; claude succeeds. With NO model_failover on either,
@@ -356,7 +356,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
     __invokeQueue.push({ exit_code: 0 });
     __invokeQueue.push({ exit_code: 0 }); // reviewer
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-direct']),
       config: makeConfig({ developerProviders: ['codex', 'claude'] }),
       artifactRoot: root,
@@ -384,7 +384,7 @@ describe('runDevelopPhase — Phase 7 cross-CLI cascade', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
-  it('copilot.model_failover = [claude-opus-4-6, GPT-5.4]: first model fails -> second model on same CLI succeeds (no fall-through to codex)', () => {
+  it('copilot.model_failover = [claude-opus-4-6, GPT-5.4]: first model fails -> second model on same CLI succeeds (no fall-through to codex)', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-within', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // First copilot model fails; second copilot model succeeds.
@@ -392,7 +392,7 @@ describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
     __invokeQueue.push({ exit_code: 0, model: 'GPT-5.4' });
     __invokeQueue.push({ exit_code: 0 }); // reviewer
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-within']),
       config: makeConfig({
         developerProviders: ['copilot', 'codex'],
@@ -420,7 +420,7 @@ describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
     expect(codexCalls.length).toBe(0);
   });
 
-  it('within-CLI exhausted -> falls through to next CLI in persona_providers', () => {
+  it('within-CLI exhausted -> falls through to next CLI in persona_providers', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-mixed', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // Both copilot models fail; codex succeeds. We tag each queued
@@ -434,7 +434,7 @@ describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
     __invokeQueue.push({ exit_code: 0 }); // codex hop
     __invokeQueue.push({ exit_code: 0 }); // reviewer
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-mixed']),
       config: makeConfig({
         developerProviders: ['copilot', 'codex'],
@@ -483,7 +483,7 @@ describe('runDevelopPhase — Phase 7 within-CLI cascade', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — Phase 7 round-2: primary uses cascade[0]', () => {
-  it("model_map[high]='fast-model' but model_failover=['careful-model',...]: FIRST invokeAgent call uses 'careful-model'", () => {
+  it("model_map[high]='fast-model' but model_failover=['careful-model',...]: FIRST invokeAgent call uses 'careful-model'", async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-primary', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // The primary attempt succeeds. We want to assert the model id
@@ -509,7 +509,7 @@ describe('runDevelopPhase — Phase 7 round-2: primary uses cascade[0]', () => {
     const copilot = providers['copilot'] as Record<string, unknown>;
     copilot['model_map'] = { high: 'fast-model', medium: 'fast-model', low: 'fast-model' };
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-primary']),
       config: config as unknown as FactoryConfig,
       artifactRoot: root,
@@ -535,14 +535,14 @@ describe('runDevelopPhase — Phase 7 round-2: primary uses cascade[0]', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — Phase 7 backward compat', () => {
-  it('persona_providers = [codex] (single element, equivalent to legacy "codex" string): cascade has only one entry; immediate ProviderUnavailable escalates', () => {
+  it('persona_providers = [codex] (single element, equivalent to legacy "codex" string): cascade has only one entry; immediate ProviderUnavailable escalates', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-legacy', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // The single CLI fails ProviderUnavailable; cascade is exhausted
     // after the primary -> escalate.
     __invokeQueue.push({ exit_code: 1, stderr: "Provider 'codex' is disabled" });
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-legacy']),
       config: makeConfig({ developerProviders: ['codex'] }),
       artifactRoot: root,
@@ -567,7 +567,7 @@ describe('runDevelopPhase — Phase 7 backward compat', () => {
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — Phase 7 transient exhaustion -> cascade', () => {
-  it('5xx -> 2 retries fail -> reclassified as ProviderUnavailable -> cascade fires -> succeeds on 2nd hop', () => {
+  it('5xx -> 2 retries fail -> reclassified as ProviderUnavailable -> cascade fires -> succeeds on 2nd hop', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-reclass', { status: 'ready', started_at: '2024-01-01T00:00:00Z' });
     // 3 transient failures consume the budget; reclassification
@@ -578,7 +578,7 @@ describe('runDevelopPhase — Phase 7 transient exhaustion -> cascade', () => {
     __invokeQueue.push({ exit_code: 0 });
     __invokeQueue.push({ exit_code: 0 }); // reviewer
 
-    const result = runDevelopPhase({
+    const result = await runDevelopPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-reclass']),
       config: makeConfig({ developerProviders: ['codex', 'claude'] }),
       artifactRoot: root,

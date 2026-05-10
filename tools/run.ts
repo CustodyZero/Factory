@@ -144,7 +144,7 @@ function renderOutcomeLine(o: SpecOutcome): void {
 // CLI
 // ---------------------------------------------------------------------------
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2).filter((a) => a !== '--');
   const positional = args.filter((a) => !a.startsWith('-'));
   const dryRun = args.includes('--dry-run');
@@ -177,7 +177,7 @@ function main(): void {
   // its finally block before the throw reached us.
   let result: OrchestratorResult;
   try {
-    result = runOrchestrator({
+    result = await runOrchestrator({
       args: positional,
       config,
       projectRoot,
@@ -237,5 +237,11 @@ export function formatJsonOutput(positional: ReadonlyArray<string>, result: Orch
 
 const isDirectExecution = process.argv[1]?.endsWith('run.ts') || process.argv[1]?.endsWith('run.js');
 if (isDirectExecution) {
-  main();
+  // Async since main awaits the orchestrator (which awaits the
+  // async-migrated phase modules and invokeAgent).
+  main().catch((err) => {
+    const msg = err instanceof Error ? err.stack ?? err.message : String(err);
+    process.stderr.write(`Pipeline crashed: ${msg}\n`);
+    process.exit(1);
+  });
 }

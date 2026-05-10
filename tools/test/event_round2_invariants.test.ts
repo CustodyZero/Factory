@@ -166,13 +166,13 @@ describe('Issue 1 — provenance is not spoofable', () => {
 // ---------------------------------------------------------------------------
 
 describe('Issue 2 — FACTORY_RUN_ID is restored after runOrchestrator', () => {
-  it('deletes FACTORY_RUN_ID after the orchestrator returns when it was unset before', () => {
+  it('deletes FACTORY_RUN_ID after the orchestrator returns when it was unset before', async () => {
     const root = mkRoot();
     writeSpec(root, 'env-clear');
     const before = process.env['FACTORY_RUN_ID'];
     delete process.env['FACTORY_RUN_ID'];
     try {
-      const result = runOrchestrator({
+      const result = await runOrchestrator({
         args: ['env-clear'],
         config: makeBaseConfig(),
         projectRoot: root,
@@ -187,14 +187,14 @@ describe('Issue 2 — FACTORY_RUN_ID is restored after runOrchestrator', () => {
     }
   });
 
-  it('restores the prior FACTORY_RUN_ID after the orchestrator returns when it was set before', () => {
+  it('restores the prior FACTORY_RUN_ID after the orchestrator returns when it was set before', async () => {
     const root = mkRoot();
     writeSpec(root, 'env-restore');
     const PRIOR = 'prior-run-id-from-outer-scope';
     const before = process.env['FACTORY_RUN_ID'];
     process.env['FACTORY_RUN_ID'] = PRIOR;
     try {
-      const result = runOrchestrator({
+      const result = await runOrchestrator({
         args: ['env-restore'],
         config: makeBaseConfig(),
         projectRoot: root,
@@ -216,7 +216,7 @@ describe('Issue 2 — FACTORY_RUN_ID is restored after runOrchestrator', () => {
     }
   });
 
-  it('restores FACTORY_RUN_ID even on a top-level resolution failure', () => {
+  it('restores FACTORY_RUN_ID even on a top-level resolution failure', async () => {
     // Top-level failure paths use the same try/finally as the success
     // path. Confirm the cleanup runs even though the orchestrator
     // returns early without entering the per-spec loop.
@@ -224,7 +224,7 @@ describe('Issue 2 — FACTORY_RUN_ID is restored after runOrchestrator', () => {
     const before = process.env['FACTORY_RUN_ID'];
     delete process.env['FACTORY_RUN_ID'];
     try {
-      const result = runOrchestrator({
+      const result = await runOrchestrator({
         args: ['ghost-spec-that-does-not-exist'],
         config: makeBaseConfig(),
         projectRoot: root,
@@ -251,10 +251,10 @@ describe('Issue 2 — FACTORY_RUN_ID is restored after runOrchestrator', () => {
 // ---------------------------------------------------------------------------
 
 describe('Issue 3 — dry-run plan emits outcome ok', () => {
-  it('dry-run that stops before invoking the planner reports outcome: ok on phase.completed(plan)', () => {
+  it('dry-run that stops before invoking the planner reports outcome: ok on phase.completed(plan)', async () => {
     const root = mkRoot();
     writeSpec(root, 'dr-plan');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['dr-plan'],
       config: makeBaseConfig(),
       projectRoot: root,
@@ -319,7 +319,7 @@ vi.mock('../pipeline/plan_phase.js', async () => {
 });
 
 describe('Issue 4 — pipeline.failed fires on unexpected exceptions', () => {
-  it('emits pipeline.failed before rethrowing when a phase function throws', () => {
+  it('emits pipeline.failed before rethrowing when a phase function throws', async () => {
     const root = mkRoot();
     writeSpec(root, 'crash');
     const beforeEnv = process.env['FACTORY_RUN_ID'];
@@ -331,7 +331,7 @@ describe('Issue 4 — pipeline.failed fires on unexpected exceptions', () => {
 
     try {
       try {
-        runOrchestrator({
+        await runOrchestrator({
           args: ['crash'],
           config: makeBaseConfig(),
           projectRoot: root,

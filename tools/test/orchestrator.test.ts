@@ -331,10 +331,10 @@ describe('_findMissingDeps', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — single-arg legacy intent', () => {
-  it('runs a legacy intent (no spec, empty dependsOn) and reaches the planning phase', () => {
+  it('runs a legacy intent (no spec, empty dependsOn) and reaches the planning phase', async () => {
     const f = makeFixture();
     writeIntent(f.root, 'legacy');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['legacy'],
       config: f.config,
       projectRoot: f.root,
@@ -361,10 +361,10 @@ describe('runOrchestrator — single-arg legacy intent', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — single-arg spec without depends_on', () => {
-  it('materializes the intent and reaches planning', () => {
+  it('materializes the intent and reaches planning', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'foo', { title: 'Foo' });
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['foo'],
       config: f.config,
       projectRoot: f.root,
@@ -393,11 +393,11 @@ describe('runOrchestrator — single-arg spec without depends_on', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — multi-spec resolution gates', () => {
-  it('errors when a depends_on points to an id not passed as an arg', () => {
+  it('errors when a depends_on points to an id not passed as an arg', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'a', { dependsOn: ['b'] });
     writeSpec(f.root, 'b');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a'],
       config: f.config,
       projectRoot: f.root,
@@ -411,9 +411,9 @@ describe('runOrchestrator — multi-spec resolution gates', () => {
     expect(result.message).toContain("'b'");
   });
 
-  it('errors when the spec arg cannot be resolved', () => {
+  it('errors when the spec arg cannot be resolved', async () => {
     const f = makeFixture();
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['ghost'],
       config: f.config,
       projectRoot: f.root,
@@ -425,11 +425,11 @@ describe('runOrchestrator — multi-spec resolution gates', () => {
     expect(result.message).toContain('No spec or intent found');
   });
 
-  it('rejects a 2-spec cycle before invoking any agent', () => {
+  it('rejects a 2-spec cycle before invoking any agent', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'a', { dependsOn: ['b'] });
     writeSpec(f.root, 'b', { dependsOn: ['a'] });
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b'],
       config: f.config,
       projectRoot: f.root,
@@ -445,12 +445,12 @@ describe('runOrchestrator — multi-spec resolution gates', () => {
     expect(existsSync(join(f.root, 'features'))).toBe(false);
   });
 
-  it('rejects a 3-spec cycle before invoking any agent', () => {
+  it('rejects a 3-spec cycle before invoking any agent', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'a', { dependsOn: ['b'] });
     writeSpec(f.root, 'b', { dependsOn: ['c'] });
     writeSpec(f.root, 'c', { dependsOn: ['a'] });
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b', 'c'],
       config: f.config,
       projectRoot: f.root,
@@ -468,11 +468,11 @@ describe('runOrchestrator — multi-spec resolution gates', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — multi-spec sequencing', () => {
-  it('runs each independent spec and returns one outcome per arg', () => {
+  it('runs each independent spec and returns one outcome per arg', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'x');
     writeSpec(f.root, 'y');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['x', 'y'],
       config: f.config,
       projectRoot: f.root,
@@ -484,7 +484,7 @@ describe('runOrchestrator — multi-spec sequencing', () => {
     expect(ids).toEqual(['x', 'y']);
   });
 
-  it('runs linear deps in topo order (a runs before b when b depends on a)', () => {
+  it('runs linear deps in topo order (a runs before b when b depends on a)', async () => {
     // The orchestrator logs `Multi-spec run: a -> b` once it has built
     // the topo order. That line is the cleanest assertion target —
     // even with reversed args, the topo sort reorders to `a -> b`.
@@ -499,7 +499,7 @@ describe('runOrchestrator — multi-spec sequencing', () => {
       return origWrite(chunk as Buffer | string, ...(rest as []));
     }) as typeof process.stderr.write;
     try {
-      runOrchestrator({
+      await runOrchestrator({
         args: ['b', 'a'],   // deliberately reversed; topo must reorder
         config: f.config,
         projectRoot: f.root,
@@ -513,7 +513,7 @@ describe('runOrchestrator — multi-spec sequencing', () => {
     expect(log).toContain('Multi-spec run: a -> b');
   });
 
-  it('respects diamond-shape topo order (b,c after a; d after b,c)', () => {
+  it('respects diamond-shape topo order (b,c after a; d after b,c)', async () => {
     // The `Multi-spec run: <id> -> <id> -> ...` log line emits the
     // topo ordering directly. We parse it to verify the diamond
     // ordering invariants (a before b/c, b/c before d) regardless of
@@ -531,7 +531,7 @@ describe('runOrchestrator — multi-spec sequencing', () => {
       return origWrite(chunk as Buffer | string, ...(rest as []));
     }) as typeof process.stderr.write;
     try {
-      runOrchestrator({
+      await runOrchestrator({
         args: ['d', 'c', 'b', 'a'],
         config: f.config,
         projectRoot: f.root,
@@ -571,11 +571,11 @@ describe('runOrchestrator — multi-spec sequencing', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — failure propagation', () => {
-  it('marks a dependent spec as blocked when its upstream failed', () => {
+  it('marks a dependent spec as blocked when its upstream failed', async () => {
     const f = makeFixture();
     writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
     writeSpec(f.root, 'b', { dependsOn: ['a'] }); // 'b' depends on 'a'
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b'],
       config: f.config,
       projectRoot: f.root,
@@ -592,14 +592,14 @@ describe('runOrchestrator — failure propagation', () => {
     }
   });
 
-  it('lets independent specs run even when another spec fails', () => {
+  it('lets independent specs run even when another spec fails', async () => {
     // 'a' fails (malformed intent). 'c' has no deps, so it must still
     // be attempted. Under dry-run it short-circuits at planning and
     // is recorded as `completed` (legacy preview contract).
     const f = makeFixture();
     writeMalformedIntent(f.root, 'a');
     writeSpec(f.root, 'c');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'c'],
       config: f.config,
       projectRoot: f.root,
@@ -617,12 +617,12 @@ describe('runOrchestrator — failure propagation', () => {
     expect(c.status).not.toBe('blocked');
   });
 
-  it('mixed independent + dependent: a fails, b runs (independent), c blocked (depends on a)', () => {
+  it('mixed independent + dependent: a fails, b runs (independent), c blocked (depends on a)', async () => {
     const f = makeFixture();
     writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
     writeSpec(f.root, 'b');                       // 'b' independent
     writeSpec(f.root, 'c', { dependsOn: ['a'] }); // 'c' depends on 'a'
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b', 'c'],
       config: f.config,
       projectRoot: f.root,
@@ -643,12 +643,12 @@ describe('runOrchestrator — failure propagation', () => {
     }
   });
 
-  it('propagates blockage transitively: a fails, b depends on a, c depends on b', () => {
+  it('propagates blockage transitively: a fails, b depends on a, c depends on b', async () => {
     const f = makeFixture();
     writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
     writeSpec(f.root, 'b', { dependsOn: ['a'] });
     writeSpec(f.root, 'c', { dependsOn: ['b'] });
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b', 'c'],
       config: f.config,
       projectRoot: f.root,
@@ -668,11 +668,11 @@ describe('runOrchestrator — failure propagation', () => {
     }
   });
 
-  it("aggregates message correctly: 'completed', 'failed', 'blocked' counts all add up", () => {
+  it("aggregates message correctly: 'completed', 'failed', 'blocked' counts all add up", async () => {
     const f = makeFixture();
     writeMalformedIntent(f.root, 'a');           // 'a' fails at intent-parse
     writeSpec(f.root, 'b', { dependsOn: ['a'] }); // 'b' blocked by 'a'
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['a', 'b'],
       config: f.config,
       projectRoot: f.root,
@@ -696,7 +696,7 @@ describe('runOrchestrator — failure propagation', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — pre-completed features', () => {
-  it("treats a spec with a pre-existing 'completed' feature as completed", () => {
+  it("treats a spec with a pre-existing 'completed' feature as completed", async () => {
     const f = makeFixture();
     writeSpec(f.root, 'done-spec');
     // Pre-create the intent so we don't go through ensureIntentForSpec.
@@ -727,7 +727,7 @@ describe('runOrchestrator — pre-completed features', () => {
       'utf-8',
     );
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['done-spec'],
       config: f.config,
       projectRoot: f.root,
@@ -742,7 +742,7 @@ describe('runOrchestrator — pre-completed features', () => {
     }
   });
 
-  it("does NOT block downstream specs when an upstream is pre-completed", () => {
+  it("does NOT block downstream specs when an upstream is pre-completed", async () => {
     const f = makeFixture();
     writeSpec(f.root, 'up');
     writeSpec(f.root, 'down', { dependsOn: ['up'] });
@@ -773,7 +773,7 @@ describe('runOrchestrator — pre-completed features', () => {
       'utf-8',
     );
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['up', 'down'],
       config: f.config,
       projectRoot: f.root,
@@ -797,10 +797,10 @@ describe('runOrchestrator — pre-completed features', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — dedup behavior', () => {
-  it('produces one outcome when the same spec id is passed twice', () => {
+  it('produces one outcome when the same spec id is passed twice', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'unique');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['unique', 'unique'],
       config: f.config,
       projectRoot: f.root,
@@ -822,11 +822,11 @@ describe('runOrchestrator — dedup behavior', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — spec→intent materialization', () => {
-  it('materializes intents/<id>.json for each spec arg', () => {
+  it('materializes intents/<id>.json for each spec arg', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'one');
     writeSpec(f.root, 'two');
-    runOrchestrator({
+    await runOrchestrator({
       args: ['one', 'two'],
       config: f.config,
       projectRoot: f.root,
@@ -852,10 +852,10 @@ describe('runOrchestrator — spec→intent materialization', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrchestrator — legacy --dry-run preview contract', () => {
-  it('single-arg dry-run that stops at planning aggregates to success=true', () => {
+  it('single-arg dry-run that stops at planning aggregates to success=true', async () => {
     const f = makeFixture();
     writeSpec(f.root, 'preview');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['preview'],
       config: f.config,
       projectRoot: f.root,
@@ -876,10 +876,10 @@ describe('runOrchestrator — legacy --dry-run preview contract', () => {
     }
   });
 
-  it('legacy intent dry-run stops at planning and aggregates to success=true', () => {
+  it('legacy intent dry-run stops at planning and aggregates to success=true', async () => {
     const f = makeFixture();
     writeIntent(f.root, 'legacy-preview');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['legacy-preview'],
       config: f.config,
       projectRoot: f.root,

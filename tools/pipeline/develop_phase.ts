@@ -389,8 +389,11 @@ function markPacketFailed(args: MarkPacketFailedArgs): void {
  * Run the develop phase for a feature: implement / review / rework /
  * finalize each dev packet in topological order. Returns the lists
  * of completed and failed packet ids.
+ *
+ * Async since the convergence pass migrated `invokeAgent` to a
+ * Promise-returning shape so long agent runs can yield to heartbeats.
  */
-export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
+export async function runDevelopPhase(opts: DevelopPhaseOptions): Promise<DevelopPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. The eventCtx is null when
@@ -409,7 +412,7 @@ export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
     );
   }
 
-  const result = runDevelopPhaseInner(opts);
+  const result = await runDevelopPhaseInner(opts);
 
   if (eventCtx !== null) {
     // Outcome: 'failed' iff any packet failed; 'ok' otherwise. A
@@ -426,7 +429,7 @@ export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
   return result;
 }
 
-function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
+async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -591,8 +594,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // via attempt.guardrailPrompt, which is appended to the
           // dev prompt. ProviderTransient retries see no
           // guardrailPrompt and re-issue the same prompt.
-          const recovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const recovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               const basePrompt = buildDevPrompt(freshPacket, config);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
@@ -607,8 +610,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               // hop would then re-try a model the operator never
               // intended as primary.
               const target = attempt.cascade ?? devPrimary;
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, finalPrompt, config, devTier, target.model,
+                {
+                  message: `developer working on packet '${packet.id}'...`,
+                  channel: 'develop',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -676,7 +683,7 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // recovery wrapper still applies because a stale-branch
           // check at this boundary throws, and the wrapper routes
           // that through the StaleBranch recipe.
-          const reviewSignal = runWithRecovery<true>(
+          const reviewSignal = await runWithRecovery<true>(
             (_attempt: AttemptContext): OperationResult<true> => {
               try {
                 requestReview({
@@ -752,14 +759,18 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             break;
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
-          const reviewerRecovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const reviewerRecovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               // Phase 7 round-2 — primary derived from cascade[0]; see
               // implement closure for the rationale.
               const target = attempt.cascade ?? reviewerPrimary;
               const reviewPromptStr = buildReviewPrompt(freshPacket, config);
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, reviewPromptStr, config, reviewTier, target.model,
+                {
+                  message: `review in progress for packet '${packet.id}'...`,
+                  channel: 'review',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -827,8 +838,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
 
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
-          const reworkRecovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const reworkRecovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               const basePrompt = buildReworkPrompt(freshPacket, config);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
@@ -836,8 +847,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               // Phase 7 round-2 — primary derived from cascade[0]; see
               // implement closure for the rationale.
               const target = attempt.cascade ?? devPrimary;
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, finalPrompt, config, devTier, target.model,
+                {
+                  message: `developer reworking packet '${packet.id}'...`,
+                  channel: 'develop',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -949,10 +964,10 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           let pendingRemediationPrompt: string | null = null;
           let lastRemediationTarget: typeof devPrimary | null = null;
 
-          const runRemediation = (
+          const runRemediation = async (
             target: typeof devPrimary,
             guardrail: string,
-          ): OperationResult<true> | null => {
+          ): Promise<OperationResult<true> | null> => {
             // Returns null on success (caller proceeds to
             // completePacket); returns OperationResult<true> with
             // outcome='fail' on agent failure.
@@ -960,8 +975,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             const remediationPrompt =
               `${basePrompt}\n\n---\n${guardrail}`;
             lastRemediationTarget = target;
-            const r = invokeAgent(
+            const r = await invokeAgent(
               target.provider, remediationPrompt, config, devTier, target.model,
+              {
+                message: `build remediation invoked for packet '${packet.id}'...`,
+                channel: 'develop',
+              },
             );
             recordInvocationCost(
               r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -989,8 +1008,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             return null;
           };
 
-          const finalizeRecovered = runWithRecovery<true>(
-            (attempt: AttemptContext): OperationResult<true> => {
+          const finalizeRecovered = await runWithRecovery<true>(
+            async (attempt: AttemptContext): Promise<OperationResult<true>> => {
               // Step 1: handle the remediation half of the compound
               // action. Three cases keep state coherent across
               // recovery action boundaries:
@@ -1013,17 +1032,17 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (attempt.action === 'retry_with_guardrail_prompt'
                 && attempt.guardrailPrompt !== undefined) {
                 pendingRemediationPrompt = attempt.guardrailPrompt;
-                const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+                const fail = await runRemediation(devPrimary, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               } else if (attempt.action === 'cascade_provider'
                 && attempt.cascade !== undefined
                 && pendingRemediationPrompt !== null) {
-                const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+                const fail = await runRemediation(attempt.cascade, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               } else if (attempt.action === 'retry_same'
                 && pendingRemediationPrompt !== null
                 && lastRemediationTarget !== null) {
-                const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+                const fail = await runRemediation(lastRemediationTarget, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               }
               // (No special-case for the very first attempt:

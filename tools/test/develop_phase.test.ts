@@ -210,10 +210,10 @@ describe('runDevelopPhase — structural shape', () => {
     expect(typeof runDevelopPhase).toBe('function');
   });
 
-  it('returns the documented { completed, failed } shape with empty arrays for an empty feature', () => {
+  it('returns the documented { completed, failed } shape with empty arrays for an empty feature', async () => {
     const root = setupArtifactRoot();
     try {
-      const result = runDevelopPhase({
+      const result = await runDevelopPhase({
         feature: makeFeature([]),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -229,7 +229,7 @@ describe('runDevelopPhase — structural shape', () => {
 });
 
 describe('runDevelopPhase — already-complete short-circuit', () => {
-  it('reports a pre-completed packet without invoking the developer agent', () => {
+  it('reports a pre-completed packet without invoking the developer agent', async () => {
     const root = setupArtifactRoot();
     try {
       writeFileSync(
@@ -248,7 +248,7 @@ describe('runDevelopPhase — already-complete short-circuit', () => {
         'utf-8',
       );
 
-      const result = runDevelopPhase({
+      const result = await runDevelopPhase({
         feature: makeFeature(['pkt-done']),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -265,7 +265,7 @@ describe('runDevelopPhase — already-complete short-circuit', () => {
 });
 
 describe('runDevelopPhase — dry-run', () => {
-  it('does not invoke any agent or mutate packet status in dry-run mode', () => {
+  it('does not invoke any agent or mutate packet status in dry-run mode', async () => {
     const root = setupArtifactRoot();
     try {
       const packetPath = join(root, 'packets', 'pkt-dry.json');
@@ -277,7 +277,7 @@ describe('runDevelopPhase — dry-run', () => {
       }, null, 2) + '\n';
       writeFileSync(packetPath, initial, 'utf-8');
 
-      const result = runDevelopPhase({
+      const result = await runDevelopPhase({
         feature: makeFeature(['pkt-dry']),
         config: makeMinimalConfig(),
         artifactRoot: root,
@@ -302,7 +302,7 @@ describe('runDevelopPhase — dry-run', () => {
 });
 
 describe('runDevelopPhase — blocked dependency', () => {
-  it('reports a packet whose dependency is unmet as failed without invoking the agent', () => {
+  it('reports a packet whose dependency is unmet as failed without invoking the agent', async () => {
     const root = setupArtifactRoot();
     try {
       // pkt-blocked depends on pkt-prereq which is NOT in completions.
@@ -318,7 +318,7 @@ describe('runDevelopPhase — blocked dependency', () => {
         'utf-8',
       );
 
-      const result = runDevelopPhase({
+      const result = await runDevelopPhase({
         feature: makeFeature(['pkt-blocked']),
         config: makeMinimalConfig(),
         artifactRoot: root,

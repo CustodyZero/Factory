@@ -102,14 +102,14 @@ export interface RunSingleSpecContext {
   readonly dryRun: boolean;
 }
 
-export function runSingleSpec(
+export async function runSingleSpec(
   spec: ResolvedSpec,
   config: FactoryConfig,
   projectRoot: string,
   artifactRoot: string,
   dryRun: boolean,
   ctx: RunSingleSpecContext,
-): RunSpecOutcome {
+): Promise<RunSpecOutcome> {
   if (!existsSync(spec.intentPath)) {
     const msg = `Intent not found: ${spec.id}`;
     fmt.log('error', fmt.error(msg));
@@ -130,7 +130,7 @@ export function runSingleSpec(
   // Phase 1: Plan.
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('PLANNING'));
-  const planResult = runPlanPhase({
+  const planResult = await runPlanPhase({
     intent: hydrated.intent,
     config,
     artifactRoot,
@@ -210,7 +210,7 @@ export function runSingleSpec(
   // Phase 2: Develop.
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('DEVELOPMENT'));
-  const devResult = runDevelopPhase({
+  const devResult = await runDevelopPhase({
     feature,
     config,
     artifactRoot,
@@ -223,7 +223,7 @@ export function runSingleSpec(
   // Phase 3: Verify.
   process.stderr.write('\n');
   fmt.log('phase', fmt.bold('VERIFICATION'));
-  const qaResult = runVerifyPhase({
+  const qaResult = await runVerifyPhase({
     feature,
     config,
     artifactRoot,

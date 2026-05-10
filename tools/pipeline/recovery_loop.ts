@@ -242,7 +242,18 @@ export interface AttemptContext {
   };
 }
 
-export type RecoverableOperation<T> = (attempt: AttemptContext) => OperationResult<T>;
+/**
+ * Operation closures may return synchronously or as a Promise. The
+ * post-Phase-8 convergence pass migrated `invokeAgent` to async (long
+ * agent runs need to yield so heartbeats can fire); the closures that
+ * wrap it therefore became async too. Sync closures (lifecycle calls,
+ * tests) keep working unchanged because TypeScript widens `T` to
+ * `T | Promise<T>` and the runtime simply awaits the result either
+ * way.
+ */
+export type RecoverableOperation<T> = (
+  attempt: AttemptContext,
+) => OperationResult<T> | Promise<OperationResult<T>>;
 
 // ---------------------------------------------------------------------------
 // runWithRecovery — the wrapper
@@ -252,21 +263,23 @@ export type RecoverableOperation<T> = (attempt: AttemptContext) => OperationResu
  * Wrap an operation in the recovery loop. See the module header for
  * the contract.
  *
- * IMPLEMENTATION NOTE: this function is synchronous. The factory
- * codebase uses synchronous spawnSync / execSync everywhere; adding
- * async would force a cascade of refactors. The waitFn knob defaults
- * to Atomics.wait (synchronous); tests pass a no-op so retries don't
+ * IMPLEMENTATION NOTE: this function is asynchronous. The agent-
+ * invocation primitive (`invokeAgent`) returns a Promise so it can
+ * yield while a child process runs and emit periodic heartbeats; the
+ * recovery layer awaits the operation closure transparently so both
+ * sync and async closures work. The waitFn knob defaults to
+ * Atomics.wait (synchronous); tests pass a no-op so retries don't
  * actually delay.
  */
-export function runWithRecovery<T>(
+export async function runWithRecovery<T>(
   operation: RecoverableOperation<T>,
   ctx: RunWithRecoveryContext,
   options: RunWithRecoveryOptions = {},
-): RecoveryResult<T> {
+): Promise<RecoveryResult<T>> {
   // Test escape hatch: skip the entire wrapper. Used by tests that
   // want to assert raw operation behavior without recovery interceding.
   if (options.disableRecovery === true) {
-    const result = operation({ attemptNumber: 1 });
+    const result = await operation({ attemptNumber: 1 });
     if (result.outcome === 'ok') return { kind: 'ok', value: result.value };
     // Even with recovery disabled the operation can fail; surface a
     // synthetic escalation result so the caller's switch dispatches
@@ -296,7 +309,7 @@ export function runWithRecovery<T>(
   // silent streams mean "everything went normally." The brief and
   // module header pin this.
   let attemptNumber = 1;
-  let result = operation({ attemptNumber });
+  let result = await operation({ attemptNumber });
   if (result.outcome === 'ok') {
     return { kind: 'ok', value: result.value };
   }
@@ -527,7 +540,7 @@ export function runWithRecovery<T>(
     if (recipeOutput.action === 'cascade_provider') {
       cascadeIndex += 1;
     }
-    result = operation(attemptCtx);
+    result = await operation(attemptCtx);
     if (result.outcome === 'ok') {
       appendEvent(
         makeRecoverySucceeded(eventBase, {
