@@ -131,3 +131,65 @@ Round-3 fix resolves the exact contradiction:
 ## Round budget
 
 3 of 3 rounds used. Bounded-iteration model honored.
+
+# Convergence Pass QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-10
+**Verdict:** APPROVE
+
+All 14 acceptance criteria PASS, all 19 specific checks PASS.
+
+## Critical verifications
+
+- **Async migration preserves spawnSync contract byte-for-byte**: 10-min SIGTERM/SIGKILL timeout, cwd, copilot-stdin, cost extraction, early-return Promise.resolve shapes all preserved.
+- **Heartbeat correctness**: 30s interval via `_startHeartbeat` helper; cleared on close AND error; pinned by fake-timer tests for both cadence (fires after 30s) AND no-fire-on-short-calls.
+- **Facade fix is structurally sound**: silent `recordReview(... approve ...)` GONE. Replaced with synthetic ReviewDecisionMissing failure → recovery.escalated control flow. `REVIEW_DECISION_MISSING_MARKER` exported as a constant; classifier uses exact `includes` match (no regex, no false-positive surface from arbitrary stderr).
+- **Closed enum cleanly extended 8 → 9** with all 4 wiring points (union, ALL_SCENARIOS, RECIPES, BUDGET) updated.
+- **Reviewer happy + request-changes paths still work**: pinned by tests at `develop_phase_recovery.test.ts:944` and `:980`.
+- **Phase 6 post-escalation invariants STILL pin** correctly (`expectEscalationInvariants` consumed at 6 sites).
+- **TZ-invariance preserved**: `TZ=Pacific/Kiritimati npx vitest run` → 701/701 pass.
+- **Pure boundary preserved**: `pipeline/recovery.ts` and `pipeline/cascade.ts` zero fs/child_process imports.
+- **No new dependencies**, no `--no-verify`, all 7 commits pre-commit-hook clean.
+
+## Non-blocking observations
+
+- `delivered` / `superseded` statuses are enumerated in code/docs but not directly pinned by tests. The four current tests cover spec-driven, intent-proposed (rejected), intent-approved (accepted), intent-planned (accepted); `delivered` and `superseded` follow the same code path through `isPostApprovalStatus`. Could be a follow-up to add explicit pinning.
+
+## Strongest aspects
+
+1. **Facade fix is shared-constant + exact-match**: a single exported constant couples the producer (synthetic-failure construction in develop_phase) and consumer (classifier branch), so any future drift surfaces as a test failure rather than silent misclassification — exactly the "honest, observable" pattern CLAUDE.md §3.3 demands.
+2. **Async migration preserves the spawnSync byte-for-byte contract** while threading heartbeats through a separately-testable helper (`_startHeartbeat`) that uses fake timers — turning an untestable I/O concern into a deterministic unit test.
+
+# Convergence Pass Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-10
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Control-plane convergence pass tightens three orthogonal issues into one coherent system:
+1. Async provider invocation + 30s heartbeats (long-running calls were silent)
+2. Explicit approval semantics split (spec-driven skips intent gate; intent-driven respects it)
+3. Lifecycle CLI ownership reconciliation (autonomous vs manual modes disambiguated in docs)
+
+Plus a NEW `ReviewDecisionMissing` failure scenario (closed enum 8 → 9) replaces a silent force-approve fallback that codex correctly identified as a CLAUDE.md §3.1 facade.
+
+- 7 commits across 3 review rounds: REQUEST-CHANGES (silent fallback + docs incomplete + README stale), REQUEST-CHANGES (README contradiction), APPROVE
+- 681 → 701 tests (+20)
+- Independent QA APPROVE on 14 criteria + 19 checks; TZ-invariance verified
+
+## Architectural arc across rounds
+
+Round 1 surfaced a real *new* facade introduced by the convergence pass: documenting `review.ts` as the verdict channel made the silent `recordReview(... approve ...)` fallback architecturally inconsistent. The fix introduces `ReviewDecisionMissing` — a 9th `FailureScenario` that escalates immediately when a reviewer exits 0 without recording a verdict. This is honest failure, not renamed silent success.
+
+Round 2 caught remaining doc inconsistency (README still said only `approved` was accepted). Round 3 fixed the contradiction. The four-status story is now consistent across README, integration.md, spec_artifact_model.md, and the spec_runner.ts comment.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
+
+## Operational note
+
+This is the second time the bounded-iteration model has surfaced a NEW facade introduced by ostensibly clarifying changes (the first was Phase 6's "wired but unreachable" pattern). Worth noting as a pattern: documentation work that names a mechanism as load-bearing must verify the mechanism actually exists — otherwise the documentation creates the inconsistency it claims to describe.
