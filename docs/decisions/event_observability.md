@@ -53,15 +53,15 @@ Reference: [`research/claw_code_audit.md`](../research/claw_code_audit.md) §4 (
 The implementation spec defines the full set; an indicative starting list:
 
 - **Pipeline lifecycle:** `pipeline.started`, `pipeline.spec_resolved`, `pipeline.finished`, `pipeline.failed`
-- **Spec lifecycle:** `spec.started`, `spec.blocked`, `spec.completed`, `spec.failed`
-- **Phase lifecycle:** `phase.started`, `phase.completed`, `phase.failed`
+- **Spec lifecycle:** `spec.started`, `spec.blocked`, `spec.completed` (status field carries success/failure)
+- **Phase lifecycle:** `phase.started`, `phase.completed` (payload includes `outcome: 'ok' | 'failed'` — there is no separate `phase.failed` event)
 - **Packet lifecycle:** `packet.started`, `packet.review_requested`, `packet.review_approved`, `packet.changes_requested`, `packet.completed`, `packet.failed`
 - **Verification:** `verification.passed`, `verification.failed`
 - **Recovery:** `recovery.attempt_started`, `recovery.succeeded`, `recovery.exhausted`, `recovery.escalated`
 - **Cost:** `cost.cap_crossed` (companion to the cost visibility decision)
-- **Provider:** `provider.unavailable`, `provider.failover_attempted`
+- **Provider:** `provider.unavailable`, `provider.failover_attempted` (deferred — Phase 7 ships failover via the existing `recovery.*` events instead of new provider-specific events)
 
-This list is not load-bearing here; the implementation spec authors it.
+This list is not load-bearing here; the implementation spec authors it. The Phase 5.5 / 5.7 / 6 / 7 implementations are the source of truth — see the `EventType` union in `tools/pipeline/events.ts`.
 
 ## What this does NOT decide
 

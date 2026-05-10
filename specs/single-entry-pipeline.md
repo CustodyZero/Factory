@@ -286,7 +286,7 @@ The phases below are listed in the order they should land. Each phase is a candi
 - Cost recording wired at every agent invocation: planner (1×), developer/reviewer/rework (3×), QA verifier (1×). All call sites pass `run_id`, `packet_id` (or null for planner), `spec_id`.
 - Cap enforcement: `cost.cap_crossed` events emitted BEFORE the abort propagates. Per-run cap aborts the entire run with `pipeline.failed`. Per-packet cap fails just that packet (orchestrator continues to the next independent packet, no `pipeline.failed`). Per-day cap aborts the run AND calls `recordDayCapBlock(today, ...)` so subsequent same-day runs are rejected at orchestrator entry (no `pipeline.started`).
 - Per-day cap uses **local date** (operator's wall clock) consistently: `localDateString` and `localDateFromTimestamp` both use local-time accessors. Documented at every reference so future contributors don't assume UTC.
-- `run.ts` summary line includes `total cost: $X.XX` and `(N unknown-cost invocations)` when any invocation reported null dollars. Honest unknowns surface to the operator.
+- `run.ts` summary line varies by what was metered (4 cases): omitted entirely when no invocations; `Cost: N unknown-cost invocation(s) (provider did not report tokens)` when all unknown; `Total cost: $X.YZYZ over N invocation(s)` when all known; `Total cost: $X.YZYZ (N unknown-cost invocation(s))` when mixed. Honest unknowns surface to the operator — null-dollar invocations are counted, never silently zeroed.
 - `factory.config.json` schema adds optional `pipeline.cost_caps: { per_run?, per_packet?, per_day? }` and optional `pipeline.rate_card` partial override.
 
 **Iteration record:**
@@ -413,23 +413,41 @@ The revised attempt's architectural breakthrough: typed `RecoveryResult<T>` disc
 - Live `factory.config.json` upgraded to multi-CLI failover — backward compat is the load-bearing invariant; operators with the old shape continue to work. The new shape is *supported*, not *required*.
 - Templates updated to demonstrate the new shape — kept the `templates/factory.config.json` in legacy form to preserve plug-in compatibility for operators who lift it directly.
 
-### Phase 8 — Documentation pass
+### Phase 8 — Documentation pass ✅ COMPLETE
 
-**Goal:** Reflect the single-entry-point reality across all user-facing docs.
+**Status:** Merged in commit `4472b7f` (2026-05-05). The single-entry-pipeline spec is now fully implemented across phases 1, 2, 3, 4, 4.5, 4.6 (revised), 5, 5.5, 5.7, post-5.7 orchestrator decomposition checkpoint, 6 (revised), 7, 8.
 
-**Specifically:**
+**Goal:** Reflect the single-entry-point reality across all user-facing docs. Shipped with **Option B scope** — added operator-facing TL;DRs for what shipped in Phases 5.5/5.7/6/7 alongside the lifecycle reframing.
 
-- `README.md`: lifecycle scripts moved to "agent protocol" section, no longer in "commands you run"
-- `AGENTS.md`: same — lifecycle commands described as how agents signal back to the factory, not as commands operators run
-- `CLAUDE.md`: Quick Reference shows `run.ts <spec-id>` as the primary entry; lifecycle scripts removed or footnoted
-- `docs/integration.md`: spec authoring guide added; lifecycle CLI section moved to "agent protocol" appendix
-- New: brief spec-authoring guide (`docs/decisions/` already has the model; the guide is operator-facing)
+**What shipped:**
 
-**Acceptance:**
+- `README.md` (-41 lines, tightened): operator framing around `run.ts <spec-id>` as the only entry point. Lifecycle scripts moved to a clearly-labeled "Agent protocol" section with explicit "Agents call these; operators do not" framing.
+- `AGENTS.md` (+28 lines): lifecycle command tables retitled as agent protocol. Rule 3.2 ("No commit without a completion") rewrites: "Agents record completions through the agent protocol after implementation; operators get this by running or re-running `run.ts <spec-id>`."
+- `CLAUDE.md` (+14 lines): Quick Reference foregrounds `run.ts`; lifecycle scripts in a separate "Agent protocol" sub-block.
+- `docs/integration.md` (+327 lines): new "Authoring specs" section near the top covering location, frontmatter shape, dependency declaration, body conventions. Frontmatter example matches `tools/pipeline/spec_parse.ts` parser exactly. Existing lifecycle CLI content moved to an "Agent protocol" appendix.
+- `docs/integration.md` operator TL;DRs added for the new subsystems with cross-references to decision docs:
+  - **Events (Phase 5.5):** stream location, taxonomy by category (4 pipeline + 3 spec + 2 phase + 6 packet + 2 verification + 4 recovery + 1 cost = 22 event types matching `EventType` union exactly), provenance distinction (live_run vs test).
+  - **Cost (Phase 5.7):** the 4 actual run-summary format strings (no-line / all-unknown / all-known / mixed) byte-for-byte from `run.ts`. Cap configuration. Null-dollar invocations counted as unknown_count, never silently zeroed.
+  - **Recovery (Phase 6):** 8 scenarios + retry budgets (Transient/AgentNonResp 2; Build/Stale 1; rest 0). Escalation path. Why LintFailed/TestFailed always escalate.
+  - **Failover (Phase 7):** `persona_providers` string|array, `model_failover` for abstraction providers, cascade order, backward compat.
+- `templates/AGENTS.md`, `templates/CLAUDE.md` (parallel updates so `setup.sh` distributes the new framing to host projects).
+- Global `~/CLAUDE.md` correctly NOT modified (it's a project-agnostic AI Operator Profile, not a factory Quick Reference).
 
-- A new operator reading the docs runs `run.ts <spec-id>` and never sees a recommendation to invoke a lifecycle script directly
-- The docs explicitly note that lifecycle scripts exist for agents, not for humans
-- Spec authoring guide covers: file location, frontmatter shape, dependency declaration, body conventions
+**Iteration record:**
+
+- 3 review rounds used (codex GPT-5.5):
+  - Round 1 REQUEST-CHANGES: AGENTS.md rule 3.2 told operators to run `complete.ts`; event taxonomy named non-existent `phase.failed` and missed 6 real event types.
+  - Round 2 REQUEST-CHANGES: cost TL;DR misstated run summary format (showed only 1 of 4 actual cases).
+  - Round 3 APPROVE.
+- Independent QA verification (separate Opus, FI-7) APPROVE on all 3 acceptance criteria + Option B + 12 specific checks. Source-of-truth alignment verified byte-for-byte for cost format strings, event types, recovery budgets, frontmatter shape.
+
+**Tests:** 681 unchanged (no source code changes). `npx tsx tools/validate.ts` PASS. package.json unchanged.
+
+**Acceptance criteria all met:**
+
+- ✅ A new operator reading the docs runs `run.ts <spec-id>` and never sees a recommendation to invoke a lifecycle script directly.
+- ✅ The docs explicitly note lifecycle scripts exist for agents, not for humans (every operator-facing doc has this framing).
+- ✅ Spec authoring guide covers file location, frontmatter shape, dependency declaration, and body conventions (in `docs/integration.md` §"Authoring specs").
 
 ## Cross-cutting risks and mitigations
 
