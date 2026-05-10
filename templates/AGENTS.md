@@ -19,10 +19,10 @@ of every session.
 ## 2. Pipeline Lifecycle
 
 ```
-Intent (human writes spec + constraints)
+Spec (human authors specs/<spec-id>.md)
   |
   v
-run.ts <intent-id>      <-- single command, runs to completion
+run.ts <spec-id> [<spec-id>...]   <-- the only operator entry point
   |-- Plan: planner decomposes spec into feature + dev/qa packet pairs
   |-- Develop: for each dev packet
   |     |-- Developer agent implements
@@ -35,9 +35,12 @@ run.ts <intent-id>      <-- single command, runs to completion
   |-- Done: feature marked complete
 ```
 
-**Human gates:** exactly two.
-1. Approve the spec (write the markdown document)
-2. Approve the intent (create the intent artifact with constraints)
+The factory translates `specs/<spec-id>.md` into `factory/intents/<spec-id>.json`
+(1:1) at run time. Operators author specs; the intent is derived state.
+Existing hand-authored intents continue to work (backward compatibility).
+
+**Human gates:** exactly one — authoring the spec. The intent artifact is
+derived. (Hand-authored intents remain a supported back-compat path.)
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
@@ -118,20 +121,34 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | `factory/packets/` | Individual work units (dev and qa) |
 | `factory/completions/` | Verification evidence (build/lint/test results) |
 
-### Commands
+### Operator commands
+
+The single human entry point. Operators run only these.
 
 | Command | When to Use |
 |---|---|
 | `npx tsx .factory/tools/status.ts` | Start of session, after context loss, when unsure what to do |
-| `npx tsx .factory/tools/run.ts <intent-id>` | Run the full pipeline (plan → develop → review → verify) for an intent |
-| `npx tsx .factory/tools/plan.ts <intent-id>` | Resolve planner work for an intent/spec and hand off to the planner persona |
-| `npx tsx .factory/tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
-| `npx tsx .factory/tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
-| `npx tsx .factory/tools/request-review.ts <packet-id>` | Developer signals code is ready for code review (dev packets only) |
-| `npx tsx .factory/tools/review.ts <packet-id> --approve` | Code reviewer approves the code review |
-| `npx tsx .factory/tools/review.ts <packet-id> --request-changes` | Code reviewer requests changes |
-| `npx tsx .factory/tools/complete.ts <packet-id>` | After review approval (dev) or implementation (QA), before committing |
+| `npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]` | Run the full pipeline for one or more specs (plan → develop → review → verify) |
 | `npx tsx .factory/tools/validate.ts` | Verify factory integrity |
+
+`run.ts` also accepts intent IDs (`factory/intents/<intent-id>.json`) for
+backward compatibility with hand-authored intents.
+
+### Agent protocol (CLI-as-protocol)
+
+The lifecycle scripts below are how agents signal back to the factory.
+**Agents call these; operators do not.** All four lifecycle scripts are
+idempotent — re-invocation on the same state is a no-op.
+
+| Command | Caller | Purpose |
+|---|---|---|
+| `npx tsx .factory/tools/plan.ts <spec-or-intent-id>` | planner agent / orchestrator | Resolve planner work and hand off to the planner persona |
+| `npx tsx .factory/tools/execute.ts <feature-id>` | dev/qa agent / orchestrator | Determine which packets are ready next |
+| `npx tsx .factory/tools/start.ts <packet-id>` | dev/qa agent | Claim a packet before implementation |
+| `npx tsx .factory/tools/request-review.ts <packet-id>` | dev agent | Signal code is ready for review (dev packets only) |
+| `npx tsx .factory/tools/review.ts <packet-id> --approve` | code reviewer agent | Approve the code review |
+| `npx tsx .factory/tools/review.ts <packet-id> --request-changes` | code reviewer agent | Request changes |
+| `npx tsx .factory/tools/complete.ts <packet-id>` | dev/qa agent | Run build/lint/test, write completion record |
 
 ---
 
@@ -144,8 +161,10 @@ Do not write code and then create the packet after the fact.
 
 ### 3.2 No Commit Without Completion
 
-Run `npx tsx .factory/tools/complete.ts <packet-id>` before committing.
-The pre-commit hook enforces this. If it blocks you, create the completion first.
+Agents record completions through the agent protocol after implementation;
+operators get this by running or re-running
+`npx tsx .factory/tools/run.ts <spec-id>`. The pre-commit hook enforces
+that started packets have completion records before commit.
 
 ### 3.3 No Facades
 
@@ -184,20 +203,23 @@ If you are starting a new session or have lost context:
 
 1. Run `npx tsx .factory/tools/status.ts`
 2. Read the output — it tells you exactly where things stand
-3. If an intent is proposed, run `npx tsx .factory/tools/run.ts <intent-id>` to drive the full pipeline
-4. If you prefer manual control, run `npx tsx .factory/tools/execute.ts <feature-id>` to see what packets are ready
+3. If a spec is proposed, run `npx tsx .factory/tools/run.ts <spec-id>` to drive the full pipeline
+4. If you (an agent) need manual control while debugging, run `npx tsx .factory/tools/execute.ts <feature-id>` to see what packets are ready
 5. The output tells you what to do next **and which persona to use**
 
 Do not rely on memory. Do not guess. Read the factory state.
 
 ---
 
-## 5. Execution Protocol (manual control)
+## 5. Execution Protocol (manual control — agent escape hatch)
 
-For autonomous execution, use `run.ts <intent-id>`. It drives the full pipeline.
+For normal operation, the operator runs `run.ts <spec-id>` and the factory
+drives the full pipeline. The loop below is for agents debugging a stuck
+pipeline or exercising the lifecycle directly — not the day-to-day path.
 
-For manual control, **execute.ts is the single authority on what to do next**.
-Do not decide when to stop or what step comes next — always ask execute.ts.
+When taking manual control, **execute.ts is the single authority on what
+to do next**. Do not decide when to stop or what step comes next — always
+ask execute.ts.
 
 ```
 loop:
@@ -224,7 +246,8 @@ The planner does not execute work. The pipeline runner does not plan work.
 
 ### Planner Flow
 
-1. Human creates `factory/intents/<intent-id>.json`. The intent must declare
+1. Human authors `specs/<spec-id>.md` (preferred) or, for backward
+   compatibility, `factory/intents/<intent-id>.json`. The intent must declare
    exactly one of `spec` (inline body for short intents) or `spec_path` (path
    relative to the project root pointing at a Markdown file containing the
    authoritative spec — use this for long, human-authored specs that already
@@ -232,8 +255,9 @@ The planner does not execute work. The pipeline runner does not plan work.
    `spec_path` must be relative, must not escape the project root, and must
    point at a non-empty file. `validate.ts` enforces these rules; `plan.ts`
    reads the file at plan time and hands its full contents to the planner.
-2. Run `npx tsx .factory/tools/plan.ts <intent-id>` (or run the full pipeline
-   with `npx tsx .factory/tools/run.ts <intent-id>`)
+2. The orchestrator (or, when debugging, an agent) calls
+   `npx tsx .factory/tools/plan.ts <spec-or-intent-id>`. Operators run the
+   full pipeline with `npx tsx .factory/tools/run.ts <spec-id>` instead.
 3. If the action is `plan_feature`, spawn a planner agent using the returned planner assignment
 4. Planner writes:
    - one feature artifact with `status: "planned"`

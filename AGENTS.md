@@ -19,10 +19,10 @@ session. It tells you where things stand and what to do next.
 ## 2. Pipeline Lifecycle
 
 ```
-Intent (human writes spec + constraints)
+Spec (human authors specs/<spec-id>.md)
   |
   v
-run.ts <intent-id>      <-- single command, runs to completion
+run.ts <spec-id> [<spec-id>...]   <-- the only operator entry point
   |-- Plan: planner decomposes spec into feature + dev/qa packet pairs
   |-- Develop: for each dev packet
   |     |-- Developer agent implements
@@ -35,9 +35,13 @@ run.ts <intent-id>      <-- single command, runs to completion
   |-- Done: feature marked complete, summary printed
 ```
 
-**Human gates:** exactly two.
-1. Approve the spec (write the markdown document)
-2. Approve the intent (create the intent artifact with constraints)
+The factory translates `specs/<spec-id>.md` into `intents/<spec-id>.json` (1:1)
+at run time — see [`docs/decisions/spec_artifact_model.md`](docs/decisions/spec_artifact_model.md).
+Operators author specs; the intent is derived state. Existing `intents/<id>.json`
+files without a corresponding spec continue to work (backward compatibility).
+
+**Human gates:** exactly one — authoring the spec. The intent artifact is
+derived. (Hand-authored intents remain a supported back-compat path.)
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
@@ -119,20 +123,36 @@ artifacts are never written inside the submodule.
 | `packets/` | Individual work units (dev and qa) |
 | `completions/` | Verification evidence (build/lint/test results) |
 
-### Commands
+### Operator commands
+
+The single human entry point. Operators run only these.
 
 | Command | When to Use |
 |---|---|
 | `npx tsx tools/status.ts` | Start of session, after context loss, when unsure what to do |
-| `npx tsx tools/run.ts <intent-id>` | Run the full pipeline (plan → develop → review → verify) for an intent |
-| `npx tsx tools/plan.ts <intent-id>` | Resolve planner work for an intent/spec and hand off to the planner persona |
-| `npx tsx tools/execute.ts <feature-id>` | Determine which packets to implement next (returns packet + persona) |
-| `npx tsx tools/start.ts <packet-id>` | Claim a packet and mark it started before implementation |
-| `npx tsx tools/request-review.ts <packet-id>` | Developer signals code is ready for code review (dev packets only) |
-| `npx tsx tools/review.ts <packet-id> --approve` | Code reviewer approves the code review |
-| `npx tsx tools/review.ts <packet-id> --request-changes` | Code reviewer requests changes |
-| `npx tsx tools/complete.ts <packet-id>` | After review approval (dev) or implementation (QA), before committing |
+| `npx tsx tools/run.ts <spec-id> [<spec-id>...]` | Run the full pipeline for one or more specs (plan → develop → review → verify) |
 | `npx tsx tools/validate.ts` | Verify factory integrity |
+
+`run.ts` also accepts intent IDs (`intents/<intent-id>.json`) for backward
+compatibility with hand-authored intents.
+
+### Agent protocol (CLI-as-protocol)
+
+The lifecycle scripts below are how agents signal back to the factory.
+**Agents call these; operators do not.** The factory invokes them as
+library functions during a pipeline run; agents invoke them as CLIs
+when signaling state transitions. All four are idempotent — re-invocation
+on the same state is a no-op (it prints "already done" and exits 0).
+
+| Command | Caller | Purpose |
+|---|---|---|
+| `npx tsx tools/plan.ts <spec-or-intent-id>` | planner agent / orchestrator | Resolve planner work and hand off to the planner persona |
+| `npx tsx tools/execute.ts <feature-id>` | developer/qa agent / orchestrator | Determine which packets are ready next (returns packet + persona) |
+| `npx tsx tools/start.ts <packet-id>` | dev/qa agent | Claim a packet and mark it started before implementation |
+| `npx tsx tools/request-review.ts <packet-id>` | dev agent | Signal code is ready for code review (dev packets only) |
+| `npx tsx tools/review.ts <packet-id> --approve` | code reviewer agent | Approve the code review |
+| `npx tsx tools/review.ts <packet-id> --request-changes` | code reviewer agent | Request changes |
+| `npx tsx tools/complete.ts <packet-id>` | dev/qa agent | After review approval (dev) or implementation (QA): runs build/lint/test, writes the completion record |
 
 ---
 
@@ -141,8 +161,10 @@ artifacts are never written inside the submodule.
 3.1. **No implementation without a packet.** If there is no packet artifact,
      there is no authority to change code. Create the packet first.
 
-3.2. **No commit without a completion.** The pre-commit hook enforces this.
-     Run `complete.ts` after implementation; it records build/lint/test results.
+3.2. **No commit without a completion.** Agents record completions through
+     the agent protocol after implementation; operators get this by running
+     or re-running `npx tsx tools/run.ts <spec-id>`. The pre-commit hook
+     enforces that started packets have completion records before commit.
 
 3.3. **No facades.** No stubbed success paths, no TODOs that return success,
      no silent fallbacks. If something is not done, it must fail explicitly.
@@ -187,17 +209,24 @@ QA packets skip the review cycle: `implementing -> completed`.
 
 ## 5. Tools
 
+Operator surface (humans):
+
 | Command | Purpose |
 |---------|---------|
-| `run.ts <intent-id>` | Full pipeline: plan, develop, review, verify, done |
+| `run.ts <spec-id> [<spec-id>...]` | Full pipeline: plan, develop, review, verify, done |
 | `status.ts` | Session reconstruction — where things stand |
-| `plan.ts <intent-id>` | Resolve planner action for an intent |
-| `execute.ts <feature-id>` | What packets are ready for execution |
+| `validate.ts` | Schema + integrity validation |
+
+Agent protocol (agents call these; the factory also calls them as library functions):
+
+| Command | Purpose |
+|---------|---------|
+| `plan.ts <spec-or-intent-id>` | Resolve planner action |
+| `execute.ts <feature-id>` | Resolve which packets are ready |
 | `start.ts <packet-id>` | Claim a packet before implementation |
 | `request-review.ts <packet-id>` | Signal code is ready for review |
 | `review.ts <packet-id> --approve\|--request-changes` | Code review decision |
 | `complete.ts <packet-id>` | Run verification, create completion record |
-| `validate.ts` | Schema + integrity validation |
 | `completion-gate.ts` | Pre-commit enforcement (FI-7) |
 
 ## 6. Factory Invariants
@@ -264,7 +293,8 @@ constraints defined by the project owner.
 
 ## 8. Where to Find Things
 
-- **Factory docs:** `README.md`
-- **Integration guide:** `docs/integration.md`
+- **Operator README:** `README.md` (front door — what the factory is, how to use it)
+- **Operator integration guide:** `docs/integration.md` (spec authoring, configuration, observability TL;DRs)
+- **Architectural decisions:** `docs/decisions/` (the contracts agents must respect)
 - **Schemas:** `schemas/` (JSON schemas for all artifact types)
 - **Factory invariants:** `README.md` § Factory Invariants (FI-1 through FI-10)
