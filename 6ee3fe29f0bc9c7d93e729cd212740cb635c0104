@@ -62,3 +62,43 @@ The required-fields list omits `approved`, while the new examples and runtime ga
 ## Round budget remaining
 
 2 rounds.
+
+# Convergence Pass Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-10
+**Branch:** convergence-pass (round-2 commits 4f82fb0, 97ee2a0)
+**Verdict:** REQUEST-CHANGES (one residual finding)
+
+## Confirmed correct
+
+- Silent force-approve path is genuinely gone; now escalates through the normal failed-packet control path.
+- New tests cover no-decision, approve, and request-changes reviewer outcomes end-to-end through `runDevelopPhase`.
+- `ReviewDecisionMissing` scenario is the right design — semantically distinct from `AgentNonResponsive` (reviewer ran cleanly but failed the protocol contract).
+- Sentinel-string bridge acceptable: exported constant, exact marker, code-generated.
+- `nextPointAfterReview` dead branch acceptable with strong comment.
+
+## Issue remaining
+
+### README contradicts itself on accepted intent statuses
+
+**Files:** `README.md:303`, `tools/pipeline/orchestrator/spec_runner.ts:167` (stale code comment, code itself correct)
+
+`README.md:303` still states: "hand-authored intents must be `\"approved\"`" and "rejects anything else." This contradicts the updated semantics later in the SAME file (and consistent with the round-2 docs in integration.md / spec_artifact_model.md), where `planned` and `delivered` are accepted for idempotent reruns.
+
+The runtime and other docs say:
+- Accepted: `approved`, `planned`, `delivered`
+- Rejected: `proposed`, `superseded`, missing/unknown
+
+**Fix:** Update `README.md:303` to match. Add the same nuance the rest of the doc carries — first-run grants via `approved`, idempotent rerun statuses (`planned`, `delivered`) accepted.
+
+Also update `spec_runner.ts:167`'s stale comment so future readers don't see the contradiction in code either.
+
+## Non-blocking observations
+
+- A typed `FailureContext.marker` field would be cleaner long-term than the sentinel string. Not blocking.
+- The dead `nextPointAfterReview` legacy branch is fine kept-with-comment unless someone wants a cleanup packet to remove the pure unit contract.
+
+## Round budget remaining
+
+1 round. Final round. Narrow doc fix.
