@@ -102,3 +102,32 @@ Also update `spec_runner.ts:167`'s stale comment so future readers don't see the
 ## Round budget remaining
 
 1 round. Final round. Narrow doc fix.
+
+# Convergence Pass Code Review — Round 3 (FINAL)
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-10
+**Branch:** convergence-pass (round-3 commit 9fb531e)
+**Verdict:** APPROVE
+
+## Summary
+
+Round-3 fix resolves the exact contradiction:
+- `README.md:303` now lists `approved`, `planned`, and `delivered` as accepted for intent-driven runs.
+- Rejects `proposed`, `superseded`, missing, and unknown values.
+- Correctly states spec-driven runs skip the gate.
+- The "Artifact Types → Intent" link resolves to the `### Intent` section and matches the same semantics.
+
+## Cross-checks performed
+
+- `spec_runner.ts:167` comment accurately mirrors `isPostApprovalStatus`.
+- `docs/integration.md` and `docs/decisions/spec_artifact_model.md` align with the same source-dependent approval model. No remaining contradictions.
+
+## Strongest parts of this convergence pass
+
+1. Makes the spec-vs-intent approval boundary explicit.
+2. Replaces the silent reviewer no-decision path with a clear escalation contract.
+
+## Round budget
+
+3 of 3 rounds used. Bounded-iteration model honored.
