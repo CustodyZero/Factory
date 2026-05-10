@@ -895,3 +895,111 @@ describe('runOrchestrator — legacy --dry-run preview contract', () => {
     expect(result.specs[0]!.status).toBe('completed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// runOrchestrator — approval-semantics split (convergence pass)
+//
+// Three branches pinned:
+//
+//   1. Spec-driven runs SKIP the intent-status gate. The derived
+//      intent's status is whatever specToIntent set (today: 'proposed').
+//      The orchestrator must not consult it; authoring the spec IS
+//      the gate.
+//
+//   2. Intent-driven runs with a NON-approved status are rejected
+//      with an actionable error message. No agent is invoked.
+//
+//   3. Intent-driven runs with status='approved' (and the other
+//      post-approval statuses 'planned' / 'delivered') run normally.
+//
+// All three are exercised in dry-run mode so we don't need a real
+// provider CLI; the gate fires BEFORE plan_phase, so dry-run still
+// surfaces the rejection / acceptance.
+// ---------------------------------------------------------------------------
+
+describe('runOrchestrator — approval semantics: spec vs intent', () => {
+  it('spec-driven run with derived proposed-status intent STILL runs (no gate)', async () => {
+    const f = makeFixture();
+    // Spec exists; the orchestrator materialises an intent whose
+    // status is the translator default ('proposed'). The gate must
+    // be skipped because authoring the spec IS the gate.
+    writeSpec(f.root, 'spec-driven', { title: 'Spec-driven run' });
+    const result = await runOrchestrator({
+      args: ['spec-driven'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    // Reached planning (dry-run completes as a successful preview).
+    expect(result.success).toBe(true);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.id).toBe('spec-driven');
+    expect(result.specs[0]!.status).toBe('completed');
+
+    // Sanity: the materialised intent is in the default 'proposed'
+    // state — proving the gate would otherwise have rejected this
+    // run if it were applied.
+    const intent = JSON.parse(
+      readFileSync(join(f.root, 'intents', 'spec-driven.json'), 'utf-8'),
+    );
+    expect(intent.status).toBe('proposed');
+  });
+
+  it('intent-driven run with status=proposed is REJECTED (gate enforced)', async () => {
+    const f = makeFixture();
+    // No spec — purely a hand-authored intent. Default fixture
+    // status was 'approved' so we override explicitly.
+    writeIntent(f.root, 'unapproved', 'proposed');
+    const result = await runOrchestrator({
+      args: ['unapproved'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(false);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.status).toBe('failed');
+    if (result.specs[0]!.status === 'failed') {
+      // Operator-facing error names the file and the required
+      // status flip — not a generic "something went wrong".
+      expect(result.specs[0]!.reason).toMatch(/intents\/unapproved\.json/);
+      expect(result.specs[0]!.reason).toMatch(/approved/);
+    }
+  });
+
+  it('intent-driven run with status=approved RUNS (gate satisfied)', async () => {
+    const f = makeFixture();
+    writeIntent(f.root, 'approved-intent', 'approved');
+    const result = await runOrchestrator({
+      args: ['approved-intent'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.id).toBe('approved-intent');
+    expect(result.specs[0]!.status).toBe('completed');
+  });
+
+  it('intent-driven run with status=planned RUNS (idempotent re-run after planning)', async () => {
+    const f = makeFixture();
+    // After a successful planning run the orchestrator stamps the
+    // intent with status='planned'. A re-run on the same intent
+    // must not be rejected by the approval gate — that would break
+    // idempotency.
+    writeIntent(f.root, 'replanned', 'planned');
+    const result = await runOrchestrator({
+      args: ['replanned'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.specs[0]!.status).toBe('completed');
+  });
+});

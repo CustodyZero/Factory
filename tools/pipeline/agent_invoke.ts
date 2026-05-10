@@ -101,6 +101,33 @@ export interface HeartbeatContext {
   readonly channel?: string;
 }
 
+/**
+ * Start a heartbeat timer and return a stop function. Extracted so
+ * the cadence is testable without mocking spawn — tests use vi's
+ * fake timers to advance virtual time and assert that fmt.log fires
+ * exactly once per interval.
+ *
+ * The leading-underscore export name signals "test-only public".
+ * Production callers should NOT consume this; they get heartbeats
+ * for free via `invokeAgent`.
+ */
+export function _startHeartbeat(
+  provider: string,
+  heartbeat: HeartbeatContext | undefined,
+): { stop: () => void } {
+  const channel = heartbeat?.channel ?? 'agent';
+  const message = heartbeat?.message
+    ?? `${provider} agent still running (no progress signal yet)`;
+  const handle = setInterval(() => {
+    fmt.log(channel, message);
+  }, HEARTBEAT_INTERVAL_MS);
+  // unref so the heartbeat never keeps the process alive on its own.
+  handle.unref?.();
+  return {
+    stop: () => clearInterval(handle),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // resolveModelId
 // ---------------------------------------------------------------------------
@@ -351,19 +378,13 @@ export function invokeAgent(
     timeoutHandle.unref();
 
     // Heartbeat: every HEARTBEAT_INTERVAL_MS, emit one progress line.
-    // Cleared when the child closes. Channel/message come from the
-    // caller; fall back to a generic line when none is supplied.
-    const channel = heartbeat?.channel ?? 'agent';
-    const message = heartbeat?.message
-      ?? `${provider} agent still running (no progress signal yet)`;
-    const heartbeatHandle = setInterval(() => {
-      fmt.log(channel, message);
-    }, HEARTBEAT_INTERVAL_MS);
-    heartbeatHandle.unref();
+    // Cleared when the child closes. The cadence is unit-tested via
+    // _startHeartbeat directly; here we just consume the helper.
+    const heartbeatTimer = _startHeartbeat(provider, heartbeat);
 
     const cleanup = (): void => {
       clearTimeout(timeoutHandle);
-      clearInterval(heartbeatHandle);
+      heartbeatTimer.stop();
     };
 
     child.on('error', (err) => {

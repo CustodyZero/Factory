@@ -6,8 +6,15 @@
  * helpers in run.ts.
  */
 
-import { describe, it, expect } from 'vitest';
-import { resolveModelId, buildProviderArgs, invokeAgent } from '../pipeline/agent_invoke.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  resolveModelId,
+  buildProviderArgs,
+  invokeAgent,
+  _startHeartbeat,
+  HEARTBEAT_INTERVAL_MS,
+} from '../pipeline/agent_invoke.js';
+import * as fmt from '../output.js';
 import type { FactoryConfig, PipelineProviderConfig } from '../config.js';
 
 function makeProviderConfig(overrides: Partial<PipelineProviderConfig> = {}): PipelineProviderConfig {
@@ -288,5 +295,140 @@ describe('invokeAgent — configuration-error early returns', () => {
     expect(result.stderr).toMatch(/disabled/i);
     expect(result.cost.provider).toBe('claude');
     expect(result.cost.dollars).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heartbeat — convergence pass
+//
+// Pins the operator-UX contract: every 30 seconds the agent is alive,
+// fmt.log emits one progress line. The cadence (HEARTBEAT_INTERVAL_MS)
+// is the load-bearing constant; tests use vi's fake timers to drive
+// virtual time forward without actually waiting.
+//
+// We exercise the extracted _startHeartbeat helper directly rather
+// than racing it against a real spawn — same setInterval the
+// production code uses, no real-time dependency.
+// ---------------------------------------------------------------------------
+
+describe('heartbeat — _startHeartbeat cadence', () => {
+  it('does NOT fire fmt.log before the first interval elapses (short call)', () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(fmt, 'log').mockImplementation(() => undefined);
+    try {
+      const timer = _startHeartbeat('claude', {
+        message: "planner still running for spec 'demo'...",
+        channel: 'plan',
+      });
+      // Advance by less than one interval (29s @ 30s cadence).
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS - 1_000);
+      expect(spy).not.toHaveBeenCalled();
+      timer.stop();
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fires fmt.log exactly once after one full interval (30s)', () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(fmt, 'log').mockImplementation(() => undefined);
+    try {
+      const timer = _startHeartbeat('claude', {
+        message: "planner still running for spec 'demo'...",
+        channel: 'plan',
+      });
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS);
+      expect(spy).toHaveBeenCalledTimes(1);
+      // The line is routed through the configured channel and
+      // carries the persona-specific message verbatim.
+      expect(spy).toHaveBeenCalledWith(
+        'plan',
+        "planner still running for spec 'demo'...",
+      );
+      timer.stop();
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fires three times across three intervals; stop() halts further heartbeats', () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(fmt, 'log').mockImplementation(() => undefined);
+    try {
+      const timer = _startHeartbeat('codex', {
+        message: "developer working on packet 'pkt-1'...",
+        channel: 'develop',
+      });
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS * 3);
+      expect(spy).toHaveBeenCalledTimes(3);
+      timer.stop();
+      // After stop the timer no longer fires, even if more virtual
+      // time elapses.
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS * 5);
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to a generic message when no HeartbeatContext is supplied', () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(fmt, 'log').mockImplementation(() => undefined);
+    try {
+      const timer = _startHeartbeat('claude', undefined);
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS);
+      // The fallback is informational only; we just pin that it
+      // names the provider (so the operator knows which CLI is
+      // hanging) and routes to the generic 'agent' channel.
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [channel, message] = spy.mock.calls[0]!;
+      expect(channel).toBe('agent');
+      expect(message).toContain('claude');
+      timer.stop();
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('heartbeat — invokeAgent integration (no heartbeat for fast calls)', () => {
+  it('does NOT emit a heartbeat for an invocation that completes in under 30s', async () => {
+    // Real timers (the spawn close event needs real I/O), but the
+    // child completes well before HEARTBEAT_INTERVAL_MS so the
+    // interval never fires.
+    const spy = vi.spyOn(fmt, 'log').mockImplementation(() => undefined);
+    try {
+      const cfg: FactoryConfig = makeMinimalConfig({
+        pipeline: {
+          providers: { claude: { enabled: true, command: 'true' } },
+          persona_providers: {
+            planner: ['claude'], developer: ['claude'],
+            code_reviewer: ['claude'], qa: ['claude'],
+          },
+          completion_identities: {
+            developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          },
+          max_review_iterations: 3,
+        },
+      } as Partial<FactoryConfig>);
+      const result = await invokeAgent('claude', 'p', cfg, 'high', undefined, {
+        message: "planner still running for spec 'fast'...",
+        channel: 'plan',
+      });
+      expect(result.exit_code).toBe(0);
+      // The 'true' binary returns instantly. The heartbeat interval
+      // (30s) is far longer than any plausible startup delay so
+      // fmt.log must not have been called via the heartbeat path.
+      const heartbeatCalls = spy.mock.calls.filter(
+        ([, msg]) => typeof msg === 'string' && msg.includes('still running'),
+      );
+      expect(heartbeatCalls.length).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

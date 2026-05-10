@@ -311,3 +311,57 @@ describe('buildPlannerPrompt', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Autonomous-mode lifecycle invariant (convergence pass)
+//
+// In autonomous mode (`run.ts <spec-id>`), the pipeline manages packet
+// status transitions. Three of the four agent prompts (developer,
+// rework, QA) MUST tell their agent NOT to invoke lifecycle CLIs —
+// otherwise we'd get duplicate status writes / FI-1 violations.
+//
+// The reviewer prompt is the one exception: review.ts is how the
+// reviewer's verdict reaches the pipeline (approve vs request-changes
+// is data, not noise the orchestrator can guess from stdout). That's
+// pinned by the existing `buildReviewPrompt` tests above.
+// ---------------------------------------------------------------------------
+
+describe('autonomous-mode prompt invariants', () => {
+  it('buildDevPrompt explicitly tells the developer NOT to call lifecycle CLIs', () => {
+    const out = buildDevPrompt(makePacket(), makeConfig());
+    expect(out).toContain('Do not call request-review.ts or complete.ts yourself');
+    // No positive instruction to call any of the lifecycle CLIs.
+    expect(out).not.toMatch(/run\s+(npx tsx\s+)?[^\s]*(start|request-review|complete)\.ts/);
+  });
+
+  it('buildReworkPrompt explicitly tells the developer NOT to call lifecycle CLIs', () => {
+    const out = buildReworkPrompt(makePacket({ id: 'dev-1' }), makeConfig());
+    expect(out).toContain('Do not call request-review.ts or complete.ts yourself');
+    expect(out).not.toMatch(/run\s+(npx tsx\s+)?[^\s]*(start|request-review|complete)\.ts/);
+  });
+
+  it('buildQaPrompt explicitly tells the QA agent NOT to call complete.ts', () => {
+    const out = buildQaPrompt(
+      makePacket({ id: 'qa-1', kind: 'qa' }),
+      makeConfig(),
+    );
+    expect(out).toContain('Do not call complete.ts yourself');
+    expect(out).not.toMatch(/run\s+(npx tsx\s+)?[^\s]*(start|complete)\.ts/);
+  });
+
+  it('buildReviewPrompt is the documented exception — it does instruct review.ts', () => {
+    // The reviewer's verdict reaches the pipeline through review.ts.
+    // This test pins that the load-bearing exception is intentional;
+    // if a future change removes the review.ts hint the pipeline
+    // would default to silent force-approval. See AGENTS.md "Agent
+    // protocol" for the full rationale.
+    const out = buildReviewPrompt(makePacket({ id: 'dev-1' }), makeConfig());
+    expect(out).toContain('review.ts dev-1 --approve');
+    expect(out).toContain('review.ts dev-1 --request-changes');
+    // The reviewer prompt does NOT instruct the OTHER lifecycle CLIs
+    // — only review.ts is in scope for the reviewer.
+    expect(out).not.toContain('start.ts');
+    expect(out).not.toContain('complete.ts');
+    expect(out).not.toContain('request-review.ts');
+  });
+});
