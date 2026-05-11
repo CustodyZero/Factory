@@ -6,7 +6,10 @@
  * helpers in run.ts.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   resolveModelId,
   buildProviderArgs,
@@ -22,6 +25,7 @@ function makeProviderConfig(overrides: Partial<PipelineProviderConfig> = {}): Pi
   return {
     enabled: overrides.enabled ?? true,
     command: overrides.command ?? 'fake-cli',
+    prefix_args: overrides.prefix_args,
     model_map: overrides.model_map,
     sandbox: overrides.sandbox,
     permission_mode: overrides.permission_mode,
@@ -119,6 +123,88 @@ describe('buildProviderArgs', () => {
   it('passes through providerConfig.command unchanged', () => {
     expect(buildProviderArgs('claude', 'p', makeProviderConfig({ command: 'custom-claude' }), undefined).command)
       .toBe('custom-claude');
+  });
+
+  // ----- DEP0190: prefix_args prepending -----
+
+  it('prepends prefix_args to the per-provider argv (copilot sub-command shape)', () => {
+    // The migration target for `command: "gh copilot --"` is
+    // `command: "gh"` + `prefix_args: ["copilot", "--"]`. The
+    // post-normalization argv must reach the child as
+    // `gh copilot -- --yolo --no-ask-user [--model X]`.
+    const out = buildProviderArgs(
+      'copilot',
+      'p',
+      makeProviderConfig({ command: 'gh', prefix_args: ['copilot', '--'] }),
+      undefined,
+    );
+    expect(out.command).toBe('gh');
+    expect(out.args).toEqual(['copilot', '--', '--yolo', '--no-ask-user']);
+  });
+
+  it('prepends prefix_args before claude flags and after no implicit reordering', () => {
+    const out = buildProviderArgs(
+      'claude',
+      'do the thing',
+      makeProviderConfig({ command: 'wrapper', prefix_args: ['claude-cli'] }),
+      'opus-4',
+    );
+    expect(out.command).toBe('wrapper');
+    expect(out.args).toEqual([
+      'claude-cli',
+      '--print',
+      '--dangerously-skip-permissions',
+      '--model', 'opus-4',
+      'do the thing',
+    ]);
+  });
+
+  it('prepends prefix_args before codex flags', () => {
+    const out = buildProviderArgs(
+      'codex',
+      'p',
+      makeProviderConfig({ command: 'wrap', prefix_args: ['codex-sub'] }),
+      undefined,
+    );
+    expect(out.args).toEqual(['codex-sub', '--quiet', '--full-auto', 'p']);
+  });
+
+  it('prepends prefix_args before generic-provider flags', () => {
+    const out = buildProviderArgs(
+      'unknown',
+      'p',
+      makeProviderConfig({ command: 'wrap', prefix_args: ['sub'] }),
+      'm-1',
+    );
+    expect(out.args).toEqual(['sub', '--model', 'm-1', 'p']);
+  });
+
+  it('omits prefix_args entirely when not set (codex/claude bare shape)', () => {
+    // Backward-compat: codex/claude configs without prefix_args
+    // produce the same argv shape as before.
+    const out = buildProviderArgs(
+      'codex',
+      'p',
+      makeProviderConfig({ command: 'codex' }),
+      undefined,
+    );
+    expect(out.args).toEqual(['--quiet', '--full-auto', 'p']);
+  });
+
+  it('handles a multi-element prefix_args array preserving order', () => {
+    const out = buildProviderArgs(
+      'copilot',
+      'p',
+      makeProviderConfig({
+        command: 'tool',
+        prefix_args: ['sub1', 'sub2', '--flag', 'value'],
+      }),
+      undefined,
+    );
+    expect(out.args).toEqual([
+      'sub1', 'sub2', '--flag', 'value',
+      '--yolo', '--no-ask-user',
+    ]);
   });
 });
 
@@ -612,17 +698,33 @@ describe('invokeAgent — heartbeat resolver integration', () => {
       }
     });
     try {
-      // Use the 'unknown' generic provider so buildProviderArgs only
-      // appends [prompt] (no claude/codex flags that would confuse
-      // the sleep command). `shell: true` is set inside invokeAgent,
-      // so the spawn turns into `sh -c 'sleep 0.5 # p'` — sleep
-      // ignores the commented suffix.
+      // DEP0190 — argv-mode spawn. We use `sleep` as the executable
+      // and pass `0.5` as a prefix_arg. The generic-provider branch
+      // in buildProviderArgs appends the prompt as a positional. We
+      // build the cfg so the prompt becomes a sleep duration that
+      // sleep silently ignores after the first numeric arg (POSIX
+      // sleep accepts one or more times and sums them; passing 'p'
+      // is non-numeric and errors on some implementations, so we
+      // use a separate strategy below).
+      //
+      // To stay portable across POSIX `sleep` implementations, we
+      // invoke `sh -c 'sleep 0.5'` as the executable token via the
+      // `node -e` escape: spawn `node` with a `-e` evaluator that
+      // sleeps via setTimeout. This is platform-deterministic and
+      // requires no shell.
       const cfg = makeMinimalConfig({
         pipeline: {
           providers: {
-            // 'unknown' is the generic-provider branch in buildProviderArgs.
-            // Trailing `#` comments out the appended prompt under shell:true.
-            unknown: { enabled: true, command: 'sleep 0.5 #' } as never,
+            // 'unknown' is the generic-provider branch in
+            // buildProviderArgs. Args become:
+            //   [...prefix_args, prompt]
+            //   = ['-e', 'setTimeout(()=>{},500)', 'p']
+            // Node ignores the trailing 'p' positional under `-e`.
+            unknown: {
+              enabled: true,
+              command: 'node',
+              prefix_args: ['-e', 'setTimeout(()=>{},500)'],
+            } as never,
           },
           persona_providers: {
             planner: ['unknown' as never], developer: ['unknown' as never],
@@ -690,6 +792,241 @@ describe('invokeAgent — heartbeat resolver integration', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEP0190 — argv-mode spawn boundary
+//
+// Phase 2 of specs/dep0190-shell-removal.md drops `shell: true` from
+// `invokeAgent`'s spawn call. These tests pin the new boundary by
+// spawning a real fixture child that echoes its argv as JSON, then
+// asserting the argv was delivered byte-identical.
+//
+// The fixture is a Node script: `node -e "echo argv as JSON"`. We
+// invoke it as the provider executable so the argv array reaches the
+// child unmodified. No real provider CLI is launched — the test runs
+// under POSIX-style argv semantics (see the top-of-file SUPPORT
+// BOUNDARY note in agent_invoke.ts).
+// ---------------------------------------------------------------------------
+
+// The fixture script echoes process.argv.slice(1) — the user-supplied
+// argv after the node binary.
+//
+// Under `node -e SCRIPT -- <args>`, the `--` separator terminates
+// node's own flag parsing (so suffix flags like `--print` or
+// `--quiet` reach the script as literal args rather than being
+// interpreted as node options). With `-e`, node does NOT insert the
+// usual `[eval]` script-name sentinel into `process.argv[1]`; the
+// first user arg lands at index 1 directly. Hence slice(1) — NOT
+// slice(2) as one might expect from the standard `node script.js`
+// layout.
+const ARGV_ECHO_SCRIPT = "process.stdout.write(JSON.stringify(process.argv.slice(1)))";
+
+function makeArgvEchoConfig(
+  provider: 'claude' | 'codex' | 'copilot' | 'generic',
+  extra: Partial<PipelineProviderConfig> = {},
+  pipelineExtras: Record<string, unknown> = {},
+): FactoryConfig {
+  // The provider key matches a real branch in buildProviderArgs.
+  // For 'generic' we pick a name that hits the default case.
+  const providerKey = provider === 'generic' ? 'unknown' : provider;
+  return makeMinimalConfig({
+    pipeline: {
+      providers: {
+        [providerKey]: {
+          enabled: true,
+          command: 'node',
+          // The `-e` flag and the inline script become leading argv;
+          // the trailing `--` terminates node's own flag parsing so
+          // suffix args like `--print` reach the script intact. The
+          // per-provider suffix flags + prompt land after.
+          prefix_args: ['-e', ARGV_ECHO_SCRIPT, '--'],
+          ...extra,
+        } as never,
+      },
+      persona_providers: {
+        planner: [providerKey as never],
+        developer: [providerKey as never],
+        code_reviewer: [providerKey as never],
+        qa: [providerKey as never],
+      },
+      completion_identities: { developer: 'x', code_reviewer: 'x', qa: 'x' },
+      max_review_iterations: 3,
+      ...pipelineExtras,
+    },
+  } as Partial<FactoryConfig>);
+}
+
+describe('invokeAgent — argv-mode spawn (DEP0190)', () => {
+  it('claude provider: argv reaches the child as the literal prefix + suffix sequence', async () => {
+    const cfg = makeArgvEchoConfig('claude');
+    const result = await invokeAgent('claude', 'hello world', cfg);
+    expect(result.exit_code, `stderr was: ${result.stderr}`).toBe(0);
+    // process.argv.slice(2) skips the node binary and the script
+    // sentinel `[eval]`, so the echo carries the user-supplied args
+    // verbatim (everything after our `--` separator).
+    const echoed = JSON.parse(result.stdout) as string[];
+    expect(echoed).toEqual([
+      '--print',
+      '--dangerously-skip-permissions',
+      'hello world',
+    ]);
+  });
+
+  it('codex provider: argv reaches the child verbatim', async () => {
+    const cfg = makeArgvEchoConfig('codex');
+    const result = await invokeAgent('codex', 'p', cfg);
+    expect(result.exit_code, `stderr was: ${result.stderr}`).toBe(0);
+    const echoed = JSON.parse(result.stdout) as string[];
+    expect(echoed).toEqual(['--quiet', '--full-auto', 'p']);
+  });
+
+  it('copilot provider: prompt is delivered via stdin, NOT as an argv element', async () => {
+    // Copilot's contract: prompt is sent via stdin to dodge OS
+    // command-line length limits. The argv echo proves it: the
+    // suffix carries only the copilot flags, no prompt.
+    const cfg = makeArgvEchoConfig('copilot');
+    const result = await invokeAgent('copilot', 'this-prompt-should-go-to-stdin', cfg);
+    expect(result.exit_code, `stderr was: ${result.stderr}`).toBe(0);
+    const echoed = JSON.parse(result.stdout) as string[];
+    expect(echoed).toEqual(['--yolo', '--no-ask-user']);
+    // The prompt is NOT in argv (the assert above is exact-match).
+    expect(echoed).not.toContain('this-prompt-should-go-to-stdin');
+  });
+
+  it('generic provider: argv reaches the child verbatim with prompt as positional', async () => {
+    const cfg = makeArgvEchoConfig('generic');
+    const result = await invokeAgent('unknown' as never, 'p-generic', cfg);
+    expect(result.exit_code, `stderr was: ${result.stderr}`).toBe(0);
+    const echoed = JSON.parse(result.stdout) as string[];
+    expect(echoed).toEqual(['p-generic']);
+  });
+
+  it('delivers prompts containing spaces, single quotes, double quotes, backticks, and newlines byte-identical', async () => {
+    // Without shell:true, the OS argv contract handles every shell
+    // metacharacter as a literal byte in the argument. No escaping
+    // needed; we just assert the bytes survive round-trip.
+    const trickyPrompts = [
+      'has spaces',
+      "has 'single quotes'",
+      'has "double quotes"',
+      'has `back ticks`',
+      'has $varlike substr',
+      'embedded\nnewline',
+      'has;semicolon;and|pipe&ampersand',
+      'unicode: 🦀 ñ é',
+    ];
+    for (const prompt of trickyPrompts) {
+      const cfg = makeArgvEchoConfig('codex');
+      const result = await invokeAgent('codex', prompt, cfg);
+      expect(result.exit_code, `for prompt ${JSON.stringify(prompt)}; stderr=${result.stderr}`).toBe(0);
+      const echoed = JSON.parse(result.stdout) as string[];
+      // The prompt is the LAST argv element (codex suffix is
+      // ['--quiet','--full-auto', prompt]).
+      expect(echoed[echoed.length - 1], `byte-identical delivery of ${JSON.stringify(prompt)}`)
+        .toBe(prompt);
+    }
+  });
+
+  it('does NOT emit DEP0190 deprecation warnings during a normal invocation', async () => {
+    // Node's `warning` event is process-global. We attach a scoped
+    // listener for the duration of this single invocation, capture
+    // any `code === 'DEP0190'` warnings, and detach. Other tests in
+    // the file run sequentially within vitest's default
+    // configuration; we additionally filter on the DEP0190 code so
+    // unrelated warnings (e.g. ExperimentalWarning) do not trip the
+    // assertion.
+    const dep0190Warnings: NodeJS.ErrnoException[] = [];
+    const listener = (warning: NodeJS.ErrnoException): void => {
+      if ((warning as unknown as { code?: string }).code === 'DEP0190') {
+        dep0190Warnings.push(warning);
+      }
+    };
+    process.on('warning', listener);
+    try {
+      const cfg = makeArgvEchoConfig('claude');
+      const result = await invokeAgent('claude', 'p', cfg);
+      expect(result.exit_code).toBe(0);
+      // Give Node a microtask to flush any pending warnings before
+      // we tear down the listener. The warning event is emitted
+      // synchronously inside `child_process.spawn`'s argv-validation
+      // path when shell:true is combined with array args, so by the
+      // time the child has exited any DEP0190 would already have
+      // fired.
+      await new Promise<void>((r) => setImmediate(r));
+    } finally {
+      process.off('warning', listener);
+    }
+    expect(dep0190Warnings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEP0190 — executable path with internal whitespace
+//
+// Under `shell: false`, `command` is a literal path — internal
+// whitespace is part of the path, not a tokenizer. We exercise this
+// by creating a temp directory whose name contains a space, copying
+// a node-fixture executable into it, and pointing the provider's
+// `command` at the absolute path. The argv echo proves the
+// invocation succeeded.
+// ---------------------------------------------------------------------------
+
+describe('invokeAgent — absolute path with internal whitespace (DEP0190)', () => {
+  let tempDir: string;
+  let fixturePath: string;
+
+  beforeAll(() => {
+    // The OS temp root differs by platform; we create a child dir
+    // whose NAME contains a space. The full path therefore has
+    // whitespace inside it.
+    const root = mkdtempSync(join(tmpdir(), 'factory-dep0190-'));
+    const subdir = join(root, 'dir with space');
+    mkdirSync(subdir, { recursive: true });
+    fixturePath = join(subdir, 'argv-echo.js');
+    // A node script that echoes argv as JSON. We invoke it via the
+    // node interpreter, but to exercise "command is an absolute
+    // path with whitespace" we wrap it in a shebanged executable
+    // wrapper script. On POSIX, a #!/usr/bin/env node header turns
+    // the .js file into an executable when chmod'd.
+    writeFileSync(
+      fixturePath,
+      '#!/usr/bin/env node\n' +
+      'process.stdout.write(JSON.stringify(process.argv.slice(2)));\n',
+      'utf-8',
+    );
+    chmodSync(fixturePath, 0o755);
+    tempDir = root;
+  });
+
+  afterAll(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('spawns an executable at an absolute path containing spaces (argv-mode, no tokenization)', async () => {
+    // The whole point: a path with whitespace must be treated as one
+    // executable token, not split. Under `shell: true` it would have
+    // been split by the shell; under argv-mode spawn it is one
+    // literal path.
+    const cfg = makeMinimalConfig({
+      pipeline: {
+        providers: {
+          codex: { enabled: true, command: fixturePath },
+        },
+        persona_providers: {
+          planner: ['codex'], developer: ['codex'],
+          code_reviewer: ['codex'], qa: ['codex'],
+        },
+        completion_identities: { developer: 'x', code_reviewer: 'x', qa: 'x' },
+        max_review_iterations: 3,
+      },
+    } as Partial<FactoryConfig>);
+    const result = await invokeAgent('codex', 'p', cfg);
+    expect(result.exit_code, `stderr was: ${result.stderr}`).toBe(0);
+    // The fixture echoed its argv. codex's suffix is
+    // ['--quiet','--full-auto',prompt].
+    expect(JSON.parse(result.stdout)).toEqual(['--quiet', '--full-auto', 'p']);
   });
 });
 

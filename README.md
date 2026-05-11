@@ -132,7 +132,8 @@ Edit `factory.config.json` at the project root:
       },
       "copilot": {
         "enabled": false,
-        "command": "gh copilot --",
+        "command": "gh",
+        "prefix_args": ["copilot", "--"],
         "model_map": {
           "high": "claude-opus-4-6",
           "medium": "GPT-5.4",
@@ -167,11 +168,11 @@ is configured, the provider's default model is used.
 
 The pipeline supports multiple agent CLI providers:
 
-| Provider | Command | Notes |
+| Provider | Command (+ prefix_args) | Notes |
 |----------|---------|-------|
 | `claude` | `claude` | Anthropic Claude Code CLI |
 | `codex` | `codex` | OpenAI Codex CLI |
-| `copilot` | `gh copilot --` | GitHub Copilot CLI (multi-model via `model_map`) |
+| `copilot` | `gh` + `prefix_args: ["copilot", "--"]` | GitHub Copilot CLI (multi-model via `model_map`) |
 
 Each persona is mapped to a provider in `pipeline.persona_providers`.
 Custom providers can be added — any CLI that accepts a prompt argument works.

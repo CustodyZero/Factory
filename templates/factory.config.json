@@ -65,7 +65,8 @@
       },
       "copilot": {
         "enabled": false,
-        "command": "gh copilot --",
+        "command": "gh",
+        "prefix_args": ["copilot", "--"],
         "model_map": {
           "high": "claude-opus-4-6",
           "medium": "GPT-5.4",

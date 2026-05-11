@@ -37,7 +37,41 @@ export type ModelMap = { readonly [K in ModelTier]?: string };
 
 export interface PipelineProviderConfig {
   readonly enabled: boolean;
+  /**
+   * The provider executable. After loader normalization (see
+   * `normalizeProviderCommand`), this is always a single argv token —
+   * either a bare executable name resolved against `PATH` (`"gh"`,
+   * `"codex"`, `"claude"`) or an absolute path that may contain
+   * whitespace (e.g. `"/Applications/Tool With Space/bin/codex"`).
+   * Internal whitespace is preserved as part of the path; it is NOT
+   * tokenized.
+   *
+   * Legacy shape (DEP0190 migration): the on-disk `command` may be a
+   * bare name encoding leading argv as a single whitespace-separated
+   * string (e.g. `"gh copilot --"`). The loader detects this case —
+   * keyed on the absence of a path separator (`/`) plus presence of
+   * internal whitespace — whitespace-splits it once, normalizes to
+   * the split shape, and emits a deprecation warning. A `command`
+   * containing `/` is always a path and is preserved as one argv
+   * token regardless of internal whitespace. Downstream code only
+   * ever sees the split shape.
+   */
   readonly command: string;
+  /**
+   * DEP0190 shell removal — optional fixed leading argv elements
+   * prepended to every invocation (before the per-provider suffix
+   * flags). Used when a provider CLI requires sub-command-style
+   * invocation (e.g. `"gh copilot --"` splits into command=`"gh"` +
+   * prefix_args=`["copilot", "--"]`). When absent, the per-provider
+   * argv is built from the suffix flags alone.
+   *
+   * Each element is a literal argv token — no shell tokenization,
+   * no whitespace splitting. The legacy single-string `command`
+   * shape is still accepted at the loader boundary (with a
+   * deprecation warning) but is normalized into this field before
+   * any consumer sees it.
+   */
+  readonly prefix_args?: ReadonlyArray<string>;
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
   readonly model_map?: ModelMap;
@@ -203,6 +237,160 @@ export function findProjectRoot(): string {
 }
 
 /**
+ * DEP0190 shell removal — emit a single console.warn naming every
+ * provider that used the legacy whitespace-in-`command` shape during
+ * the current `loadConfig` call.
+ *
+ * The contract is "once per load, not once per provider per call":
+ * a config with multiple legacy-shape providers triggers ONE
+ * console.warn line listing them all. Repeated `loadConfig` calls
+ * each emit their own warning (the operator may have changed the
+ * file between calls); this is per-call, not per-process.
+ *
+ * Exported for unit tests that want to assert the exact message
+ * shape — not for direct use by other tools (which should rely on
+ * `loadConfig` doing this automatically).
+ */
+export function emitLegacyShapeWarning(
+  legacyShapeProviders: ReadonlyArray<{ name: string; rawCommand: string }>,
+): void {
+  // The message is shaped for an operator scanning their terminal.
+  // It must name the provider and the legacy value so the operator
+  // can find it in their config, and it must point at the migration
+  // target (specs/dep0190-shell-removal.md) so they know where to
+  // read more.
+  const entries = legacyShapeProviders
+    .map((p) => `'${p.name}' uses legacy shell-tokenized command ${JSON.stringify(p.rawCommand)}`)
+    .join('; ');
+  const example = legacyShapeProviders[0]!;
+  const exampleTokens = example.rawCommand.split(/[ \t]+/).filter((t) => t.length > 0);
+  const migrationHint = exampleTokens.length > 1
+    ? `Migrate to command: ${JSON.stringify(exampleTokens[0])}, prefix_args: ${JSON.stringify(exampleTokens.slice(1))}.`
+    : `Migrate to command: ${JSON.stringify(exampleTokens[0] ?? example.rawCommand)}, prefix_args: [<tokens>].`;
+  console.warn(
+    `[factory] DEP0190: ${entries}. ${migrationHint} ` +
+    `See specs/dep0190-shell-removal.md.`,
+  );
+}
+
+/**
+ * DEP0190 shell removal — normalize a raw provider config to the new
+ * shape (single-token `command` + optional `prefix_args` array).
+ *
+ * Accepts BOTH on-disk shapes. The two are disambiguated by whether
+ * `command` contains a path separator (`/`):
+ *
+ *   1. New shape (preferred). `command` is a single argv token,
+ *      treated as one filesystem path or executable name. Any of:
+ *        - bare name:                "gh", "codex"
+ *        - absolute POSIX path:       "/usr/bin/gh"
+ *        - absolute path w/ spaces:   "/Applications/Tool With Space/bin/codex"
+ *        - relative path:             "./local/tool"
+ *        - relative path w/ spaces:   "./local/tool with space"
+ *      `prefix_args` (if present) carries leading argv. Both passthrough
+ *      unchanged. No deprecation warning.
+ *
+ *   2. Legacy shape (DEP0190 migration). `command` is a bare name
+ *      containing internal whitespace, encoding leading argv as a
+ *      single string ("gh copilot --"). Detected ONLY when `command`
+ *      has NO `/` AND has internal whitespace. The loader
+ *      whitespace-splits it once: the first token becomes `command`,
+ *      the rest become `prefix_args`. Emits a one-shot deprecation
+ *      warning per `loadConfig` call via the `onLegacyShape` callback.
+ *
+ * The two shapes are ambiguous when both encodings collide — a
+ * bare-name command containing whitespace AND a separately-specified
+ * `prefix_args` array. That combination is rejected with a descriptive
+ * error. A path-with-spaces + `prefix_args` is NOT ambiguous: paths
+ * always passthrough, and `prefix_args` carries argv as documented.
+ *
+ * Returns the normalized `{ command, prefix_args }` pair (with
+ * `prefix_args` omitted when it is absent or empty). Pure — does no
+ * I/O of its own; the caller decides what to do with the warning
+ * signal.
+ *
+ * Windows paths (`C:\...`, backslash separators) are explicitly out of
+ * scope per the DEP0190 spec; Windows operators are expected to use
+ * WSL, where paths are POSIX.
+ */
+export function normalizeProviderCommand(
+  providerName: string,
+  rawCommand: string,
+  rawPrefixArgs: ReadonlyArray<string> | undefined,
+  onLegacyShape: (providerName: string, rawCommand: string) => void,
+): { command: string; prefix_args?: ReadonlyArray<string> } {
+  // Disambiguation rule (DEP0190 round-2 fix):
+  //
+  //   A `command` value is treated as a PATH (preserved as-is, one argv
+  //   token) when it contains any path separator character (`/`).
+  //   Otherwise — bare names like "gh", "codex", or legacy single-string
+  //   forms like "gh copilot --" — whitespace is interpreted as the
+  //   legacy tokenizer.
+  //
+  // Why path-separator presence and not just `startsWith('/')`:
+  //   - Absolute POSIX paths can contain internal whitespace
+  //     ("/Applications/Tool With Space/bin/codex"). Whitespace alone
+  //     must NOT trigger the legacy split, or operators on macOS lose
+  //     legitimate paths.
+  //   - Relative paths ("./local/tool", "./local/tool with space") are
+  //     equally legitimate under shell:false spawn. They contain `/`
+  //     but do not start with `/`.
+  //
+  // Windows-style paths (`C:\...`, backslashes) are explicitly OUT OF
+  // SCOPE per the spec — Windows operators use WSL, where paths are
+  // POSIX. We do not detect backslash as a path separator.
+  //
+  // The legacy whitespace tokenizer uses [ \t] (space + tab) — not \s —
+  // so newlines and exotic unicode whitespace surface as literal
+  // characters in `command` and fail visibly at spawn rather than being
+  // silently consumed.
+  const looksLikePath = rawCommand.includes('/');
+  const hasInternalWhitespace = /[ \t]/.test(rawCommand);
+  const isLegacyShape = !looksLikePath && hasInternalWhitespace;
+
+  if (isLegacyShape && rawPrefixArgs !== undefined) {
+    // Ambiguous shape: the operator wrote BOTH the legacy
+    // whitespace-string form AND the new array form. We refuse to
+    // guess which they meant; loading must fail with a clear message.
+    //
+    // NOTE: a path with spaces + prefix_args is NOT ambiguous — it is
+    // the documented new shape (an absolute/relative path executable
+    // with its own leading argv), and falls through to the passthrough
+    // branch below.
+    throw new Error(
+      `Provider '${providerName}' has both a whitespace-containing command ` +
+      `(${JSON.stringify(rawCommand)}) and a 'prefix_args' array. These are ` +
+      `mutually exclusive: pick one shape. Recommended: set command to the ` +
+      `executable token only (the first word) and put the remaining tokens ` +
+      `in prefix_args. See specs/dep0190-shell-removal.md.`,
+    );
+  }
+
+  if (isLegacyShape) {
+    // Legacy single-string shape — whitespace-split once. No quoting
+    // support: the factory has only ever shipped flat space-separated
+    // strings in this position ("codex", "claude", "gh copilot --"),
+    // and shell-feature emulation is explicitly out of scope (per the
+    // spec's "Out of scope" section). If an operator's command relied
+    // on shell quoting, the migration target is the explicit array.
+    const tokens = rawCommand.split(/[ \t]+/).filter((t) => t.length > 0);
+    onLegacyShape(providerName, rawCommand);
+    return tokens.length > 1
+      ? { command: tokens[0]!, prefix_args: tokens.slice(1) }
+      : { command: tokens[0] ?? rawCommand };
+  }
+
+  // New shape (path, bare name, or path-with-spaces) — passthrough.
+  // We keep prefix_args undefined when the operator omitted it; passing
+  // it through verbatim preserves the distinction between "absent" and
+  // "empty array" for any future schema-level checks (the JSON Schema
+  // already enforces minItems: 1 when present).
+  return rawPrefixArgs !== undefined && rawPrefixArgs.length > 0
+    ? { command: rawCommand, prefix_args: rawPrefixArgs }
+    : { command: rawCommand };
+}
+
+/**
  * Phase 7 — normalize a `persona_providers.<persona>` raw value
  * (string | string[] | undefined) to a non-empty
  * `ReadonlyArray<PipelineProvider>`.
@@ -271,7 +459,14 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
       copilot: {
         enabled: false,
-        command: 'gh copilot --',
+        // DEP0190 — defaults use the new split shape (command =
+        // executable, prefix_args = leading argv). An operator whose
+        // on-disk config still carries the legacy whitespace string
+        // will see their value override the default at merge time,
+        // and the loader's `normalizeProviderCommand` step will
+        // surface the deprecation warning for them.
+        command: 'gh',
+        prefix_args: ['copilot', '--'],
         model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: 'claude-haiku-4-5' },
       },
     };
@@ -306,8 +501,60 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       | undefined;
     const rawProviders = rawPipeline?.providers as Record<string, Partial<PipelineProviderConfig>> | undefined;
     const mergedProviders: Record<string, PipelineProviderConfig> = {};
+    // DEP0190 — track which providers used the legacy whitespace-in-
+    // command shape so the warning aggregates into a single
+    // console.warn per loadConfig call. The warning fires once per
+    // load (not once per provider per call), matching the contract
+    // pinned by the deprecation-warning-frequency tests.
+    const legacyShapeProviders: Array<{ name: string; rawCommand: string }> = [];
+    const recordLegacyShape = (name: string, rawCommand: string): void => {
+      legacyShapeProviders.push({ name, rawCommand });
+    };
     for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
-      mergedProviders[key] = { ...defaultProviders[key], ...rawProviders?.[key] } as PipelineProviderConfig;
+      // Normalize (command, prefix_args) at the RAW boundary, before
+      // merging with defaults. If we merged first, an operator's
+      // legacy-shape command would collide with the default's
+      // already-split prefix_args (copilot) and trigger the
+      // ambiguous-shape rejection — which is not what the operator
+      // intended. The operator's command overrides the default;
+      // their prefix_args (or absence thereof) overrides the
+      // default's. Normalization runs on the operator's raw entry
+      // only when they supplied a command of their own.
+      const rawEntry = rawProviders?.[key];
+      const defaultEntry = defaultProviders[key];
+      let normalized: { command: string; prefix_args?: ReadonlyArray<string> } | undefined;
+      if (rawEntry?.command !== undefined) {
+        normalized = normalizeProviderCommand(
+          key,
+          rawEntry.command,
+          rawEntry.prefix_args,
+          recordLegacyShape,
+        );
+      }
+      // Compose the final entry: defaults first, then raw overrides,
+      // then the normalized (command, prefix_args) on top. When the
+      // operator did not provide their own command, the default
+      // (already in the new shape) wins.
+      const composed: PipelineProviderConfig = {
+        ...defaultEntry,
+        ...rawEntry,
+        ...(normalized !== undefined
+          ? normalized.prefix_args !== undefined
+            ? { command: normalized.command, prefix_args: normalized.prefix_args }
+            : { command: normalized.command, prefix_args: undefined }
+          : {}),
+      } as PipelineProviderConfig;
+      // The conditional `prefix_args: undefined` above intentionally
+      // clears the field when the operator's command had no
+      // whitespace and they supplied no prefix_args — preventing a
+      // stale default `prefix_args` from leaking through when the
+      // operator wrote the new shape with a single-token command.
+      mergedProviders[key] = composed.prefix_args === undefined
+        ? (({ prefix_args, ...rest }) => rest as PipelineProviderConfig)(composed)
+        : composed;
+    }
+    if (legacyShapeProviders.length > 0) {
+      emitLegacyShapeWarning(legacyShapeProviders);
     }
     // Phase 5.7: cost_caps and rate_card pass through unchanged from
     // the raw config. Both are optional and have no defaults — absent
