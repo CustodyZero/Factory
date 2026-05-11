@@ -13,6 +13,7 @@ import {
   invokeAgent,
   _startHeartbeat,
   HEARTBEAT_INTERVAL_MS,
+  resolveHeartbeatInterval,
 } from '../pipeline/agent_invoke.js';
 import * as fmt from '../output.js';
 import type { FactoryConfig, PipelineProviderConfig } from '../config.js';
@@ -518,3 +519,177 @@ describe('heartbeat — configurable cadence', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveHeartbeatInterval — the pure resolution helper. Codex round-1
+// finding: the previous configurable-cadence tests only exercised
+// `_startHeartbeat` directly, which would still pass if `invokeAgent`
+// ignored `config.pipeline.heartbeat_interval_ms`. Extracting and
+// pinning the resolver gives a NAMED contract; the integration test
+// below pins that `invokeAgent` actually consumes it.
+// ---------------------------------------------------------------------------
+
+describe('resolveHeartbeatInterval (pure)', () => {
+  it('returns the configured value when pipeline.heartbeat_interval_ms is set', () => {
+    const cfg = makeMinimalConfig({
+      pipeline: {
+        providers: { claude: { enabled: true, command: 'claude' } },
+        persona_providers: {
+          planner: ['claude'], developer: ['claude'],
+          code_reviewer: ['claude'], qa: ['claude'],
+        },
+        completion_identities: {
+          developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        max_review_iterations: 3,
+        heartbeat_interval_ms: 5_000,
+      },
+    } as Partial<FactoryConfig>);
+    expect(resolveHeartbeatInterval(cfg)).toBe(5_000);
+  });
+
+  it('returns the HEARTBEAT_INTERVAL_MS default (30000) when the field is absent', () => {
+    const cfg = makeMinimalConfig({
+      pipeline: {
+        providers: { claude: { enabled: true, command: 'claude' } },
+        persona_providers: {
+          planner: ['claude'], developer: ['claude'],
+          code_reviewer: ['claude'], qa: ['claude'],
+        },
+        completion_identities: {
+          developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+        },
+        max_review_iterations: 3,
+        // heartbeat_interval_ms intentionally omitted.
+      },
+    } as Partial<FactoryConfig>);
+    expect(resolveHeartbeatInterval(cfg)).toBe(HEARTBEAT_INTERVAL_MS);
+    expect(resolveHeartbeatInterval(cfg)).toBe(30_000);
+  });
+
+  it('returns the default when the pipeline block is undefined', () => {
+    const cfg = makeMinimalConfig({ pipeline: undefined });
+    expect(resolveHeartbeatInterval(cfg)).toBe(HEARTBEAT_INTERVAL_MS);
+  });
+
+  it('returns the default when config itself is undefined', () => {
+    expect(resolveHeartbeatInterval(undefined)).toBe(HEARTBEAT_INTERVAL_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invokeAgent — heartbeat resolver integration. Pins that invokeAgent
+// actually consumes the configured heartbeat cadence. The previous
+// configurable-cadence tests exercised `_startHeartbeat` directly,
+// which would still pass if `invokeAgent` ignored
+// `config.pipeline.heartbeat_interval_ms`. Codex round-1 finding.
+//
+// Mechanism: drive `invokeAgent` against a child that lingers long
+// enough for the heartbeat to fire, with a very small override (50 ms).
+// Observe `fmt.log` calls — the heartbeat message MUST appear, proving
+// the override threaded all the way through to `setInterval`. With a
+// 30 s default and a child that exits in <500 ms, the heartbeat would
+// NEVER fire; with a 50 ms override it fires at least once before the
+// child exits. The signal is unambiguous: override-respected vs not.
+//
+// Spying on `_startHeartbeat` directly is not viable under ESM live
+// bindings (vitest can rewrite the namespace getter but invokeAgent
+// captured the function reference at module load). The behavioral
+// assertion below is end-to-end and equivalent: if `invokeAgent`
+// ignored the config, the spy would observe ZERO 'heartbeat' lines.
+// ---------------------------------------------------------------------------
+
+describe('invokeAgent — heartbeat resolver integration', () => {
+  it('passes the configured heartbeat_interval_ms through to the heartbeat timer (50ms override fires during a slow child; 30s default would not)', async () => {
+    // Spy on fmt.log to count heartbeat lines. We can't use fake
+    // timers because the child process is real; instead we use a
+    // very small override and a child that lingers long enough for
+    // one or more heartbeats to fire.
+    const heartbeatCalls: Array<{ channel: string; message: string }> = [];
+    const spy = vi.spyOn(fmt, 'log').mockImplementation((channel: string, message: string) => {
+      if (message.includes('still running')) {
+        heartbeatCalls.push({ channel, message });
+      }
+    });
+    try {
+      // Use the 'unknown' generic provider so buildProviderArgs only
+      // appends [prompt] (no claude/codex flags that would confuse
+      // the sleep command). `shell: true` is set inside invokeAgent,
+      // so the spawn turns into `sh -c 'sleep 0.5 # p'` — sleep
+      // ignores the commented suffix.
+      const cfg = makeMinimalConfig({
+        pipeline: {
+          providers: {
+            // 'unknown' is the generic-provider branch in buildProviderArgs.
+            // Trailing `#` comments out the appended prompt under shell:true.
+            unknown: { enabled: true, command: 'sleep 0.5 #' } as never,
+          },
+          persona_providers: {
+            planner: ['unknown' as never], developer: ['unknown' as never],
+            code_reviewer: ['unknown' as never], qa: ['unknown' as never],
+          },
+          completion_identities: {
+            developer: 'x', code_reviewer: 'x', qa: 'x',
+          },
+          max_review_iterations: 3,
+          heartbeat_interval_ms: 50,
+        },
+      } as Partial<FactoryConfig>);
+      const result = await invokeAgent('unknown' as never, 'p', cfg, 'high', undefined, {
+        message: "test agent still running for spec 'demo'...",
+        channel: 'plan',
+      });
+      expect(result.exit_code).toBe(0);
+
+      // With a 50 ms heartbeat over a 500 ms child, expect at least
+      // one heartbeat fire. With the 30 s default, ZERO would fire.
+      // This asymmetry IS the contract: the override threaded
+      // through `resolveHeartbeatInterval` to `_startHeartbeat`'s
+      // `intervalMs` parameter is the only thing that can flip this
+      // assertion from passing to failing.
+      expect(heartbeatCalls.length).toBeGreaterThanOrEqual(1);
+      expect(heartbeatCalls[0]!.channel).toBe('plan');
+      expect(heartbeatCalls[0]!.message).toBe(
+        "test agent still running for spec 'demo'...",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('does NOT pre-fire the heartbeat when the default (no override) is in play and the child finishes quickly', async () => {
+    // Mirror image of the test above: no override, fast child. The
+    // 30 s default means zero heartbeats during a ~10 ms spawn.
+    const heartbeatCalls: Array<{ channel: string; message: string }> = [];
+    const spy = vi.spyOn(fmt, 'log').mockImplementation((_channel: string, message: string) => {
+      if (message.includes('still running')) {
+        heartbeatCalls.push({ channel: _channel, message });
+      }
+    });
+    try {
+      const cfg = makeMinimalConfig({
+        pipeline: {
+          providers: { claude: { enabled: true, command: 'true' } },
+          persona_providers: {
+            planner: ['claude'], developer: ['claude'],
+            code_reviewer: ['claude'], qa: ['claude'],
+          },
+          completion_identities: {
+            developer: 'claude', code_reviewer: 'claude', qa: 'claude',
+          },
+          max_review_iterations: 3,
+          // heartbeat_interval_ms omitted — default applies.
+        },
+      } as Partial<FactoryConfig>);
+      const result = await invokeAgent('claude', 'p', cfg, 'high');
+      expect(result.exit_code).toBe(0);
+      // No override -> default (30 s) -> NO heartbeat for a fast child.
+      // Paired with the override test above, this isolates the override
+      // as the load-bearing input.
+      expect(heartbeatCalls).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+

@@ -88,6 +88,28 @@ import { computeCost, extractTokens, mergeRateCard } from './cost.js';
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 
 /**
+ * Resolve the heartbeat cadence for an invocation.
+ *
+ * Operator override wins: `pipeline.heartbeat_interval_ms` from the
+ * factory config (validated as integer >= 1000 by the ajv schema).
+ * Otherwise the load-bearing default (`HEARTBEAT_INTERVAL_MS`, 30 s)
+ * applies. This pure function is the single named resolution point
+ * for the cadence — extracted so tests can pin it directly AND verify
+ * that `invokeAgent` actually consumes it. Without an extracted
+ * helper a test could only assert on `_startHeartbeat` directly and
+ * would still pass if `invokeAgent` silently ignored the config.
+ *
+ * `config` is typed optional because the early-return paths of
+ * `invokeAgent` are reachable with a config that has no pipeline
+ * block (configuration-error branches). Returning the default in that
+ * case mirrors the production behavior: a misconfigured pipeline
+ * never reaches the spawn path that would consume the cadence.
+ */
+export function resolveHeartbeatInterval(config: FactoryConfig | undefined): number {
+  return config?.pipeline?.heartbeat_interval_ms ?? HEARTBEAT_INTERVAL_MS;
+}
+
+/**
  * Optional heartbeat context: what label to print and which packet/
  * spec is in flight. Each call site populates this with persona-
  * specific text (e.g. "planner still running for spec '<id>'..."
@@ -393,7 +415,8 @@ export function invokeAgent(
 
     // Heartbeat: every `heartbeatInterval` ms, emit one progress line.
     // Cleared when the child closes. The cadence is unit-tested via
-    // _startHeartbeat directly; here we just consume the helper.
+    // _startHeartbeat directly; the resolution is unit-tested via
+    // `resolveHeartbeatInterval`. Here we just thread them together.
     //
     // Resolution: operator override (`pipeline.heartbeat_interval_ms`)
     // wins; otherwise the load-bearing default (30 s) applies. The
@@ -401,8 +424,7 @@ export function invokeAgent(
     // — defense-in-depth against a hand-edited config that bypassed
     // ajv would risk masking a real misconfiguration (CLAUDE.md §3.3
     // failures must be visible).
-    const heartbeatInterval =
-      pipelineConfig.heartbeat_interval_ms ?? HEARTBEAT_INTERVAL_MS;
+    const heartbeatInterval = resolveHeartbeatInterval(config);
     const heartbeatTimer = _startHeartbeat(provider, heartbeat, heartbeatInterval);
 
     const cleanup = (): void => {
