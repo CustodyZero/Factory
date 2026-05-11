@@ -17,3 +17,43 @@ No blocking findings. Frontmatter matches the local convention, all seven requir
 ## Round budget
 
 2 rounds remaining (not needed — proceeding to QA).
+
+# Reviewer-CLI Exception Decision Doc QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+All 10 acceptance criteria PASS, all 10 specific checks PASS.
+
+## Critical verifications
+
+- Frontmatter (lines 1-5) matches existing decision-doc convention exactly.
+- All 7 required sections present in expected order via `grep ^##`.
+- 3 alternatives each named and rejected with concrete reasoning.
+- Integrity protection section names the exported `REVIEW_DECISION_MISSING_MARKER` constant, exact substring matching, budget-0 escalation, AND explicitly couples prompt + recovery scenario ("the architectural choice is honest only as long as both exist", line 61).
+- All 4 referenced files exist (`single_entry_pipeline.md`, `recovery.ts`, `prompts.ts`, `develop_phase.ts`).
+- No code changes; tests + validate unaffected.
+- 68 lines, no emojis, dense without filler.
+
+## Strongest qualities (independent assessment)
+
+1. **The coupling argument in Integrity Protection is load-bearing and the doc nails it.** Names both halves of the safety net (prompt instruction + ReviewDecisionMissing recipe) and explicitly states the exception fails if either is removed. This is what makes the document a decision rather than an apology.
+2. **Alternative (a) reasoning ties the rejection directly back to the parent decision's own justification** ("the same reason in every other lifecycle transition"). Consistency with `single_entry_pipeline.md` is argued, not asserted.
+
+# Reviewer-CLI Exception Decision Doc Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-11
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Decision doc formalizing the reviewer-CLI exception identified during the convergence pass. Single commit. 68 lines. No code touched.
+
+- 1 review round (codex APPROVE on round 1).
+- Independent QA APPROVE on all 10 criteria + 10 specific checks.
+
+## Round budget
+
+1 of 3 rounds used. Bounded-iteration model honored (APPROVE first round).
