@@ -279,7 +279,8 @@ function makeConfig(overrides: ConfigOverrides = {}): FactoryConfig {
         },
         copilot: {
           enabled: true,
-          command: 'gh copilot --',
+          command: 'gh',
+          prefix_args: ['copilot', '--'],
           model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: 'claude-haiku-4-5' },
           ...(overrides.copilotModelFailover !== undefined
             ? { model_failover: overrides.copilotModelFailover }

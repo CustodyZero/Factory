@@ -241,7 +241,8 @@ Edit the template at your project root:
       },
       "copilot": {
         "enabled": false,
-        "command": "gh copilot --",
+        "command": "gh",
+        "prefix_args": ["copilot", "--"],
         "model_map": {
           "high": "claude-opus-4-6",
           "medium": "GPT-5.4",
@@ -280,6 +281,58 @@ Edit the template at your project root:
 | `completed_by_default` | identity | Default identity written into completion records |
 | `personas` | object | Planner, developer, code_reviewer, and qa persona defaults |
 | `pipeline` | object | Provider mappings, completion identities, review iteration limits |
+
+### Provider configuration
+
+Each entry under `pipeline.providers` describes one CLI:
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Whether the provider is available for selection |
+| `command` | string | The single executable token (bare name resolved against `PATH`, or absolute path) |
+| `prefix_args` | string[] | Optional fixed leading argv elements prepended to every invocation |
+| `sandbox` | string | (codex) sandbox mode: `read-only`, `workspace-write`, `danger-full-access` |
+| `permission_mode` | string | (claude) permission gate: `acceptEdits`, `bypassPermissions`, ... |
+| `model_map` | object | Per-tier (`high`/`medium`/`low`) model id mapping |
+| `model_failover` | string[] | (abstraction providers) within-CLI failover model order |
+
+**`command` is one argv token.** Under POSIX-style argv-mode spawn,
+`command` is the executable path, not a shell-tokenized string.
+Whitespace inside `command` is preserved as part of the path. If your
+provider requires a sub-command (e.g. `gh copilot --`), put the
+sub-command in `prefix_args`:
+
+```json
+"copilot": {
+  "enabled": true,
+  "command": "gh",
+  "prefix_args": ["copilot", "--"]
+}
+```
+
+**Operator migration note (DEP0190).** If your `factory.config.json`
+has a `command` string containing whitespace (the legacy shape, e.g.
+`"command": "gh copilot --"`), you will see a deprecation warning on
+load:
+
+```
+[factory] DEP0190: 'copilot' uses legacy shell-tokenized command "gh copilot --".
+Migrate to command: "gh", prefix_args: ["copilot","--"]. See specs/dep0190-shell-removal.md.
+```
+
+Migrate by splitting the string: the first token becomes `command`,
+the remaining tokens become `prefix_args`. The legacy shape continues
+to load (kept for backward compatibility with hand-edited configs)
+but will be removed in a future spec; the migration target above is
+the supported shape going forward. See
+[`specs/dep0190-shell-removal.md`](../specs/dep0190-shell-removal.md)
+for the rationale and the full migration story.
+
+The factory operates under **POSIX-style argv-mode spawn**. Windows
+operators run under WSL (or equivalent). Native-Windows `.cmd`/`.bat`
+provider wrappers are not supported; install provider CLIs as
+POSIX-spawnable binaries (e.g. via `gh`, `claude`, `codex`'s native
+installers under WSL).
 
 ### Infrastructure patterns
 
@@ -597,7 +650,8 @@ models (e.g., `copilot`). It is an optional ordered list of model IDs:
 
 ```json
 "copilot": {
-  "command": "gh copilot --",
+  "command": "gh",
+  "prefix_args": ["copilot", "--"],
   "model_map": {
     "high": "claude-opus-4-6",
     "medium": "GPT-5.4",
