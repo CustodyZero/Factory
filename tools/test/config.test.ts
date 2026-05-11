@@ -351,17 +351,14 @@ describe('normalizeProviderCommand (DEP0190)', () => {
     ).toThrow(/both a whitespace-containing command.*prefix_args.*mutually exclusive/i);
   });
 
-  it('preserves absolute paths containing spaces as a single token (no whitespace tokenization)', () => {
-    // Absolute paths with internal spaces are legitimate (e.g.
-    // macOS /Applications/Tool With Space/...) under shell:false. The
-    // detector triggers on any internal whitespace, so this case
-    // falls into the legacy branch and the token split happens. THIS
-    // IS THE LIMIT of the legacy normalization: an operator with an
-    // absolute path containing spaces must migrate to the new shape
-    // explicitly (command + prefix_args). The warning is what
-    // surfaces this; the test pins the behavior so a future
-    // reviewer doesn't accidentally claim the legacy path "just
-    // works" for paths with spaces.
+  it('preserves absolute paths containing spaces as a single argv token (path-separator disambiguates from legacy)', () => {
+    // Absolute POSIX paths with internal spaces are legitimate
+    // (e.g. macOS /Applications/Tool With Space/...) under
+    // shell:false. The disambiguation rule (round-2 fix) keys on
+    // the presence of a path separator (`/`): commands containing
+    // `/` are paths and pass through unchanged; whitespace alone
+    // no longer triggers the legacy split. No deprecation warning
+    // fires for path-shaped commands.
     const recorded: Array<{ name: string; rawCommand: string }> = [];
     const out = normalizeProviderCommand(
       'codex',
@@ -369,13 +366,54 @@ describe('normalizeProviderCommand (DEP0190)', () => {
       undefined,
       (name, rawCommand) => { recorded.push({ name, rawCommand }); },
     );
-    // The legacy branch fired (split the whitespace).
-    expect(out.command).toBe('/Applications/Tool');
-    expect(out.prefix_args).toEqual(['With', 'Space/bin/codex']);
-    expect(recorded.length).toBe(1);
-    // -- This documents the migration boundary: the operator must
-    // switch to the new shape to keep the path together. See the
-    // schema's prefix_args description.
+    expect(out.command).toBe('/Applications/Tool With Space/bin/codex');
+    expect(out.prefix_args).toBeUndefined();
+    // Path shape — not legacy — so no warning callback fired.
+    expect(recorded).toEqual([]);
+  });
+
+  it('preserves absolute paths containing spaces together with explicit prefix_args (no ambiguous-shape rejection)', () => {
+    // Path + prefix_args is the documented new shape for an
+    // absolute-path executable carrying leading argv. The
+    // ambiguous-shape rejection must NOT fire here: that rule is
+    // only for bare-name legacy collisions.
+    const recorded: Array<{ name: string; rawCommand: string }> = [];
+    const out = normalizeProviderCommand(
+      'codex',
+      '/Applications/Tool With Space/bin/codex',
+      ['--flag'],
+      (name, rawCommand) => { recorded.push({ name, rawCommand }); },
+    );
+    expect(out.command).toBe('/Applications/Tool With Space/bin/codex');
+    expect(out.prefix_args).toEqual(['--flag']);
+    expect(recorded).toEqual([]);
+  });
+
+  it('preserves relative paths (with or without spaces) as a single argv token', () => {
+    // Relative paths contain `/` but do not start with `/` — the
+    // path-separator rule covers them too. Both forms (with and
+    // without internal whitespace) passthrough unchanged.
+    const recordedClean: Array<{ name: string; rawCommand: string }> = [];
+    const outClean = normalizeProviderCommand(
+      'tool',
+      './local/tool',
+      undefined,
+      (name, rawCommand) => { recordedClean.push({ name, rawCommand }); },
+    );
+    expect(outClean.command).toBe('./local/tool');
+    expect(outClean.prefix_args).toBeUndefined();
+    expect(recordedClean).toEqual([]);
+
+    const recordedSpace: Array<{ name: string; rawCommand: string }> = [];
+    const outSpace = normalizeProviderCommand(
+      'tool',
+      './local/tool with space',
+      undefined,
+      (name, rawCommand) => { recordedSpace.push({ name, rawCommand }); },
+    );
+    expect(outSpace.command).toBe('./local/tool with space');
+    expect(outSpace.prefix_args).toBeUndefined();
+    expect(recordedSpace).toEqual([]);
   });
 });
 

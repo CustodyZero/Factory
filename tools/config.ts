@@ -46,11 +46,15 @@ export interface PipelineProviderConfig {
    * Internal whitespace is preserved as part of the path; it is NOT
    * tokenized.
    *
-   * Legacy shape (DEP0190 migration): the on-disk `command` may
-   * contain whitespace and encode leading argv (e.g.
-   * `"gh copilot --"`). The loader detects this, whitespace-splits it
-   * once, normalizes to the split shape, and emits a deprecation
-   * warning. Downstream code only ever sees the split shape.
+   * Legacy shape (DEP0190 migration): the on-disk `command` may be a
+   * bare name encoding leading argv as a single whitespace-separated
+   * string (e.g. `"gh copilot --"`). The loader detects this case —
+   * keyed on the absence of a path separator (`/`) plus presence of
+   * internal whitespace — whitespace-splits it once, normalizes to
+   * the split shape, and emits a deprecation warning. A `command`
+   * containing `/` is always a path and is preserved as one argv
+   * token regardless of internal whitespace. Downstream code only
+   * ever sees the split shape.
    */
   readonly command: string;
   /**
@@ -273,30 +277,41 @@ export function emitLegacyShapeWarning(
  * DEP0190 shell removal — normalize a raw provider config to the new
  * shape (single-token `command` + optional `prefix_args` array).
  *
- * Accepts BOTH on-disk shapes:
+ * Accepts BOTH on-disk shapes. The two are disambiguated by whether
+ * `command` contains a path separator (`/`):
  *
- *   1. New shape (preferred): `command` is a single argv token —
- *      either bare ("gh", "codex") or an absolute path that may
- *      contain whitespace ("/Applications/Tool With Space/bin/codex").
- *      `prefix_args` carries any leading argv. Loaded unchanged.
+ *   1. New shape (preferred). `command` is a single argv token,
+ *      treated as one filesystem path or executable name. Any of:
+ *        - bare name:                "gh", "codex"
+ *        - absolute POSIX path:       "/usr/bin/gh"
+ *        - absolute path w/ spaces:   "/Applications/Tool With Space/bin/codex"
+ *        - relative path:             "./local/tool"
+ *        - relative path w/ spaces:   "./local/tool with space"
+ *      `prefix_args` (if present) carries leading argv. Both passthrough
+ *      unchanged. No deprecation warning.
  *
- *   2. Legacy shape (DEP0190 migration): `command` contains internal
- *      whitespace and encodes leading argv as a single string (e.g.
- *      "gh copilot --"). The loader whitespace-splits it once: the
- *      first token becomes `command`, the rest become `prefix_args`.
- *      This shape is normalized in-memory; downstream code only sees
- *      the split shape. Emits a one-shot deprecation warning per
- *      `loadConfig` call via the `onLegacyShape` callback.
+ *   2. Legacy shape (DEP0190 migration). `command` is a bare name
+ *      containing internal whitespace, encoding leading argv as a
+ *      single string ("gh copilot --"). Detected ONLY when `command`
+ *      has NO `/` AND has internal whitespace. The loader
+ *      whitespace-splits it once: the first token becomes `command`,
+ *      the rest become `prefix_args`. Emits a one-shot deprecation
+ *      warning per `loadConfig` call via the `onLegacyShape` callback.
  *
- * The two shapes are ambiguous when both are encoded — a `command`
- * with internal whitespace AND a separately-specified `prefix_args`.
- * That combination is rejected here with a descriptive error. The
- * operator must choose one shape.
+ * The two shapes are ambiguous when both encodings collide — a
+ * bare-name command containing whitespace AND a separately-specified
+ * `prefix_args` array. That combination is rejected with a descriptive
+ * error. A path-with-spaces + `prefix_args` is NOT ambiguous: paths
+ * always passthrough, and `prefix_args` carries argv as documented.
  *
  * Returns the normalized `{ command, prefix_args }` pair (with
  * `prefix_args` omitted when it is absent or empty). Pure — does no
  * I/O of its own; the caller decides what to do with the warning
  * signal.
+ *
+ * Windows paths (`C:\...`, backslash separators) are explicitly out of
+ * scope per the DEP0190 spec; Windows operators are expected to use
+ * WSL, where paths are POSIX.
  */
 export function normalizeProviderCommand(
   providerName: string,
@@ -304,18 +319,44 @@ export function normalizeProviderCommand(
   rawPrefixArgs: ReadonlyArray<string> | undefined,
   onLegacyShape: (providerName: string, rawCommand: string) => void,
 ): { command: string; prefix_args?: ReadonlyArray<string> } {
-  // The legacy-shape detector keys on internal whitespace in `command`.
-  // We use a strict whitespace regex (space + tab) rather than \s so
-  // newlines or unusual unicode whitespace are NOT silently treated as
-  // tokenizers (they would have been broken under the old shell:true
-  // path too, depending on the shell — better to surface them as
-  // literal characters in `command` and let spawn fail visibly).
+  // Disambiguation rule (DEP0190 round-2 fix):
+  //
+  //   A `command` value is treated as a PATH (preserved as-is, one argv
+  //   token) when it contains any path separator character (`/`).
+  //   Otherwise — bare names like "gh", "codex", or legacy single-string
+  //   forms like "gh copilot --" — whitespace is interpreted as the
+  //   legacy tokenizer.
+  //
+  // Why path-separator presence and not just `startsWith('/')`:
+  //   - Absolute POSIX paths can contain internal whitespace
+  //     ("/Applications/Tool With Space/bin/codex"). Whitespace alone
+  //     must NOT trigger the legacy split, or operators on macOS lose
+  //     legitimate paths.
+  //   - Relative paths ("./local/tool", "./local/tool with space") are
+  //     equally legitimate under shell:false spawn. They contain `/`
+  //     but do not start with `/`.
+  //
+  // Windows-style paths (`C:\...`, backslashes) are explicitly OUT OF
+  // SCOPE per the spec — Windows operators use WSL, where paths are
+  // POSIX. We do not detect backslash as a path separator.
+  //
+  // The legacy whitespace tokenizer uses [ \t] (space + tab) — not \s —
+  // so newlines and exotic unicode whitespace surface as literal
+  // characters in `command` and fail visibly at spawn rather than being
+  // silently consumed.
+  const looksLikePath = rawCommand.includes('/');
   const hasInternalWhitespace = /[ \t]/.test(rawCommand);
+  const isLegacyShape = !looksLikePath && hasInternalWhitespace;
 
-  if (hasInternalWhitespace && rawPrefixArgs !== undefined) {
+  if (isLegacyShape && rawPrefixArgs !== undefined) {
     // Ambiguous shape: the operator wrote BOTH the legacy
     // whitespace-string form AND the new array form. We refuse to
     // guess which they meant; loading must fail with a clear message.
+    //
+    // NOTE: a path with spaces + prefix_args is NOT ambiguous — it is
+    // the documented new shape (an absolute/relative path executable
+    // with its own leading argv), and falls through to the passthrough
+    // branch below.
     throw new Error(
       `Provider '${providerName}' has both a whitespace-containing command ` +
       `(${JSON.stringify(rawCommand)}) and a 'prefix_args' array. These are ` +
@@ -325,7 +366,7 @@ export function normalizeProviderCommand(
     );
   }
 
-  if (hasInternalWhitespace) {
+  if (isLegacyShape) {
     // Legacy single-string shape — whitespace-split once. No quoting
     // support: the factory has only ever shipped flat space-separated
     // strings in this position ("codex", "claude", "gh copilot --"),
@@ -339,11 +380,11 @@ export function normalizeProviderCommand(
       : { command: tokens[0] ?? rawCommand };
   }
 
-  // New shape — passthrough. We keep prefix_args undefined when the
-  // operator omitted it; passing it through verbatim preserves the
-  // distinction between "absent" and "empty array" for any future
-  // schema-level checks (the JSON Schema already enforces minItems: 1
-  // when present).
+  // New shape (path, bare name, or path-with-spaces) — passthrough.
+  // We keep prefix_args undefined when the operator omitted it; passing
+  // it through verbatim preserves the distinction between "absent" and
+  // "empty array" for any future schema-level checks (the JSON Schema
+  // already enforces minItems: 1 when present).
   return rawPrefixArgs !== undefined && rawPrefixArgs.length > 0
     ? { command: rawCommand, prefix_args: rawPrefixArgs }
     : { command: rawCommand };
