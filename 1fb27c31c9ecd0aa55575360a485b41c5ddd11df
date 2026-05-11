@@ -1,0 +1,37 @@
+# DEP0190 Mini-Spec Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** worktree-agent-ad052c3e79cbdd690 (commit 1fb27c3)
+**Verdict:** REQUEST-CHANGES
+
+## Issues (both: missing cross-platform risk coverage)
+
+### 1. Windows/npm/pnpm CLI shim behavior risk not addressed
+
+**File:** `specs/dep0190-shell-removal.md:167`
+
+After `shell: true` is removed: on Windows, provider commands installed as `.cmd` or wrapper scripts may not behave like native executables under `spawn(command, args, { shell: false })`. Node's spawn on Windows handles `.exe` natively but requires either shell or explicit-extension handling for `.cmd`/`.bat` wrappers.
+
+`gh` (GitHub CLI) is typically installed as a `.cmd` wrapper on Windows. Other providers (codex CLI, claude CLI) may have similar wrapper shapes.
+
+**Fix:** Add to the risk table. Require either:
+- A documented support boundary (e.g., "factory operates on POSIX-style spawn; Windows operators must use WSL or equivalent"), OR
+- A cross-platform spawn-boundary test that exercises wrapper-style commands, not just native stub children.
+
+### 2. Absolute executable paths with spaces unclear
+
+**File:** `specs/dep0190-shell-removal.md:45`
+
+The new shape's "single token, no internal whitespace" contract for `command` is unclear when applied to absolute executable paths that contain spaces (e.g., `/usr/local/Tool With Space/bin/codex` on macOS, or Windows `C:\Program Files\...`). Without `shell: true`, an argv `command` with internal whitespace is treated as a single executable path, which IS what we want — but the spec doesn't say so explicitly.
+
+**Fix:** Explicitly state whether `command` may be an absolute executable path containing spaces in the new shape. If yes, document that this is supported by the underlying `spawn` (single-string argv command, no shell tokenization). If no, document migration for operators currently relying on shell quoting.
+
+## Strongest parts
+
+- Correctly identifies the load-bearing migration issue around `gh copilot --` and handles it with dual-acceptance BEFORE dropping `shell: true`.
+- Three phases well-scoped: schema/loader compatibility separate from spawn-boundary behavior change.
+
+## Round budget
+
+2 rounds remaining.
