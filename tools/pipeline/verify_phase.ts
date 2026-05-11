@@ -462,6 +462,16 @@ async function runVerifyPhaseInner(opts: VerifyPhaseOptions): Promise<VerifyPhas
       continue;
     }
 
+    // Closing transition line for the QA-agent invocation — pairs
+    // with the in-flight heartbeats from `invokeAgent`. Routed through
+    // the 'agent' channel to match the heartbeat surface from the
+    // convergence pass. Emitted BEFORE `Running verification...` so
+    // the operator-visible order is:
+    //   1. qa heartbeat (in-flight)
+    //   2. qa transition (closing)
+    //   3. verification runs (completePacket)
+    fmt.log('agent', `qa verification complete for '${packet.id}'`);
+
     fmt.log('verify', `  Running verification...`);
 
     // Phase 6 — wrap the QA completion in runWithRecovery so
