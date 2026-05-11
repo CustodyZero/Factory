@@ -30,9 +30,25 @@ After setup, the normal workflow is:
 3. The pipeline plans, develops, reviews, and verifies — autonomously to completion
 4. Re-run the same command to resume if anything failed (the pipeline is idempotent)
 
-`run.ts` is the only command operators run. The lifecycle scripts
-(`start`, `request-review`, `review`, `complete`) are how agents signal
-back to the factory during a run; they are documented in the
+### Two operating modes
+
+The factory exposes two ways to drive packets through their lifecycle:
+
+- **Autonomous mode** — `run.ts <spec-id>`. The pipeline calls the
+  lifecycle library functions to advance state. Agents perform the
+  *work* (write code, review it, verify it) but do **not** call the
+  lifecycle CLIs themselves to signal start / request-review / complete.
+  The reviewer agent is the one exception: it records its verdict via
+  `review.ts --approve` or `--request-changes` because that's how the
+  pipeline learns the decision.
+- **Manual mode** — humans (or agents driving themselves) invoke the
+  lifecycle CLIs (`start.ts`, `request-review.ts`, `review.ts`,
+  `complete.ts`) directly to walk a packet through its states. This
+  is the back-compat surface and the way to drive a stuck packet
+  forward when the autonomous run has bailed out.
+
+Both modes share the same lifecycle CLIs as the protocol surface; the
+difference is **who** invokes them. The full contract is in the
 [Agent protocol appendix](#agent-protocol-for-reference).
 
 ### Directory Layout
@@ -301,10 +317,25 @@ This runs to completion autonomously:
 
 ### Human Gates
 
-Exactly one — authoring the spec. The intent artifact is derived. (For
-backward compatibility, hand-authored intents continue to work as input
-to `run.ts`; spec-first is the recommended path.) Completion IS
-acceptance.
+The gate depends on the run-input source:
+
+- **Spec-driven runs** (`run.ts <spec-id>`): exactly one human gate —
+  authoring the spec. The intent is a derived artifact materialised
+  by the orchestrator from the spec; its `status` field is a
+  generator-set artifact, NOT a governance gate. The default
+  `proposed` status is accepted automatically.
+- **Intent-driven runs** (`run.ts <intent-id>`, backward-compat path):
+  hand-authored intents are gated by their `status` field. The
+  factory accepts `approved`, `planned`, and `delivered`. The
+  factory rejects `proposed`, `superseded`, missing, and unknown
+  values; the operator must edit the intent file and set
+  `status: "approved"` to grant run authority. (`planned` and
+  `delivered` are accepted for idempotent reruns of intents that
+  already progressed past plan.)
+
+Completion IS acceptance — there is no separate "ready to ship"
+gate after the pipeline succeeds. See the end of this document for
+operator guidance on hand-authoring intents.
 
 ### Agent Identity Separation
 
@@ -362,6 +393,15 @@ The pipeline runs autonomously from spec to completed feature:
    must point at a non-empty file. `validate.ts` enforces the rules;
    `plan.ts` reads the file at plan time and hands its full contents to
    the planner.
+
+   **Hand-authored intents must declare `status: "approved"` to grant
+   `run.ts` the authority to run.** This is the intent-driven approval
+   gate (see [Human Gates](#human-gates) above). `planned` and
+   `delivered` are accepted for idempotent reruns; `proposed`,
+   `superseded`, missing, and unknown values are rejected with an
+   actionable error. Spec-driven runs (`run.ts <spec-id>`) are NOT
+   subject to this check — the spec's authorship IS the approval, and
+   the derived intent's generator-set `status: "proposed"` is accepted.
 2. Run `npx tsx .factory/tools/run.ts <spec-id> [<spec-id>...]`
 3. **Plan phase** — orchestrator translates each spec into an intent (1:1);
    the planner agent then writes:
@@ -371,20 +411,32 @@ The pipeline runs autonomously from spec to completed feature:
    - `feature.intent_id` linkage
 4. **Develop phase** — for each dev packet (in dependency order):
    - Developer agent implements (via the configured `developer` provider)
-   - Developer's prompt instructs it to call `request-review.ts` when done
-   - Code reviewer agent calls `review.ts --approve` or `--request-changes`
-   - On `--request-changes`, the developer reworks; loop bounded by `max_review_iterations`
-   - On approval, completion is recorded with the developer's identity
+   - Pipeline transitions packet status through the develop lifecycle
+     (`start` → `implementing` → `request-review`); the developer prompt
+     does NOT instruct the agent to call those CLIs
+   - Code reviewer agent calls `review.ts --approve` or
+     `--request-changes` to record the verdict (the only lifecycle call
+     the autonomous-mode prompts make)
+   - On `--request-changes`, the developer reworks; loop bounded by
+     `max_review_iterations`
+   - On approval, the pipeline runs verification and records the
+     completion with the developer's identity
 5. **Verify phase** — for each QA packet:
-   - QA agent verifies (via the configured `qa` provider, distinct identity from dev)
-   - Completion is recorded with the QA identity (FI-7 enforces distinct identities)
+   - QA agent verifies (via the configured `qa` provider, distinct
+     identity from dev)
+   - The pipeline runs verification and records the completion with the
+     QA identity (FI-7 enforces distinct identities); the QA prompt
+     does NOT instruct the agent to call `complete.ts`
 6. **Done** — feature marked complete, summary printed (with total cost)
 
-The lifecycle calls in steps 4-5 (`request-review.ts`, `review.ts`,
-`complete.ts`, etc.) are how agents signal back to the factory. Operators
-do not invoke them — `run.ts` does, and so do the agents under their own
-prompts. See the [Agent protocol appendix](#agent-protocol-for-reference)
-for the lifecycle-script contract.
+The lifecycle CLIs (`start.ts`, `request-review.ts`, `review.ts`,
+`complete.ts`) are the protocol surface in both modes. In autonomous
+mode the pipeline calls them as library functions; the agents perform
+the *work* but only the reviewer records its verdict via the CLI. In
+manual mode (debugging, back-compat, driving a stuck packet) humans or
+agents may invoke the CLIs directly. See the
+[Agent protocol appendix](#agent-protocol-for-reference) for the
+contract.
 
 Pipeline properties:
 - **Idempotent** — re-running resumes from artifact state on disk; lifecycle scripts are individually idempotent too
@@ -622,17 +674,29 @@ manually.
 
 ## Agent protocol — for reference
 
-The lifecycle scripts below are the agent-to-factory protocol. Operators
-do not invoke them during normal pipeline runs — `run.ts` calls them as
-library functions to advance state, and agents call them as CLIs when
-signaling state transitions back to the factory. They are documented
-here so an agent author (or someone debugging a stuck pipeline) can read
-the contract.
+The lifecycle scripts below are the protocol surface for moving a
+packet through its lifecycle. They are the same scripts whether the
+caller is the orchestrator, an autonomous agent, or a human typing at a
+terminal — the difference is who invokes them, not what they do.
 
-All four lifecycle scripts are idempotent: re-invocation on a state that
-already satisfies the request prints "already done" and exits 0. This
-means external callers can safely retry without producing duplicate
-state.
+### Two callers, one contract
+
+- **Autonomous (`run.ts <spec-id>`)** — the orchestrator calls
+  `start`, `request-review`, and `complete` as library functions while
+  driving the develop / verify phases. Agents under autonomous mode
+  perform the underlying work but do NOT call those three CLIs
+  themselves. The exception is `review.ts`: the code reviewer agent
+  calls it explicitly to record approve/request-changes — that is how
+  the pipeline learns the verdict.
+- **Manual (humans or self-driving agents)** — anyone can invoke the
+  lifecycle CLIs directly to drive a packet forward. This is the
+  back-compat surface, the debugging surface, and the way to nudge a
+  packet out of an in-between state when an autonomous run bailed out.
+
+All four lifecycle scripts are idempotent: re-invocation on a state
+that already satisfies the request prints "already done" and exits 0.
+This means external callers can safely retry without producing
+duplicate state.
 
 | Script | Purpose | Idempotent on |
 |---|---|---|
@@ -650,11 +714,20 @@ Two related scripts are part of the protocol but not state-mutating:
 
 ### Agent prompt patterns
 
-Agents do not pick what to do next on their own — they ask `execute.ts`
-or follow the prompt the factory hands them. The natural agent loop:
+The flow looks different depending on which mode is driving the packet.
+
+**Autonomous mode (`run.ts`)** — the orchestrator drives the lifecycle.
+The agent prompts the factory ships in `tools/pipeline/prompts.ts`
+explicitly tell each persona NOT to call `start.ts`,
+`request-review.ts`, or `complete.ts`. The reviewer prompt is the
+exception: it instructs the reviewer to call `review.ts --approve` /
+`--request-changes` so the pipeline learns the decision.
+
+**Manual mode** — the natural lifecycle for an agent (or human)
+driving a packet through its states by hand:
 
 ```
-1. Run start.ts <packet-id> (mark in progress)
+1. Run start.ts <packet-id>                    (mark in progress)
 2. Implement the change
 3. Run request-review.ts <packet-id>           [dev only]
 4. Wait for review.ts decision                  [dev only]
@@ -662,6 +735,7 @@ or follow the prompt the factory hands them. The natural agent loop:
    On --request-changes: rework, go to 3
 ```
 
-These calls describe agent behavior. Operators run `run.ts <spec-id>` and
-the orchestrator drives both the agents and the lifecycle calls between
-them.
+The lifecycle scripts behave identically in both modes — they're the
+same protocol. Choose the mode that matches your intent: `run.ts` for
+the autonomous one-command pipeline; the lifecycle CLIs directly when
+you need to drive a single packet by hand.

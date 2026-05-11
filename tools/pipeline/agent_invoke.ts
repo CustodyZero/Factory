@@ -27,12 +27,32 @@
  * argument-building helpers stay pure inside this same file as
  * before.
  *
- * The behavior of invokeAgent is unchanged — same arg shape, same
- * spawn options, same return shape, same Copilot-via-stdin special
- * case. This is a pure relocation.
+ * CONVERGENCE PASS (post-Phase-8) — async + heartbeats
+ *
+ * Long-running planner/developer/QA invocations were silent: the
+ * synchronous spawnSync blocked the event loop for up to ten minutes
+ * and the operator saw nothing between "invoking <persona>..." and
+ * "<persona> completed". This module migrates to `child_process.spawn`
+ * wrapped in a Promise so:
+ *
+ *   1. The pipeline can yield while the child runs (no other code
+ *      yields synchronously in TS — async is the natural fit).
+ *   2. We can emit periodic heartbeats while the child is alive.
+ *
+ * The new contract is `invokeAgent(...): Promise<InvokeResult>`. Every
+ * existing call site awaits. The InvokeResult shape — exit_code,
+ * stdout, stderr, cost — is unchanged. The early-return paths (missing
+ * pipeline config, unknown provider, disabled provider) return a
+ * resolved Promise with the same payload as before.
+ *
+ * Heartbeat surface: `fmt.log` to stderr (operator UX, NOT events).
+ * Events stay reserved for durable record-of-what-happened; heartbeats
+ * are progress indicators that exist only to reassure the human
+ * reading the terminal. Interval is hardcoded at 30 seconds; revisit
+ * if operators report it as too chatty or too quiet.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { findProjectRoot } from '../config.js';
 import type {
   FactoryConfig,
@@ -40,7 +60,73 @@ import type {
   PipelineProvider,
   PipelineProviderConfig,
 } from '../config.js';
+import * as fmt from '../output.js';
 import { computeCost, extractTokens, mergeRateCard } from './cost.js';
+
+// ---------------------------------------------------------------------------
+// Heartbeat configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Heartbeat cadence in milliseconds. The first heartbeat fires after
+ * this many milliseconds of the child still running, then every
+ * interval after.
+ *
+ * 30 s is the chosen tradeoff: short enough that an operator watching
+ * the terminal sees motion (a 10-min agent gets 19 reassurances),
+ * long enough that fast happy-path invocations (planner < 30 s) emit
+ * zero heartbeats. Hardcoded today; if operators report it as wrong
+ * the right move is a config knob, not a flag.
+ */
+export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Optional heartbeat context: what label to print and which packet/
+ * spec is in flight. Each call site populates this with persona-
+ * specific text (e.g. "planner still running for spec '<id>'..."
+ * or "developer working on packet '<id>'..."). When omitted, the
+ * heartbeat falls back to a generic "<provider> still running" line.
+ *
+ * The context is purely advisory — heartbeats never affect the agent
+ * call or its result.
+ */
+export interface HeartbeatContext {
+  /** Operator-facing message (without the elapsed timer prefix). */
+  readonly message: string;
+  /**
+   * Which `fmt.log` channel to write to (e.g. 'plan', 'develop',
+   * 'verify', 'review'). Defaults to 'agent' when omitted so casual
+   * call sites still produce a reasonable label.
+   */
+  readonly channel?: string;
+}
+
+/**
+ * Start a heartbeat timer and return a stop function. Extracted so
+ * the cadence is testable without mocking spawn — tests use vi's
+ * fake timers to advance virtual time and assert that fmt.log fires
+ * exactly once per interval.
+ *
+ * The leading-underscore export name signals "test-only public".
+ * Production callers should NOT consume this; they get heartbeats
+ * for free via `invokeAgent`.
+ */
+export function _startHeartbeat(
+  provider: string,
+  heartbeat: HeartbeatContext | undefined,
+): { stop: () => void } {
+  const channel = heartbeat?.channel ?? 'agent';
+  const message = heartbeat?.message
+    ?? `${provider} agent still running (no progress signal yet)`;
+  const handle = setInterval(() => {
+    fmt.log(channel, message);
+  }, HEARTBEAT_INTERVAL_MS);
+  // unref so the heartbeat never keeps the process alive on its own.
+  handle.unref?.();
+  return {
+    stop: () => clearInterval(handle),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // resolveModelId
@@ -136,7 +222,7 @@ export function buildProviderArgs(
 }
 
 // ---------------------------------------------------------------------------
-// invokeAgent — imperative I/O leaf (spawnSync)
+// invokeAgent — async I/O wrapper around child_process.spawn
 // ---------------------------------------------------------------------------
 
 /**
@@ -171,11 +257,12 @@ export interface InvokeResult {
 }
 
 /**
- * Invoke a provider CLI synchronously and return its result.
+ * Invoke a provider CLI and return its result.
  *
  * Resolves the configured provider, builds argv via the pure helpers
- * above, then spawns the CLI. Behavior is identical to the
- * pre-Phase-4.5 run.ts implementation:
+ * above, then spawns the CLI. The migration from `spawnSync` to
+ * `spawn` (post-Phase-8 convergence pass) preserves every observable
+ * behavior of the previous synchronous implementation:
  *
  *   - returns exit_code 1 with a stderr message when:
  *       * the pipeline config block is missing
@@ -186,6 +273,13 @@ export interface InvokeResult {
  *   - cwd is the project root; timeout is 10 minutes per agent;
  *     stdio is fully piped so stdout/stderr are captured into the
  *     return value.
+ *
+ * The async migration adds:
+ *
+ *   - a heartbeat: while the child is alive, emit one fmt.log line
+ *     every HEARTBEAT_INTERVAL_MS to stderr, populated from the
+ *     supplied HeartbeatContext (or a generic fallback). The timer
+ *     stops the moment the child exits.
  *
  * Phase 7 of single-entry-pipeline — the optional `modelOverride`
  * argument lets the caller pin a concrete model id, bypassing the
@@ -204,36 +298,37 @@ export function invokeAgent(
   config: FactoryConfig,
   modelTier?: ModelTier,
   modelOverride?: string,
-): InvokeResult {
+  heartbeat?: HeartbeatContext,
+): Promise<InvokeResult> {
   // Phase 5.7: every early-return path returns a populated cost field
   // (null tokens/dollars). The cost shape is part of the contract
   // even on configuration errors — downstream callers may still want
   // to surface the provider name in logs.
   const pipelineConfig = config.pipeline;
   if (pipelineConfig === undefined) {
-    return {
+    return Promise.resolve({
       exit_code: 1,
       stdout: '',
       stderr: 'Pipeline config not found',
       cost: nullCost(provider, null),
-    };
+    });
   }
   const providerConfig = pipelineConfig.providers[provider];
   if (providerConfig === undefined) {
-    return {
+    return Promise.resolve({
       exit_code: 1,
       stdout: '',
       stderr: `Provider '${provider}' not configured`,
       cost: nullCost(provider, null),
-    };
+    });
   }
   if (!providerConfig.enabled) {
-    return {
+    return Promise.resolve({
       exit_code: 1,
       stdout: '',
       stderr: `Provider '${provider}' is disabled`,
       cost: nullCost(provider, null),
-    };
+    });
   }
 
   // Phase 7 — modelOverride wins over modelTier when both are
@@ -246,42 +341,101 @@ export function invokeAgent(
   const { command, args } = buildProviderArgs(provider, prompt, providerConfig, modelId);
   // Copilot: prompt via stdin to avoid OS command-line length limits.
   const useStdin = provider === 'copilot';
-  const result = spawnSync(command, args, {
-    cwd: findProjectRoot(),
-    encoding: 'utf-8',
-    timeout: 600_000, // 10 min per agent
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: true,
-    ...(useStdin ? { input: prompt } : {}),
-  });
-  const stdout = result.stdout ?? '';
-  const stderr = result.stderr ?? '';
 
-  // Phase 5.7 — extract tokens, then compute dollars. The rate card
-  // is the merged DEFAULT_RATE_CARD with any per-run overrides from
-  // config.pipeline.rate_card. Both extractTokens and computeCost
-  // are pure and tolerate every missing-data shape with null.
-  const tokens = extractTokens(provider, stdout, stderr);
-  const rateCard = mergeRateCard(pipelineConfig.rate_card);
-  const { dollars } = computeCost(
-    provider,
-    modelId,
-    tokens.tokens_in,
-    tokens.tokens_out,
-    rateCard,
-  );
-  return {
-    exit_code: result.status ?? 1,
-    stdout,
-    stderr,
-    cost: {
-      provider,
-      model: modelId ?? null,
-      tokens_in: tokens.tokens_in,
-      tokens_out: tokens.tokens_out,
-      dollars,
-    },
-  };
+  return new Promise<InvokeResult>((resolve) => {
+    const child = spawn(command, args, {
+      cwd: findProjectRoot(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.setEncoding('utf-8');
+    child.stderr?.setEncoding('utf-8');
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
+
+    if (useStdin) {
+      child.stdin?.write(prompt);
+    }
+    child.stdin?.end();
+
+    // 10-minute timeout — the spawnSync contract was a hard kill at
+    // 600_000 ms. We replicate that here: when the timer fires, send
+    // SIGTERM (then SIGKILL on slow exit) and let the close handler
+    // resolve with whatever output was captured up to that point.
+    const TIMEOUT_MS = 600_000;
+    let timedOut = false;
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      // Last-resort kill if the child hasn't shut down.
+      setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      }, 2_000).unref();
+    }, TIMEOUT_MS);
+    timeoutHandle.unref();
+
+    // Heartbeat: every HEARTBEAT_INTERVAL_MS, emit one progress line.
+    // Cleared when the child closes. The cadence is unit-tested via
+    // _startHeartbeat directly; here we just consume the helper.
+    const heartbeatTimer = _startHeartbeat(provider, heartbeat);
+
+    const cleanup = (): void => {
+      clearTimeout(timeoutHandle);
+      heartbeatTimer.stop();
+    };
+
+    child.on('error', (err) => {
+      cleanup();
+      // spawn-error path: replicate the spawnSync "could not spawn"
+      // shape — exit_code 1 with the error surfaced through stderr.
+      // The recovery layer's classifier consumes stderr text; we
+      // leave whatever was already captured intact and append.
+      const message = err instanceof Error ? err.message : String(err);
+      resolve({
+        exit_code: 1,
+        stdout,
+        stderr: stderr.length > 0 ? `${stderr}\n${message}` : message,
+        cost: nullCost(provider, modelId ?? null),
+      });
+    });
+
+    child.on('close', (code) => {
+      cleanup();
+      // Phase 5.7 — extract tokens, then compute dollars. The rate card
+      // is the merged DEFAULT_RATE_CARD with any per-run overrides from
+      // config.pipeline.rate_card. Both extractTokens and computeCost
+      // are pure and tolerate every missing-data shape with null.
+      const tokens = extractTokens(provider, stdout, stderr);
+      const rateCard = mergeRateCard(pipelineConfig.rate_card);
+      const { dollars } = computeCost(
+        provider,
+        modelId,
+        tokens.tokens_in,
+        tokens.tokens_out,
+        rateCard,
+      );
+      // Match spawnSync's behavior: when the timeout fires the child
+      // is killed and the captured exit_code is 1 (spawnSync surfaced
+      // `null` -> 1 via the `?? 1` fallback). For non-timeout exits
+      // the actual code is preserved.
+      const exitCode = timedOut ? 1 : (code ?? 1);
+      resolve({
+        exit_code: exitCode,
+        stdout,
+        stderr,
+        cost: {
+          provider,
+          model: modelId ?? null,
+          tokens_in: tokens.tokens_in,
+          tokens_out: tokens.tokens_out,
+          dollars,
+        },
+      });
+    });
+  });
 }
 
 /**

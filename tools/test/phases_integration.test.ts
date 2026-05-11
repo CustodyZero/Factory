@@ -114,13 +114,13 @@ function setupFixture(): { root: string; feature: Feature } {
 }
 
 describe('Phase 4.5 — three phases callable in sequence (dry-run)', () => {
-  it('runPlanPhase + runDevelopPhase + runVerifyPhase produce expected dry-run results against a fixture', () => {
+  it('runPlanPhase + runDevelopPhase + runVerifyPhase produce expected dry-run results against a fixture', async () => {
     const { root, feature } = setupFixture();
     try {
       const config = makeMinimalConfig();
 
       // Plan: pre-existing feature for this intent — short-circuits.
-      const planResult = runPlanPhase({
+      const planResult = await runPlanPhase({
         intent: makeIntent('intent-int'),
         config,
         artifactRoot: root,
@@ -131,7 +131,7 @@ describe('Phase 4.5 — three phases callable in sequence (dry-run)', () => {
       // Develop (dry-run): the dev packet enters the loop body, logs
       // the dry-run line, and is reported as neither completed nor
       // failed (the original loop's `continue` semantics).
-      const devResult = runDevelopPhase({
+      const devResult = await runDevelopPhase({
         feature,
         config,
         artifactRoot: root,
@@ -144,7 +144,7 @@ describe('Phase 4.5 — three phases callable in sequence (dry-run)', () => {
       // Verify (dry-run): the QA packet's `verifies` target (pkt-dev)
       // is NOT in completions, so it's reported as skipped (the
       // dependency check runs before the dry-run early-exit).
-      const qaResult = runVerifyPhase({
+      const qaResult = await runVerifyPhase({
         feature,
         config,
         artifactRoot: root,
@@ -159,7 +159,7 @@ describe('Phase 4.5 — three phases callable in sequence (dry-run)', () => {
     }
   });
 
-  it('runVerifyPhase reports a pre-completed dev packet as a satisfied dependency', () => {
+  it('runVerifyPhase reports a pre-completed dev packet as a satisfied dependency', async () => {
     // This pins the contract that the coordinator relies on: when the
     // dev packet IS complete, the verify phase moves past the
     // dependency check and (in dry-run) hits the per-packet dry-run
@@ -173,7 +173,7 @@ describe('Phase 4.5 — three phases callable in sequence (dry-run)', () => {
         'utf-8',
       );
 
-      const result = runVerifyPhase({
+      const result = await runVerifyPhase({
         feature,
         config: makeMinimalConfig(),
         artifactRoot: root,

@@ -32,7 +32,6 @@ import { buildDevPrompt, buildReviewPrompt, buildReworkPrompt } from './prompts.
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
 import { requestReview } from '../lifecycle/request_review.js';
-import { recordReview } from '../lifecycle/review.js';
 import { completePacket } from '../lifecycle/complete.js';
 import {
   makePhaseStarted,
@@ -55,6 +54,7 @@ import {
   type OperationResult,
   type RecoveryResult,
 } from './recovery_loop.js';
+import { REVIEW_DECISION_MISSING_MARKER } from './recovery.js';
 import { looksLikeStaleBranchMessage } from '../lifecycle/git_check.js';
 
 // ---------------------------------------------------------------------------
@@ -130,8 +130,13 @@ export function nextPointAfterImplement(devSucceeded: boolean): DevResumePoint |
  *   - reviewer exited non-zero -> stop (null)
  *   - reviewer succeeded; packet status was bumped to 'review_approved'   -> finalize
  *   - reviewer succeeded; packet status was bumped to 'changes_requested' -> rework
- *   - reviewer succeeded; status not transitioned -> finalize (the
- *     imperative loop force-approves on disk before falling through)
+ *   - reviewer succeeded; status not transitioned -> finalize (legacy
+ *     fall-through; the imperative loop now treats no-decision as a
+ *     ReviewDecisionMissing escalation BEFORE this function is reached,
+ *     so the third branch is dead under the convergence-pass control
+ *     flow. Kept here for the pure unit tests that pin the
+ *     pre-convergence transition table — removing it would break the
+ *     state-machine contract that other callers may rely on.)
  *
  * The status-after-review value comes from re-reading the packet
  * artifact from disk after the reviewer agent terminates.
@@ -143,8 +148,9 @@ export function nextPointAfterReview(
   if (!reviewSucceeded) return null;
   if (statusAfterReview === 'review_approved') return 'finalize';
   if (statusAfterReview === 'changes_requested') return 'rework';
-  // Reviewer didn't transition status — caller force-approves and
-  // falls through to finalize. Same outcome here.
+  // Legacy fall-through (see note in JSDoc above). Under the
+  // convergence-pass control flow the imperative loop escalates
+  // ReviewDecisionMissing before reaching this branch.
   return 'finalize';
 }
 
@@ -389,8 +395,11 @@ function markPacketFailed(args: MarkPacketFailedArgs): void {
  * Run the develop phase for a feature: implement / review / rework /
  * finalize each dev packet in topological order. Returns the lists
  * of completed and failed packet ids.
+ *
+ * Async since the convergence pass migrated `invokeAgent` to a
+ * Promise-returning shape so long agent runs can yield to heartbeats.
  */
-export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
+export async function runDevelopPhase(opts: DevelopPhaseOptions): Promise<DevelopPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. The eventCtx is null when
@@ -409,7 +418,7 @@ export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
     );
   }
 
-  const result = runDevelopPhaseInner(opts);
+  const result = await runDevelopPhaseInner(opts);
 
   if (eventCtx !== null) {
     // Outcome: 'failed' iff any packet failed; 'ok' otherwise. A
@@ -426,7 +435,7 @@ export function runDevelopPhase(opts: DevelopPhaseOptions): DevelopPhaseResult {
   return result;
 }
 
-function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
+async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -591,8 +600,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // via attempt.guardrailPrompt, which is appended to the
           // dev prompt. ProviderTransient retries see no
           // guardrailPrompt and re-issue the same prompt.
-          const recovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const recovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               const basePrompt = buildDevPrompt(freshPacket, config);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
@@ -607,8 +616,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               // hop would then re-try a model the operator never
               // intended as primary.
               const target = attempt.cascade ?? devPrimary;
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, finalPrompt, config, devTier, target.model,
+                {
+                  message: `developer working on packet '${packet.id}'...`,
+                  channel: 'develop',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -676,7 +689,7 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           // recovery wrapper still applies because a stale-branch
           // check at this boundary throws, and the wrapper routes
           // that through the StaleBranch recipe.
-          const reviewSignal = runWithRecovery<true>(
+          const reviewSignal = await runWithRecovery<true>(
             (_attempt: AttemptContext): OperationResult<true> => {
               try {
                 requestReview({
@@ -752,35 +765,82 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             break;
           }
           fmt.log('review', `  Review iteration ${reviewIteration + 1} via ${reviewProvider} (${reviewTier})...`);
-          const reviewerRecovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const reviewerRecovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               // Phase 7 round-2 — primary derived from cascade[0]; see
               // implement closure for the rationale.
               const target = attempt.cascade ?? reviewerPrimary;
               const reviewPromptStr = buildReviewPrompt(freshPacket, config);
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, reviewPromptStr, config, reviewTier, target.model,
+                {
+                  message: `review in progress for packet '${packet.id}'...`,
+                  channel: 'review',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
                 perPacketCap, packetCostTracker, dryRun,
               );
-              if (r.exit_code === 0) return { outcome: 'ok', value: r };
-              return {
-                outcome: 'fail',
-                failure: {
-                  ...failureFromSubprocess({
-                    exitCode: r.exit_code,
+              // Subprocess-level failure: route through the recovery
+              // layer normally (provider transient / cascade / etc.).
+              if (r.exit_code !== 0) {
+                return {
+                  outcome: 'fail',
+                  failure: {
+                    ...failureFromSubprocess({
+                      exitCode: r.exit_code,
+                      stdout: r.stdout,
+                      stderr: r.stderr,
+                      kind: 'agent_invocation',
+                      specId: opts.specId ?? null,
+                      packetId: packet.id,
+                      operationLabel: 'develop_phase.review',
+                    }),
+                    cascade: reviewerCascade,
+                  },
+                };
+              }
+              // Convergence pass — reviewer-no-decision check.
+              //
+              // The reviewer prompt names `review.ts --approve` /
+              // `--request-changes` as the load-bearing protocol channel
+              // (see prompts.ts:buildReviewPrompt). When the agent exits
+              // 0 but does NOT call review.ts, the packet status remains
+              // 'review_requested' on disk. The previous code path
+              // silently force-approved here — that's the CLAUDE.md §3.1
+              // facade pattern (silent fallback masking failure).
+              //
+              // Treat this as a recovery scenario: synthesize a failure
+              // with the ReviewDecisionMissing marker in stderr so the
+              // classifier dispatches to the new escalate-immediate
+              // recipe. The recovery layer writes the escalation record,
+              // emits recovery.escalated, and the develop loop marks
+              // the packet failed via the existing escalation handler
+              // below — same path TestFailed/LintFailed take.
+              const postReviewPacket = readJson<RawPacket>(
+                join(artifactRoot, 'packets', `${packet.id}.json`),
+              );
+              const postReviewStatus = postReviewPacket?.status ?? null;
+              if (
+                postReviewStatus !== 'review_approved' &&
+                postReviewStatus !== 'changes_requested'
+              ) {
+                return {
+                  outcome: 'fail',
+                  failure: {
+                    exit_code: 0,
                     stdout: r.stdout,
-                    stderr: r.stderr,
-                    kind: 'agent_invocation',
-                    specId: opts.specId ?? null,
-                    packetId: packet.id,
-                    operationLabel: 'develop_phase.review',
-                  }),
-                  cascade: reviewerCascade,
-                },
-              };
+                    stderr: REVIEW_DECISION_MISSING_MARKER,
+                    error_message: REVIEW_DECISION_MISSING_MARKER,
+                    kind: 'lifecycle',
+                    spec_id: opts.specId ?? null,
+                    packet_id: packet.id,
+                    operation_label: 'develop_phase.review',
+                  },
+                };
+              }
+              return { outcome: 'ok', value: r };
             },
             {
               runId: recoveryRunId,
@@ -810,16 +870,17 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             escalated = true;
             break;
           }
-          // recovered.kind === 'ok' — reviewer ran cleanly; check status.
+          // recovered.kind === 'ok' — reviewer ran cleanly AND recorded
+          // a verdict (the no-decision case is handled above as an
+          // escalation). The on-disk status now drives the next
+          // resume point: 'review_approved' -> finalize,
+          // 'changes_requested' -> rework.
           const afterReview = readJson<RawPacket>(join(artifactRoot, 'packets', `${packet.id}.json`));
           const afterStatus = afterReview?.status ?? null;
           if (afterStatus === 'review_approved') {
             fmt.log('review', `  ${fmt.sym.ok} Review approved`);
           } else if (afterStatus === 'changes_requested') {
             fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
-          } else {
-            safeCall(() => recordReview({ packetId: packet.id, decision: 'approve', projectRoot }));
-            fmt.log('review', `  ${fmt.sym.ok} Review complete`);
           }
           currentPoint = nextPointAfterReview(true, afterStatus);
           break;
@@ -827,8 +888,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
 
         case 'rework': {
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
-          const reworkRecovered = runWithRecovery<InvokeResult>(
-            (attempt: AttemptContext): OperationResult<InvokeResult> => {
+          const reworkRecovered = await runWithRecovery<InvokeResult>(
+            async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
               const basePrompt = buildReworkPrompt(freshPacket, config);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
@@ -836,8 +897,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               // Phase 7 round-2 — primary derived from cascade[0]; see
               // implement closure for the rationale.
               const target = attempt.cascade ?? devPrimary;
-              const r = invokeAgent(
+              const r = await invokeAgent(
                 target.provider, finalPrompt, config, devTier, target.model,
+                {
+                  message: `developer reworking packet '${packet.id}'...`,
+                  channel: 'develop',
+                },
               );
               recordInvocationCost(
                 r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -949,10 +1014,10 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
           let pendingRemediationPrompt: string | null = null;
           let lastRemediationTarget: typeof devPrimary | null = null;
 
-          const runRemediation = (
+          const runRemediation = async (
             target: typeof devPrimary,
             guardrail: string,
-          ): OperationResult<true> | null => {
+          ): Promise<OperationResult<true> | null> => {
             // Returns null on success (caller proceeds to
             // completePacket); returns OperationResult<true> with
             // outcome='fail' on agent failure.
@@ -960,8 +1025,12 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             const remediationPrompt =
               `${basePrompt}\n\n---\n${guardrail}`;
             lastRemediationTarget = target;
-            const r = invokeAgent(
+            const r = await invokeAgent(
               target.provider, remediationPrompt, config, devTier, target.model,
+              {
+                message: `build remediation invoked for packet '${packet.id}'...`,
+                channel: 'develop',
+              },
             );
             recordInvocationCost(
               r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -989,8 +1058,8 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
             return null;
           };
 
-          const finalizeRecovered = runWithRecovery<true>(
-            (attempt: AttemptContext): OperationResult<true> => {
+          const finalizeRecovered = await runWithRecovery<true>(
+            async (attempt: AttemptContext): Promise<OperationResult<true>> => {
               // Step 1: handle the remediation half of the compound
               // action. Three cases keep state coherent across
               // recovery action boundaries:
@@ -1013,17 +1082,17 @@ function runDevelopPhaseInner(opts: DevelopPhaseOptions): DevelopPhaseResult {
               if (attempt.action === 'retry_with_guardrail_prompt'
                 && attempt.guardrailPrompt !== undefined) {
                 pendingRemediationPrompt = attempt.guardrailPrompt;
-                const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+                const fail = await runRemediation(devPrimary, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               } else if (attempt.action === 'cascade_provider'
                 && attempt.cascade !== undefined
                 && pendingRemediationPrompt !== null) {
-                const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+                const fail = await runRemediation(attempt.cascade, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               } else if (attempt.action === 'retry_same'
                 && pendingRemediationPrompt !== null
                 && lastRemediationTarget !== null) {
-                const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+                const fail = await runRemediation(lastRemediationTarget, pendingRemediationPrompt);
                 if (fail !== null) return fail;
               }
               // (No special-case for the very first attempt:

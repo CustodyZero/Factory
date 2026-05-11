@@ -6,7 +6,7 @@
  *
  * This module is the PURE half of the recovery layer. It owns:
  *
- *   - the closed `FailureScenario` enum (8 variants)
+ *   - the closed `FailureScenario` enum (9 variants)
  *   - the `FailureContext` shape that callers populate from a failed
  *     operation's exit_code / stderr / stdout / error
  *   - the `RecoveryAttempt` and `EscalateRequest` discriminated types
@@ -59,8 +59,18 @@
 // Failure scenarios — closed enum.
 //
 // Eight variants per docs/decisions/single_entry_pipeline.md §Recovery
-// scope table. The names match the table verbatim so the spec and
-// the code use the same vocabulary.
+// scope table, plus one (`ReviewDecisionMissing`) added by the post-
+// Phase-8 convergence pass. The original eight names match the table
+// verbatim so the spec and the code use the same vocabulary.
+//
+// `ReviewDecisionMissing` is distinct from `AgentNonResponsive`: the
+// reviewer agent ran AND exited 0, but did not call `review.ts` to
+// record a verdict. The previous code path silently force-approved
+// in this case, masking a load-bearing protocol failure (CLAUDE.md
+// §3.1). The new scenario routes the failure through the recovery
+// layer with budget 0 (escalate immediately) — retrying does not
+// help, the prompt was clear, the reviewer ignored the load-bearing
+// instruction.
 // ---------------------------------------------------------------------------
 
 export type FailureScenario =
@@ -71,7 +81,8 @@ export type FailureScenario =
   | 'TestFailed'
   | 'StaleBranch'
   | 'AgentNonResponsive'
-  | 'CompletionGateBlocked';
+  | 'CompletionGateBlocked'
+  | 'ReviewDecisionMissing';
 
 /**
  * The set of all known scenarios as a runtime-iterable array. The
@@ -88,6 +99,7 @@ export const ALL_SCENARIOS: ReadonlyArray<FailureScenario> = [
   'StaleBranch',
   'AgentNonResponsive',
   'CompletionGateBlocked',
+  'ReviewDecisionMissing',
 ];
 
 // ---------------------------------------------------------------------------
@@ -372,20 +384,23 @@ export type RecoveryResult<T> =
 //      non-empty `failed_checks` list, use that authoritatively.
 //   2. If the caller supplied `kind === 'git'`, look for stale-branch /
 //      rebase markers in stderr; if present -> StaleBranch.
-//   3. ProviderUnavailable BEFORE ProviderTransient: the patterns are
+//   3. ReviewDecisionMissing sentinel: the convergence-pass closure
+//      synthesizes a unique marker string when the reviewer exited 0
+//      without recording a verdict. Exact match — not heuristic.
+//   4. ProviderUnavailable BEFORE ProviderTransient: the patterns are
 //      narrow and authoritative ("provider disabled / not configured /
 //      model not found"). Without this ordering a "Provider X is
 //      disabled" stderr could superficially match a transient pattern
 //      and burn the ProviderTransient budget retrying a fundamentally
 //      unavailable CLI.
-//   4. ProviderTransient: 5xx / 429 / connection error / timeout.
-//   5. Completion-gate / FI-7 markers in stderr.
-//   6. Build/lint/test text matching when no kind hint was supplied
+//   5. ProviderTransient: 5xx / 429 / connection error / timeout.
+//   6. Completion-gate / FI-7 markers in stderr.
+//   7. Build/lint/test text matching when no kind hint was supplied
 //      (the verification call site should always supply the hint, but
 //      unit tests exercise the fallback).
-//   7. exit_code != 0 with empty stdout AND empty stderr from an
+//   8. exit_code != 0 with empty stdout AND empty stderr from an
 //      agent_invocation -> AgentNonResponsive.
-//   8. Anything else -> null. The orchestration layer treats null as
+//   9. Anything else -> null. The orchestration layer treats null as
 //      "escalate immediately" — we do NOT silently retry unknowns.
 // ---------------------------------------------------------------------------
 
@@ -457,6 +472,22 @@ const COMPLETION_GATE_PATTERNS: ReadonlyArray<RegExp> = [
   /\bpre[- ]commit hook (failed|rejected|blocked)\b/i,
 ];
 
+/**
+ * `ReviewDecisionMissing` sentinel. Emitted into the synthetic
+ * stderr by the develop-phase review closure when the reviewer
+ * agent exited 0 without recording a verdict via `review.ts`. The
+ * marker is a stable string (NOT a free-form pattern) because it's
+ * always produced by code we control — there's no heuristic
+ * matching to do here. We pin the literal so a future drift between
+ * the closure and the classifier shows up as a typecheck-adjacent
+ * test failure, not silent misclassification.
+ *
+ * Exported so the develop-phase closure can construct the synthetic
+ * failure context using the same string the classifier matches.
+ */
+export const REVIEW_DECISION_MISSING_MARKER =
+  '[recovery:ReviewDecisionMissing] reviewer exited 0 without recording a verdict via review.ts';
+
 const BUILD_FAILED_PATTERNS: ReadonlyArray<RegExp> = [
   /\bbuild (failed|error)\b/i,
   /\btsc\b.*\berror\s+TS\d+/i,
@@ -524,7 +555,19 @@ export function classifyFailure(context: FailureContext): FailureScenario | null
     return null;
   }
 
-  // (3) ProviderUnavailable BEFORE ProviderTransient. These patterns
+  // (3) ReviewDecisionMissing sentinel. The convergence-pass develop-
+  // phase review closure synthesizes the marker into stderr when the
+  // reviewer agent exited 0 without recording a verdict. Exact match,
+  // not a heuristic — the closure and this branch are coupled by the
+  // same exported constant.
+  if (
+    stderr.includes(REVIEW_DECISION_MISSING_MARKER) ||
+    errorMsg.includes(REVIEW_DECISION_MISSING_MARKER)
+  ) {
+    return 'ReviewDecisionMissing';
+  }
+
+  // (4) ProviderUnavailable BEFORE ProviderTransient. These patterns
   // mean "the CLI itself is unavailable" (config missing, provider
   // disabled, model not found) — fundamentally different from a 5xx
   // / 429 / network blip. The Phase 6 recipe escalates immediately
@@ -536,17 +579,17 @@ export function classifyFailure(context: FailureContext): FailureScenario | null
     return 'ProviderUnavailable';
   }
 
-  // (4) Provider transient.
+  // (5) Provider transient.
   if (anyMatch(TRANSIENT_PATTERNS, stderr, stdout, errorMsg)) {
     return 'ProviderTransient';
   }
 
-  // (5) Completion-gate / FI-7 markers.
+  // (6) Completion-gate / FI-7 markers.
   if (anyMatch(COMPLETION_GATE_PATTERNS, stderr, stdout, errorMsg)) {
     return 'CompletionGateBlocked';
   }
 
-  // (6) Verification text matching when the kind hint was missing or
+  // (7) Verification text matching when the kind hint was missing or
   // ci-only. Order: build before lint before tests because a project
   // that fails to build typically also reports a downstream lint
   // false-positive; the build failure is the root cause to surface.
@@ -554,7 +597,7 @@ export function classifyFailure(context: FailureContext): FailureScenario | null
   if (anyMatch(LINT_FAILED_PATTERNS, stderr, stdout)) return 'LintFailed';
   if (anyMatch(TEST_FAILED_PATTERNS, stderr, stdout)) return 'TestFailed';
 
-  // (7) Empty-output non-zero exit from an agent invocation.
+  // (8) Empty-output non-zero exit from an agent invocation.
   if (
     context.kind === 'agent_invocation' &&
     context.exit_code !== null &&
@@ -565,7 +608,7 @@ export function classifyFailure(context: FailureContext): FailureScenario | null
     return 'AgentNonResponsive';
   }
 
-  // (8) Honest unknown.
+  // (9) Honest unknown.
   return null;
 }
 
@@ -721,6 +764,15 @@ const recipeCompletionGateBlocked: RecoveryRecipe = (_scenario, _ctx) => ({
     'This is an intentional human gate.',
 });
 
+const recipeReviewDecisionMissing: RecoveryRecipe = (_scenario, _ctx) => ({
+  kind: 'escalate',
+  reason:
+    'Reviewer agent exited 0 but did not record a verdict via review.ts. ' +
+    'The reviewer prompt names review.ts as the load-bearing protocol channel; ' +
+    'we do not silently force-approve. Inspect the run logs to see whether the ' +
+    'reviewer crashed mid-output or ignored the protocol instruction.',
+});
+
 export const RECIPES: Readonly<Record<FailureScenario, RecoveryRecipe>> = {
   ProviderTransient: recipeProviderTransient,
   ProviderUnavailable: recipeProviderUnavailable,
@@ -730,6 +782,7 @@ export const RECIPES: Readonly<Record<FailureScenario, RecoveryRecipe>> = {
   StaleBranch: recipeStaleBranch,
   AgentNonResponsive: recipeAgentNonResponsive,
   CompletionGateBlocked: recipeCompletionGateBlocked,
+  ReviewDecisionMissing: recipeReviewDecisionMissing,
 };
 
 // ---------------------------------------------------------------------------
@@ -779,4 +832,8 @@ export const SCENARIO_RETRY_BUDGET: Readonly<Record<FailureScenario, number>> = 
   LintFailed: 0,
   TestFailed: 0,
   CompletionGateBlocked: 0,
+  // Convergence pass — reviewer-no-decision always escalates. The
+  // recipe returns `escalate` so this number is consulted only by
+  // the completeness assertion in tests; 0 documents the intent.
+  ReviewDecisionMissing: 0,
 };

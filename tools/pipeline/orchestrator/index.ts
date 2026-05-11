@@ -161,7 +161,7 @@ export {
  *     spec's outcome is `failed`, and any spec that depends on it
  *     (transitively) becomes `blocked`. Independent specs continue.
  */
-export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
+export async function runOrchestrator(opts: OrchestratorOptions): Promise<OrchestratorResult> {
   const { args, config, projectRoot, artifactRoot, dryRun } = opts;
 
   fmt.resetTimer();
@@ -350,7 +350,7 @@ export function runOrchestrator(opts: OrchestratorOptions): OrchestratorResult {
         artifactRoot,
       );
 
-      const result = runSingleSpec(
+      const result = await runSingleSpec(
         spec, config, projectRoot, artifactRoot, dryRun,
         { runId, dryRun },
       );

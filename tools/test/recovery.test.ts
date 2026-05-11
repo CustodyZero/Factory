@@ -17,6 +17,7 @@ import {
   ALL_SCENARIOS,
   BUILD_GUARDRAIL_PROMPT,
   RECIPES,
+  REVIEW_DECISION_MISSING_MARKER,
   SCENARIO_RETRY_BUDGET,
   STALE_BRANCH_PATTERNS,
   classifyFailure,
@@ -277,6 +278,38 @@ describe('classifyFailure — agent non-responsive', () => {
 // classifier — null path (honest unknown)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// classifier — review decision missing (convergence pass)
+// ---------------------------------------------------------------------------
+
+describe('classifyFailure — review decision missing', () => {
+  it('classifies the REVIEW_DECISION_MISSING_MARKER in stderr as ReviewDecisionMissing', () => {
+    expect(classifyFailure(ctx({
+      kind: 'lifecycle',
+      exit_code: 0,
+      stderr: REVIEW_DECISION_MISSING_MARKER,
+    }))).toBe('ReviewDecisionMissing');
+  });
+
+  it('classifies the marker in error_message as ReviewDecisionMissing', () => {
+    expect(classifyFailure(ctx({
+      kind: 'lifecycle',
+      exit_code: 0,
+      error_message: REVIEW_DECISION_MISSING_MARKER,
+    }))).toBe('ReviewDecisionMissing');
+  });
+
+  it('does not match a free-form mention of the words "review decision"', () => {
+    // The classifier matches the exact marker string, NOT a heuristic.
+    // A reviewer agent's free-form output that happens to mention the
+    // words "review decision" must NOT be misclassified.
+    expect(classifyFailure(ctx({
+      kind: 'lifecycle',
+      stderr: 'The reviewer is missing a review decision document.',
+    }))).not.toBe('ReviewDecisionMissing');
+  });
+});
+
 describe('classifyFailure — honest unknown', () => {
   it('returns null for an unrecognized failure shape', () => {
     expect(classifyFailure(ctx({
@@ -418,6 +451,16 @@ describe('RECIPES — shape and behavior', () => {
     const out = RECIPES.CompletionGateBlocked('CompletionGateBlocked', ctx());
     expect(out.kind).toBe('escalate');
   });
+
+  it('ReviewDecisionMissing -> escalate (no retry; reviewer ignored the protocol channel)', () => {
+    const out = RECIPES.ReviewDecisionMissing('ReviewDecisionMissing', ctx());
+    expect(out.kind).toBe('escalate');
+    if (out.kind === 'escalate') {
+      // Reason names review.ts so an operator reading the
+      // escalation file knows what the reviewer was supposed to do.
+      expect(out.reason).toMatch(/review\.ts/);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -433,6 +476,8 @@ describe('SCENARIO_RETRY_BUDGET', () => {
     expect(SCENARIO_RETRY_BUDGET.LintFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.TestFailed).toBe(0);
     expect(SCENARIO_RETRY_BUDGET.CompletionGateBlocked).toBe(0);
+    // Convergence pass — reviewer-no-decision always escalates.
+    expect(SCENARIO_RETRY_BUDGET.ReviewDecisionMissing).toBe(0);
     // Phase 7 round-2 — ProviderUnavailable is fully data-driven via
     // the cascade attached to the FailureContext. The recipe self-
     // caps at cascade.length; the orchestration loop SKIPS the

@@ -41,7 +41,9 @@ Operators author specs; the intent is derived state. Existing `intents/<id>.json
 files without a corresponding spec continue to work (backward compatibility).
 
 **Human gates:** exactly one — authoring the spec. The intent artifact is
-derived. (Hand-authored intents remain a supported back-compat path.)
+derived. Hand-authored intents remain a supported back-compat path; for
+those, `intent.status` IS the gate (must be `approved` before `run.ts`
+will plan them — see [Approval semantics](#approval-semantics) below).
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
@@ -138,11 +140,27 @@ compatibility with hand-authored intents.
 
 ### Agent protocol (CLI-as-protocol)
 
-The lifecycle scripts below are how agents signal back to the factory.
-**Agents call these; operators do not.** The factory invokes them as
-library functions during a pipeline run; agents invoke them as CLIs
-when signaling state transitions. All four are idempotent — re-invocation
-on the same state is a no-op (it prints "already done" and exits 0).
+The lifecycle scripts below are the protocol surface for moving a packet
+through its states. They behave identically regardless of caller; what
+changes is *who* invokes them.
+
+**Autonomous mode (`run.ts <spec-id>`).** The orchestrator manages the
+lifecycle. It calls `start`, `request-review`, and `complete` as
+library functions while driving the develop and verify phases. Agents
+under autonomous mode perform the work (write code, review it, verify
+it) but do **not** call those three CLIs themselves — the prompts in
+`tools/pipeline/prompts.ts` say so explicitly. The reviewer is the one
+exception: it calls `review.ts --approve` / `--request-changes` to
+record its verdict, because that's how the pipeline learns the
+decision.
+
+**Manual mode.** Humans (or self-driving agents) may invoke any of the
+lifecycle CLIs directly to walk a packet through its states by hand.
+This is the back-compat surface and the way to nudge a stuck packet
+forward when the autonomous run bailed out.
+
+All four lifecycle scripts are idempotent — re-invocation on the same
+state is a no-op (prints "already done" and exits 0).
 
 | Command | Caller | Purpose |
 |---|---|---|
@@ -153,6 +171,25 @@ on the same state is a no-op (it prints "already done" and exits 0).
 | `npx tsx tools/review.ts <packet-id> --approve` | code reviewer agent | Approve the code review |
 | `npx tsx tools/review.ts <packet-id> --request-changes` | code reviewer agent | Request changes |
 | `npx tsx tools/complete.ts <packet-id>` | dev/qa agent | After review approval (dev) or implementation (QA): runs build/lint/test, writes the completion record |
+
+### Approval semantics
+
+`run.ts` accepts two kinds of inputs and treats them differently:
+
+- **Spec-driven** (`specs/<id>.md` exists). The intent file is a
+  derived artifact written by `ensureIntentForSpec`. Its `status`
+  field reflects translator state, not human approval. The factory
+  SKIPS the intent-status check on this path because authoring the
+  spec IS the gate.
+- **Intent-driven** (only `intents/<id>.json` exists, no spec). The
+  human edited the intent file directly. The intent's `status` IS
+  the gate — `run.ts` requires it to be one of `approved`, `planned`,
+  or `delivered` before planning. Anything else (including the
+  default `proposed`) is rejected with an actionable error pointing
+  at the intent file.
+
+This is the only place the spec-vs-intent distinction shows up at
+runtime.
 
 ---
 

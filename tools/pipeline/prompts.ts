@@ -66,6 +66,14 @@ export function buildDevPrompt(packet: RawPacket, config: FactoryConfig): string
  *
  * The factory_dir is interpolated into the CLI hint at the bottom so
  * the reviewer knows the right path to invoke for either decision.
+ *
+ * AUTONOMOUS-MODE NOTE: this is the one prompt that DOES instruct an
+ * agent to call a lifecycle CLI. `review.ts --approve` /
+ * `--request-changes` is how the reviewer's verdict reaches the
+ * pipeline — without it, the orchestrator would have to guess from
+ * stdout. The dev/rework/QA prompts deliberately tell their agents NOT
+ * to call lifecycle CLIs (the pipeline handles state transitions for
+ * those phases). See AGENTS.md "Agent protocol" for the full split.
  */
 export function buildReviewPrompt(packet: RawPacket, config: FactoryConfig): string {
   const personaInstructions = config.personas.code_reviewer.instructions;

@@ -123,9 +123,9 @@ function readEventStream(artifactRoot: string, runId: string): Event[] {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — first-attempt success', () => {
-  it('returns kind: ok with value; emits NO recovery events', () => {
+  it('returns kind: ok with value; emits NO recovery events', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(() => ok(42), ctx, noWait);
+    const r = await runWithRecovery(() => ok(42), ctx, noWait);
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.value).toBe(42);
 
@@ -140,9 +140,9 @@ describe('runWithRecovery — first-attempt success', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — ProviderTransient', () => {
-  it('1 retry succeeds; emits attempt_started(2) -> succeeded(2)', () => {
+  it('1 retry succeeds; emits attempt_started(2) -> succeeded(2)', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'HTTP 503 Service Unavailable'),
         ok('done'),
@@ -157,7 +157,7 @@ describe('runWithRecovery — ProviderTransient', () => {
     expect(events).toEqual(['recovery.attempt_started', 'recovery.succeeded']);
   });
 
-  it('3 transients exhaust the budget -> recovery.exhausted -> RECLASSIFY -> ProviderUnavailable cascade fires', () => {
+  it('3 transients exhaust the budget -> recovery.exhausted -> RECLASSIFY -> ProviderUnavailable cascade fires', async () => {
     // Phase 7 — when ProviderTransient exhausts (2 retries used, a
     // 3rd transient failure observed), the loop reclassifies to
     // ProviderUnavailable so the cascade walk begins. With no
@@ -166,7 +166,7 @@ describe('runWithRecovery — ProviderTransient', () => {
     // event still fires (the transient budget IS exhausted — that's
     // honest); the escalation scenario is ProviderUnavailable.
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'HTTP 503'),
         fail(1, 'HTTP 503'),
@@ -187,7 +187,7 @@ describe('runWithRecovery — ProviderTransient', () => {
     expect(events.indexOf('recovery.exhausted')).toBeLessThan(events.indexOf('recovery.escalated'));
   });
 
-  it('Phase 7 reclassification: 2 transients then ProviderUnavailable cascade succeeds on next hop', () => {
+  it('Phase 7 reclassification: 2 transients then ProviderUnavailable cascade succeeds on next hop', async () => {
     // Cascade has 2 hops. Primary: 2 transient failures (consumed
     // by ProviderTransient retries). 3rd failure exhausts the
     // transient budget; loop reclassifies to ProviderUnavailable;
@@ -218,7 +218,7 @@ describe('runWithRecovery — ProviderTransient', () => {
       }
       return ok('cascade-recovered');
     };
-    const r = runWithRecovery(op, ctx, noWait);
+    const r = await runWithRecovery(op, ctx, noWait);
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.value).toBe('cascade-recovered');
     expect(calls.length).toBe(4);
@@ -240,14 +240,14 @@ describe('runWithRecovery — ProviderTransient', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
-  it('with no cascade context: escalates immediately with "no cascade configured" reason', () => {
+  it('with no cascade context: escalates immediately with "no cascade configured" reason', async () => {
     // Phase 7 — when the FailureContext supplied by the closure
     // carries no `cascade` field, the recipe escalates with an
     // explicit no-cascade reason. The orchestration loop emits
     // recovery.escalated; no attempt_started.
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, "Provider 'codex' is disabled"),
       ], calls),
@@ -266,7 +266,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
     expect(events).not.toContain('recovery.attempt_started');
   });
 
-  it('with a cascade: dispatches cascade_provider until the cascade succeeds', () => {
+  it('with a cascade: dispatches cascade_provider until the cascade succeeds', async () => {
     // Cascade has 3 hops. Primary fails ProviderUnavailable; second
     // hop fails ProviderUnavailable; third hop succeeds. Each retry
     // emits attempt_started; the final retry emits succeeded.
@@ -302,7 +302,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
       }
       return r;
     };
-    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    const r = await runWithRecovery(opWithCascade, ctx, noWait);
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.value).toBe('cascade-success');
     expect(calls.length).toBe(3);
@@ -317,7 +317,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
     expect(types).toContain('recovery.succeeded');
   });
 
-  it('with a cascade exhausted: escalates naming the full attempted list', () => {
+  it('with a cascade exhausted: escalates naming the full attempted list', async () => {
     const ctx = defaultCtx();
     const cascade = [
       { provider: 'codex' as const, model: 'A' },
@@ -335,7 +335,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
         cascade,
       },
     });
-    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    const r = await runWithRecovery(opWithCascade, ctx, noWait);
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       expect(r.scenario).toBe('ProviderUnavailable');
@@ -345,7 +345,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
     }
   });
 
-  it('Phase 7 round-2: cascade of length 5 exhausts after EXACTLY 5 attempts (data-driven cap, not a static sentinel)', () => {
+  it('Phase 7 round-2: cascade of length 5 exhausts after EXACTLY 5 attempts (data-driven cap, not a static sentinel)', async () => {
     // Pin Issue 3: ProviderUnavailable's cap is the cascade length,
     // not the static SCENARIO_RETRY_BUDGET entry. A 5-element
     // cascade must produce 5 closure invocations (primary + 4
@@ -383,7 +383,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
         },
       };
     };
-    const r = runWithRecovery(opWithCascade, ctx, noWait);
+    const r = await runWithRecovery(opWithCascade, ctx, noWait);
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       expect(r.scenario).toBe('ProviderUnavailable');
@@ -405,7 +405,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
     expect(calls[4]?.cascade).toEqual({ provider: 'claude', model: 'm4' });
   });
 
-  it('Phase 7 round-3: BuildFailed then remediation ProviderUnavailable with long cascade exhausts via recipe (not safety bound)', () => {
+  it('Phase 7 round-3: BuildFailed then remediation ProviderUnavailable with long cascade exhausts via recipe (not safety bound)', async () => {
     // Pin the round-3 finding: the safety bound must be DYNAMIC.
     //
     // Setup mirrors the BuildFailed-then-ProviderUnavailable
@@ -474,7 +474,7 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
         },
       };
     };
-    const r = runWithRecovery(op, ctx, noWait);
+    const r = await runWithRecovery(op, ctx, noWait);
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       // Authoritative escalation source: the recipe, not the loop.
@@ -506,10 +506,10 @@ describe('runWithRecovery — ProviderUnavailable (Phase 7 cascade)', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — always-escalate scenarios', () => {
-  it('LintFailed escalates immediately, no retry', () => {
+  it('LintFailed escalates immediately, no retry', async () => {
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, '', '', 'verification', ['lint']),
       ], calls),
@@ -527,10 +527,10 @@ describe('runWithRecovery — always-escalate scenarios', () => {
     expect(events).toContain('recovery.escalated');
   });
 
-  it('TestFailed escalates immediately, no retry', () => {
+  it('TestFailed escalates immediately, no retry', async () => {
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, '', '', 'verification', ['tests']),
       ], calls),
@@ -542,10 +542,10 @@ describe('runWithRecovery — always-escalate scenarios', () => {
     expect(calls.length).toBe(1);
   });
 
-  it('CompletionGateBlocked escalates immediately, no retry', () => {
+  it('CompletionGateBlocked escalates immediately, no retry', async () => {
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'pre-commit hook failed (FI-7 enforcement)', '', 'lifecycle'),
       ], calls),
@@ -563,10 +563,10 @@ describe('runWithRecovery — always-escalate scenarios', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — BuildFailed', () => {
-  it('1 retry with the guardrail prompt suffix', () => {
+  it('1 retry with the guardrail prompt suffix', async () => {
     const ctx = defaultCtx();
     const calls: AttemptContext[] = [];
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'error TS2304', '', 'verification', ['build']),
         ok('built'),
@@ -584,9 +584,9 @@ describe('runWithRecovery — BuildFailed', () => {
     expect(calls[1]!.guardrailPrompt).toContain('error TS2304');
   });
 
-  it('2 BuildFailed in a row exhaust the budget (1 retry)', () => {
+  it('2 BuildFailed in a row exhaust the budget (1 retry)', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'error TS2304', '', 'verification', ['build']),
         fail(1, 'error TS2304', '', 'verification', ['build']),
@@ -604,7 +604,7 @@ describe('runWithRecovery — BuildFailed', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — StaleBranch', () => {
-  it('successful rebase: runs git fetch origin -> git rebase origin/main -> retries op', () => {
+  it('successful rebase: runs git fetch origin -> git rebase origin/main -> retries op', async () => {
     const ctx = defaultCtx();
     const opCalls: AttemptContext[] = [];
     const op = queuedOp<string>([
@@ -617,7 +617,7 @@ describe('runWithRecovery — StaleBranch', () => {
       return { exitCode: 0, stdout: '', stderr: '' };
     };
 
-    const r = runWithRecovery(op, ctx, { ...noWait, gitRunner });
+    const r = await runWithRecovery(op, ctx, { ...noWait, gitRunner });
     expect(r.kind).toBe('ok');
     expect(gitCalls).toEqual([
       ['fetch', 'origin'],
@@ -627,7 +627,7 @@ describe('runWithRecovery — StaleBranch', () => {
     expect(opCalls[1]!.action).toBe('git_rebase_then_retry');
   });
 
-  it('rebase conflict: runs rebase --abort and escalates WITHOUT retrying op', () => {
+  it('rebase conflict: runs rebase --abort and escalates WITHOUT retrying op', async () => {
     const ctx = defaultCtx();
     const opCalls: AttemptContext[] = [];
     const op = queuedOp<string>([
@@ -643,7 +643,7 @@ describe('runWithRecovery — StaleBranch', () => {
       return { exitCode: 0, stdout: '', stderr: '' };
     };
 
-    const r = runWithRecovery(op, ctx, { ...noWait, gitRunner });
+    const r = await runWithRecovery(op, ctx, { ...noWait, gitRunner });
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       expect(r.scenario).toBe('StaleBranch');
@@ -658,7 +658,7 @@ describe('runWithRecovery — StaleBranch', () => {
     expect(opCalls.length).toBe(1); // op NOT retried
   });
 
-  it('git fetch failure: escalates WITHOUT running rebase or retrying op', () => {
+  it('git fetch failure: escalates WITHOUT running rebase or retrying op', async () => {
     const ctx = defaultCtx();
     const opCalls: AttemptContext[] = [];
     const op = queuedOp<string>([
@@ -670,7 +670,7 @@ describe('runWithRecovery — StaleBranch', () => {
       return { exitCode: 128, stdout: '', stderr: 'fatal: unable to access origin' };
     };
 
-    const r = runWithRecovery(op, ctx, { ...noWait, gitRunner });
+    const r = await runWithRecovery(op, ctx, { ...noWait, gitRunner });
     expect(r.kind).toBe('escalated');
     if (r.kind === 'escalated') {
       expect(r.scenario).toBe('StaleBranch');
@@ -686,7 +686,7 @@ describe('runWithRecovery — StaleBranch', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — cap-blocked retry', () => {
-  it('per-run cap crossed before retry: emits cost.cap_crossed BEFORE recovery.escalated', () => {
+  it('per-run cap crossed before retry: emits cost.cap_crossed BEFORE recovery.escalated', async () => {
     const ctx = defaultCtx();
     // Pre-seed a cost record so aggregateRunCost returns total >= cap.
     const fs = require('node:fs') as typeof import('node:fs');
@@ -708,7 +708,7 @@ describe('runWithRecovery — cap-blocked retry', () => {
       }) + '\n',
     );
 
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         fail(1, 'HTTP 503'),
       ]),
@@ -733,7 +733,7 @@ describe('runWithRecovery — cap-blocked retry', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — per-packet budget across calls', () => {
-  it('shared budget: 2 ProviderTransient retries used; 3rd transient call reclassifies to ProviderUnavailable', () => {
+  it('shared budget: 2 ProviderTransient retries used; 3rd transient call reclassifies to ProviderUnavailable', async () => {
     // Phase 7 — when the per-packet ProviderTransient budget is
     // already exhausted (used across earlier runWithRecovery calls
     // in the same packet), the next transient failure reclassifies
@@ -741,7 +741,7 @@ describe('runWithRecovery — per-packet budget across calls', () => {
     // attached, the recipe escalates with no-cascade reason.
     const ctx = defaultCtx();
     // First call: 1 transient -> 1 retry succeeds (1 retry used)
-    const r1 = runWithRecovery(
+    const r1 = await runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503'), ok('a')]),
       ctx,
       noWait,
@@ -749,7 +749,7 @@ describe('runWithRecovery — per-packet budget across calls', () => {
     expect(r1.kind).toBe('ok');
 
     // Second call: 1 transient -> 1 retry succeeds (2 retries total)
-    const r2 = runWithRecovery(
+    const r2 = await runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503'), ok('b')]),
       ctx,
       noWait,
@@ -759,7 +759,7 @@ describe('runWithRecovery — per-packet budget across calls', () => {
     // Third call: 1 transient -> budget=0 left -> RECLASSIFY to
     // ProviderUnavailable -> recipe escalates because no cascade was
     // attached to the failure context.
-    const r3 = runWithRecovery(
+    const r3 = await runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503')]),
       ctx,
       noWait,
@@ -771,24 +771,24 @@ describe('runWithRecovery — per-packet budget across calls', () => {
     }
   });
 
-  it('mixed scenarios tracked independently: 1 BuildFailed retry + 2 transient retries all succeed', () => {
+  it('mixed scenarios tracked independently: 1 BuildFailed retry + 2 transient retries all succeed', async () => {
     const ctx = defaultCtx();
     // 1 transient retry
-    const r1 = runWithRecovery(
+    const r1 = await runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503'), ok('t')]),
       ctx,
       noWait,
     );
     expect(r1.kind).toBe('ok');
     // 1 BuildFailed retry
-    const r2 = runWithRecovery(
+    const r2 = await runWithRecovery(
       queuedOp<string>([fail(1, 'error TS2304', '', 'verification', ['build']), ok('b')]),
       ctx,
       noWait,
     );
     expect(r2.kind).toBe('ok');
     // 1 more transient retry — still allowed because budget=2 and only 1 used
-    const r3 = runWithRecovery(
+    const r3 = await runWithRecovery(
       queuedOp<string>([fail(1, 'HTTP 503'), ok('t2')]),
       ctx,
       noWait,
@@ -802,9 +802,9 @@ describe('runWithRecovery — per-packet budget across calls', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — unclassified failure', () => {
-  it('escalates immediately with honest "we do not know" reason', () => {
+  it('escalates immediately with honest "we do not know" reason', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([
         // Empty kind hint, no recognizable text.
         { outcome: 'fail', failure: { exit_code: 1, stdout: '', stderr: 'mystery banner', error_message: null } },
@@ -825,18 +825,18 @@ describe('runWithRecovery — unclassified failure', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — disableRecovery', () => {
-  it('runs op once on success; no events', () => {
+  it('runs op once on success; no events', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(() => ok(99), ctx, { disableRecovery: true });
+    const r = await runWithRecovery(() => ok(99), ctx, { disableRecovery: true });
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.value).toBe(99);
     const events = readEventStream(ctx.artifactRoot, ctx.runId);
     expect(events.length).toBe(0);
   });
 
-  it('on failure: surfaces escalation discriminator; no events; no escalation file written', () => {
+  it('on failure: surfaces escalation discriminator; no events; no escalation file written', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       () => fail(1, 'HTTP 503'),
       ctx,
       { disableRecovery: true },
@@ -858,9 +858,9 @@ describe('runWithRecovery — disableRecovery', () => {
 // ---------------------------------------------------------------------------
 
 describe('runWithRecovery — escalation record', () => {
-  it('writes one escalation file with the structured record', () => {
+  it('writes one escalation file with the structured record', async () => {
     const ctx = defaultCtx();
-    const r = runWithRecovery(
+    const r = await runWithRecovery(
       queuedOp<string>([fail(1, '', '', 'verification', ['lint'])]),
       ctx,
       noWait,
@@ -876,9 +876,9 @@ describe('runWithRecovery — escalation record', () => {
     }
   });
 
-  it('the escalation dir gets exactly one file per escalation', () => {
+  it('the escalation dir gets exactly one file per escalation', async () => {
     const ctx = defaultCtx();
-    runWithRecovery(
+    await runWithRecovery(
       queuedOp<string>([fail(1, '', '', 'verification', ['lint'])]),
       ctx,
       noWait,

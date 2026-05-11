@@ -227,8 +227,11 @@ function markPacketFailed(args: MarkPacketFailedArgs): void {
  * QA packet whose dev dependency is complete, then complete the
  * packet. Returns the lists of completed, failed, and skipped
  * packet ids.
+ *
+ * Async since the convergence pass migrated `invokeAgent` to a
+ * Promise-returning shape so long agent runs can yield to heartbeats.
  */
-export function runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult {
+export async function runVerifyPhase(opts: VerifyPhaseOptions): Promise<VerifyPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   // Phase 5.5: emit phase.started at entry. Best-effort.
@@ -246,7 +249,7 @@ export function runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult {
     );
   }
 
-  const result = runVerifyPhaseInner(opts);
+  const result = await runVerifyPhaseInner(opts);
 
   if (eventCtx !== null) {
     // Outcome: 'failed' if any QA packet failed; 'ok' otherwise.
@@ -264,7 +267,7 @@ export function runVerifyPhase(opts: VerifyPhaseOptions): VerifyPhaseResult {
   return result;
 }
 
-function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
+async function runVerifyPhaseInner(opts: VerifyPhaseOptions): Promise<VerifyPhaseResult> {
   const { feature, config, artifactRoot, projectRoot, dryRun } = opts;
 
   const packets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'));
@@ -396,14 +399,18 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
     // TestFailed don't apply at this boundary (the QA agent is not
     // expected to produce those classifications until completePacket
     // runs verification).
-    const qaRecovered = runWithRecovery<InvokeResult>(
-      (attempt: AttemptContext): OperationResult<InvokeResult> => {
+    const qaRecovered = await runWithRecovery<InvokeResult>(
+      async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
         // Phase 7 round-2 — primary derived from cascade[0]; see
         // develop_phase.ts for the rationale.
         const target = attempt.cascade ?? qaPrimary;
         const qaPromptStr = buildQaPrompt(packet, config);
-        const r = invokeAgent(
+        const r = await invokeAgent(
           target.provider, qaPromptStr, config, qaTier, target.model,
+          {
+            message: `qa verification running for packet '${packet.id}'...`,
+            channel: 'verify',
+          },
         );
         recordInvocationCost(
           r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -494,10 +501,10 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
     let pendingRemediationPrompt: string | null = null;
     let lastRemediationTarget: typeof devPrimary | null = null;
 
-    const runRemediation = (
+    const runRemediation = async (
       target: typeof devPrimary,
       guardrail: string,
-    ): OperationResult<true> | null => {
+    ): Promise<OperationResult<true> | null> => {
       if (devPacketForRemediation === null) {
         return {
           outcome: 'fail',
@@ -522,8 +529,12 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
       const remediationPrompt =
         `${basePrompt}\n\n---\n${qaContext}\n\n${guardrail}`;
       lastRemediationTarget = target;
-      const r = invokeAgent(
+      const r = await invokeAgent(
         target.provider, remediationPrompt, config, devTier, target.model,
+        {
+          message: `build remediation invoked for packet '${packet.id}' (dev packet '${devPacketForRemediation.id}')...`,
+          channel: 'verify',
+        },
       );
       recordInvocationCost(
         r, opts.runId, packet.id, opts.specId ?? null, artifactRoot,
@@ -551,8 +562,8 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
       return null;
     };
 
-    const completeRecovered = runWithRecovery<true>(
-      (attempt: AttemptContext): OperationResult<true> => {
+    const completeRecovered = await runWithRecovery<true>(
+      async (attempt: AttemptContext): Promise<OperationResult<true>> => {
         // Step 1: handle the remediation half of the compound
         // BuildFailed action. See develop_phase.ts for the three-
         // case rationale (retry_with_guardrail_prompt /
@@ -561,17 +572,17 @@ function runVerifyPhaseInner(opts: VerifyPhaseOptions): VerifyPhaseResult {
         if (attempt.action === 'retry_with_guardrail_prompt'
           && attempt.guardrailPrompt !== undefined) {
           pendingRemediationPrompt = attempt.guardrailPrompt;
-          const fail = runRemediation(devPrimary, pendingRemediationPrompt);
+          const fail = await runRemediation(devPrimary, pendingRemediationPrompt);
           if (fail !== null) return fail;
         } else if (attempt.action === 'cascade_provider'
           && attempt.cascade !== undefined
           && pendingRemediationPrompt !== null) {
-          const fail = runRemediation(attempt.cascade, pendingRemediationPrompt);
+          const fail = await runRemediation(attempt.cascade, pendingRemediationPrompt);
           if (fail !== null) return fail;
         } else if (attempt.action === 'retry_same'
           && pendingRemediationPrompt !== null
           && lastRemediationTarget !== null) {
-          const fail = runRemediation(lastRemediationTarget, pendingRemediationPrompt);
+          const fail = await runRemediation(lastRemediationTarget, pendingRemediationPrompt);
           if (fail !== null) return fail;
         }
         try {

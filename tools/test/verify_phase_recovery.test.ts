@@ -323,7 +323,7 @@ function expectEscalationInvariants(
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — TestFailed escalates: post-escalation invariants', () => {
-  it('packet marked failed; in failed list; packet.failed emitted; no packet.completed for escalated packet; FOUR-INVARIANT', () => {
+  it('packet marked failed; in failed list; packet.failed emitted; no packet.completed for escalated packet; FOUR-INVARIANT', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
@@ -331,7 +331,7 @@ describe('runVerifyPhase — TestFailed escalates: post-escalation invariants', 
     __completeQueue.push({
       ci_pass: false, build_pass: true, lint_pass: true, tests_pass: false,
     });
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d', 'pkt-q']),
       config: makeConfig(),
       artifactRoot: root,
@@ -354,14 +354,14 @@ describe('runVerifyPhase — TestFailed escalates: post-escalation invariants', 
 });
 
 describe('runVerifyPhase — LintFailed escalates immediately, no retry', () => {
-  it('completePacket lint fail -> escalated; no recovery.attempt_started; FOUR-INVARIANT', () => {
+  it('completePacket lint fail -> escalated; no recovery.attempt_started; FOUR-INVARIANT', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
     __completeQueue.push({
       ci_pass: false, build_pass: true, lint_pass: false, tests_pass: true,
     });
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d', 'pkt-q']),
       config: makeConfig(),
       artifactRoot: root,
@@ -381,7 +381,7 @@ describe('runVerifyPhase — LintFailed escalates immediately, no retry', () => 
 });
 
 describe('runVerifyPhase — StaleBranch from completePacket throw is reachable', () => {
-  it('completePacket throws stale-branch -> recovery dispatches StaleBranch -> rebase conflict -> escalated', () => {
+  it('completePacket throws stale-branch -> recovery dispatches StaleBranch -> rebase conflict -> escalated', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
@@ -397,7 +397,7 @@ describe('runVerifyPhase — StaleBranch from completePacket throw is reachable'
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d', 'pkt-q']),
       config: makeConfig(),
       artifactRoot: root,
@@ -423,7 +423,7 @@ describe('runVerifyPhase — StaleBranch from completePacket throw is reachable'
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — QA BuildFailed remediation invokes the DEV packet', () => {
-  it('build_pass=false at completePacket -> dev-agent remediation runs against the dev packet via verifies', () => {
+  it('build_pass=false at completePacket -> dev-agent remediation runs against the dev packet via verifies', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-dev-1', 'Dev packet implementation');
     writeQaPacket(root, 'pkt-qa-1', 'pkt-dev-1');
@@ -436,7 +436,7 @@ describe('runVerifyPhase — QA BuildFailed remediation invokes the DEV packet',
     __completeQueue.push({
       ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
     });
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-dev-1', 'pkt-qa-1']),
       config: makeConfig(),
       artifactRoot: root,
@@ -470,7 +470,7 @@ describe('runVerifyPhase — QA BuildFailed remediation invokes the DEV packet',
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — Phase 7 round-2: BuildFailed dev-agent remediation preserved across cascade', () => {
-  it('completePacket fails build -> primary dev-remediation fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', () => {
+  it('completePacket fails build -> primary dev-remediation fails ProviderUnavailable -> cascade fires -> 2nd hop remediation succeeds -> completePacket retries and succeeds', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d-rem', 'Dev packet implementation');
     writeQaPacket(root, 'pkt-q-rem', 'pkt-d-rem');
@@ -509,7 +509,7 @@ describe('runVerifyPhase — Phase 7 round-2: BuildFailed dev-agent remediation 
       return c as unknown as FactoryConfig;
     })();
 
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d-rem', 'pkt-q-rem']),
       config: cfg,
       artifactRoot: root,
@@ -551,13 +551,13 @@ describe('runVerifyPhase — Phase 7 round-2: BuildFailed dev-agent remediation 
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — ProviderTransient retry succeeds', () => {
-  it('first QA call hits 503; retry succeeds; packet completed', () => {
+  it('first QA call hits 503; retry succeeds; packet completed', async () => {
     const root = mkRoot();
     writeDevPacket(root, 'pkt-d', 'Dev');
     writeQaPacket(root, 'pkt-q', 'pkt-d');
     __invokeQueue.push({ exit_code: 1, stderr: 'HTTP 503 Service Unavailable' });
     __invokeQueue.push({ exit_code: 0 });
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d', 'pkt-q']),
       config: makeConfig(),
       artifactRoot: root,
@@ -582,7 +582,7 @@ describe('runVerifyPhase — ProviderTransient retry succeeds', () => {
 // ---------------------------------------------------------------------------
 
 describe('runVerifyPhase — QA packet whose dev dependency failed is terminated', () => {
-  it('dev packet status=failed (no completion) -> QA packet placed in failed list with cascaded scenario', () => {
+  it('dev packet status=failed (no completion) -> QA packet placed in failed list with cascaded scenario', async () => {
     const root = mkRoot();
     // Write a dev packet in terminal-failed state with NO completion record.
     writeFileSync(
@@ -604,7 +604,7 @@ describe('runVerifyPhase — QA packet whose dev dependency failed is terminated
     );
     writeQaPacket(root, 'pkt-q', 'pkt-d-bad');
 
-    const result = runVerifyPhase({
+    const result = await runVerifyPhase({
       feature: writeFeature(root, 'feat-x', ['pkt-d-bad', 'pkt-q']),
       config: makeConfig(),
       artifactRoot: root,

@@ -34,10 +34,13 @@ intent artifact from the spec at run time. (Hand-authored
 
 Everything after `run.ts` is autonomous.
 
-> **Operator vs. agent.** The factory has one operator command: `run.ts`.
+> **Operator vs. agent.** Operators run one command: `run.ts <spec-id>`.
 > The lifecycle scripts (`start`, `request-review`, `review`, `complete`)
-> are how agents signal back to the factory during a run — they are not
-> commands operators invoke. See [Agent protocol](#agent-protocol) below.
+> are the underlying protocol surface; in autonomous mode the pipeline
+> calls them as library functions. They are also available as a manual
+> surface for humans or self-driving agents who want to walk a single
+> packet through its states by hand. See [Agent protocol](#agent-protocol)
+> below.
 
 ---
 
@@ -297,6 +300,17 @@ referenced `spec_path`) continue to work. `run.ts` accepts an intent ID
 the same way it accepts a spec ID. New work should prefer specs because
 markdown is easier to author and review than JSON.
 
+**Approval gate.** For intent-driven runs the `status` field is the
+human governance gate. `run.ts` accepts `approved`, `planned`, and
+`delivered`; it rejects `proposed`, `superseded`, and any missing or
+unknown value with a clear error pointing at the intent file.
+`approved` is what an operator sets on first authoring; `planned` and
+`delivered` are accepted so idempotent reruns of an intent that
+already progressed past planning continue to work. See [Artifact
+Types → Intent](#intent) below for the full per-status semantics.
+Spec-driven runs do NOT consult the derived intent's `status`;
+authoring the spec at `specs/<id>.md` IS the gate.
+
 The two intent shapes still supported during the transition:
 
 **Inline spec** — for short, self-contained intents:
@@ -311,7 +325,7 @@ The two intent shapes still supported during the transition:
     "Preserve the existing public API",
     "Split work into auditable dev/qa packet pairs"
   ],
-  "status": "proposed",
+  "status": "approved",
   "feature_id": null,
   "created_by": { "kind": "human", "id": "alice" },
   "created_at": "2025-01-15T09:00:00Z"
@@ -331,7 +345,7 @@ live in `docs/specs/`:
     "Architectural change — must be phased per the spec",
     "Preserve all invariants listed in the spec's §7"
   ],
-  "status": "proposed",
+  "status": "approved",
   "feature_id": null,
   "created_by": { "kind": "human", "id": "alice" },
   "created_at": "2026-04-11T09:00:00Z"
@@ -369,9 +383,26 @@ Required fields:
 - `id` — kebab-case identifier (must match filename)
 - `title` — one-line summary of the requested outcome
 - `spec` (or `spec_path`) — planner input describing the desired system behavior or change
-- `status` — `proposed`, `planned`, `superseded`, or `delivered`
+- `status` — `proposed`, `approved`, `planned`, `delivered`, or `superseded`
 - `created_by` — who created the intent
 - `created_at` — ISO 8601 timestamp
+
+Status semantics by run-input source:
+
+- **Spec-driven runs** (`run.ts <spec-id>`): the orchestrator
+  generates the intent with `status: "proposed"`. That value is a
+  generator-set artifact, NOT a governance signal — the spec
+  authoring is the approval. `run.ts` accepts it and continues.
+- **Intent-driven runs** (`run.ts <intent-id>`, hand-authored
+  intents): `run.ts` checks the status field as a governance gate.
+  - `approved` — grants run authority. This is what an operator
+    sets when hand-authoring an intent for the first time.
+  - `planned` / `delivered` — accepted for idempotent reruns of
+    intents that already progressed past the plan phase.
+  - `proposed` — REJECTED with an actionable error (the operator
+    must edit the file and set `status: "approved"`).
+  - `superseded` — REJECTED; the intent is terminal.
+  - missing / unknown — REJECTED.
 
 Optional fields:
 - `constraints` — planner constraints or non-goals
@@ -554,10 +585,23 @@ Schema validation + referential integrity + invariant enforcement.
 
 ### Agent protocol
 
-The lifecycle scripts below are how agents signal back to the factory.
-**Agents call these; operators do not.** `run.ts` invokes the same
-scripts as library functions when driving the pipeline. All four are
-idempotent — re-invocation on the same state is a no-op.
+The lifecycle scripts below are the protocol surface for moving a
+packet through its states. The same scripts back two modes:
+
+- **Autonomous mode** — `run.ts <spec-id>`. The orchestrator calls
+  `start`, `request-review`, and `complete` as library functions while
+  driving the develop / verify phases. Agents perform the *work* but
+  do **not** invoke those three CLIs themselves; the prompts the
+  factory ships explicitly say so. `review.ts` is the one exception
+  — the code reviewer calls it to record its verdict, because that's
+  how the pipeline learns approve vs. request-changes.
+- **Manual mode** — humans (or self-driving agents) invoke the
+  lifecycle CLIs directly to walk a packet through its states. This
+  is the back-compat surface and the way to drive a stuck packet
+  forward when the autonomous run bailed out.
+
+All four lifecycle scripts are idempotent — re-invocation on the same
+state is a no-op.
 
 #### Start
 

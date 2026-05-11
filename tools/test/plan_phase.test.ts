@@ -73,7 +73,7 @@ describe('runPlanPhase — structural shape', () => {
 });
 
 describe('runPlanPhase — pre-existing feature short-circuit', () => {
-  it('returns the existing feature_id without invoking an agent when the intent has already been planned', () => {
+  it('returns the existing feature_id without invoking an agent when the intent has already been planned', async () => {
     const root = setupArtifactRoot();
     try {
       // Pre-existing feature linked to the intent.
@@ -93,7 +93,7 @@ describe('runPlanPhase — pre-existing feature short-circuit', () => {
         'utf-8',
       );
 
-      const result = runPlanPhase({
+      const result = await runPlanPhase({
         intent: makeIntent({ id: 'intent-x' }),
         config: makeConfig(),
         artifactRoot: root,
@@ -106,7 +106,7 @@ describe('runPlanPhase — pre-existing feature short-circuit', () => {
     }
   });
 
-  it('does NOT mutate the intent file when a feature already exists (idempotence)', () => {
+  it('does NOT mutate the intent file when a feature already exists (idempotence)', async () => {
     const root = setupArtifactRoot();
     try {
       writeFileSync(
@@ -126,7 +126,7 @@ describe('runPlanPhase — pre-existing feature short-circuit', () => {
       const start = Date.now();
       while (Date.now() - start < 20) { /* spin to catch any rewrite */ }
 
-      runPlanPhase({
+      await runPlanPhase({
         intent: makeIntent({ id: 'intent-y' }),
         config: makeConfig(),
         artifactRoot: root,
@@ -143,7 +143,7 @@ describe('runPlanPhase — pre-existing feature short-circuit', () => {
 });
 
 describe('runPlanPhase — dry-run path', () => {
-  it('returns { feature_id: null } in dry-run mode without invoking an agent', () => {
+  it('returns { feature_id: null } in dry-run mode without invoking an agent', async () => {
     const root = setupArtifactRoot();
     try {
       // No pre-existing feature; without dry-run this would call the agent.
@@ -153,7 +153,7 @@ describe('runPlanPhase — dry-run path', () => {
         'utf-8',
       );
 
-      const result = runPlanPhase({
+      const result = await runPlanPhase({
         intent: makeIntent({ id: 'intent-d' }),
         config: makeConfig(),
         artifactRoot: root,
@@ -169,14 +169,14 @@ describe('runPlanPhase — dry-run path', () => {
     }
   });
 
-  it('does not modify the intent file in dry-run mode', () => {
+  it('does not modify the intent file in dry-run mode', async () => {
     const root = setupArtifactRoot();
     try {
       const intentPath = join(root, 'intents', 'intent-dry.json');
       const intentBefore = JSON.stringify({ id: 'intent-dry', title: 't' }, null, 2) + '\n';
       writeFileSync(intentPath, intentBefore, 'utf-8');
 
-      runPlanPhase({
+      await runPlanPhase({
         intent: makeIntent({ id: 'intent-dry' }),
         config: makeConfig(),
         artifactRoot: root,

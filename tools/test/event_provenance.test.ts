@@ -72,10 +72,10 @@ function writeSpec(root: string, id: string): void {
 }
 
 describe('event provenance', () => {
-  it("a full orchestrator run under vitest tags every event with 'test'", () => {
+  it("a full orchestrator run under vitest tags every event with 'test'", async () => {
     const root = mkRoot();
     writeSpec(root, 'pv');
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['pv'],
       config: ({
         project_name: 'pv',

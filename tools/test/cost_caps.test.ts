@@ -300,7 +300,7 @@ function pushInvocation(opts: QueuedInvoke): void {
 // ---------------------------------------------------------------------------
 
 describe('per-run cost cap', () => {
-  it('emits cost.cap_crossed(per_run) and aborts the run; subsequent specs not attempted', () => {
+  it('emits cost.cap_crossed(per_run) and aborts the run; subsequent specs not attempted', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_run: 1.0 },
@@ -318,7 +318,7 @@ describe('per-run cost cap', () => {
     // the run aborts after spec-B's first invocation crosses the cap.
     pushInvocation({ exit_code: 0, dollars: 0.99 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A', 'spec-B'],
       config,
       projectRoot: root,
@@ -348,7 +348,7 @@ describe('per-run cost cap', () => {
     expect(crossedIdx).toBeLessThan(failedIdx);
   });
 
-  it('does not abort when running_total stays strictly below cap', () => {
+  it('does not abort when running_total stays strictly below cap', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_run: 10 },
@@ -359,7 +359,7 @@ describe('per-run cost cap', () => {
     pushInvocation({ exit_code: 0, dollars: 0.5 });
     pushInvocation({ exit_code: 0, dollars: 0.5 }); // review
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -382,7 +382,7 @@ describe('per-run cost cap', () => {
 // ---------------------------------------------------------------------------
 
 describe('per-packet cost cap', () => {
-  it('fails just the packet that crossed; orchestrator continues to next independent packet', () => {
+  it('fails just the packet that crossed; orchestrator continues to next independent packet', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_packet: 0.5 },
@@ -402,7 +402,7 @@ describe('per-packet cost cap', () => {
     pushInvocation({ exit_code: 0, dollars: 0.1 });
     pushInvocation({ exit_code: 0, dollars: 0.1 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -426,7 +426,7 @@ describe('per-packet cost cap', () => {
     expect(__invokeCallCount).toBeGreaterThanOrEqual(2);
   });
 
-  it('null-dollar invocations do NOT count toward the per-packet cap', () => {
+  it('null-dollar invocations do NOT count toward the per-packet cap', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_packet: 0.10 },
@@ -441,7 +441,7 @@ describe('per-packet cost cap', () => {
       pushInvocation({ exit_code: 0, dollars: null });
     }
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -460,7 +460,7 @@ describe('per-packet cost cap', () => {
 // ---------------------------------------------------------------------------
 
 describe('per-day cost cap', () => {
-  it('crosses with prior recorded dollars; emits cost.cap_crossed(per_day) and records the block', () => {
+  it('crosses with prior recorded dollars; emits cost.cap_crossed(per_day) and records the block', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_day: 5.0 },
@@ -495,7 +495,7 @@ describe('per-day cost cap', () => {
     // Queue extra in case the implementation reaches review/etc.
     pushInvocation({ exit_code: 0, dollars: 0.10 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -524,7 +524,7 @@ describe('per-day cost cap', () => {
 // ---------------------------------------------------------------------------
 
 describe('day-cap pre-flight gate', () => {
-  it('rejects a subsequent same-day run at orchestrator entry with no pipeline.started', () => {
+  it('rejects a subsequent same-day run at orchestrator entry with no pipeline.started', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({
       cost_caps: { per_day: 5.0 },
@@ -537,7 +537,7 @@ describe('day-cap pre-flight gate', () => {
     const today = localDateString();
     recordDayCapBlock(today, root);
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -564,7 +564,7 @@ describe('day-cap pre-flight gate', () => {
 // ---------------------------------------------------------------------------
 
 describe('caps disabled (default)', () => {
-  it('emits no cost.cap_crossed when no caps are configured, even with high spend', () => {
+  it('emits no cost.cap_crossed when no caps are configured, even with high spend', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({} as unknown as FactoryConfig['pipeline']);
     writeConfig(root, config);
@@ -573,7 +573,7 @@ describe('caps disabled (default)', () => {
     pushInvocation({ exit_code: 0, dollars: 1000 });
     pushInvocation({ exit_code: 0, dollars: 1000 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -592,7 +592,7 @@ describe('caps disabled (default)', () => {
 // ---------------------------------------------------------------------------
 
 describe('cost recording (no caps)', () => {
-  it('persists one cost record per invocation under <artifactRoot>/cost/<run_id>.jsonl', () => {
+  it('persists one cost record per invocation under <artifactRoot>/cost/<run_id>.jsonl', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({} as unknown as FactoryConfig['pipeline']);
     writeConfig(root, config);
@@ -601,7 +601,7 @@ describe('cost recording (no caps)', () => {
     pushInvocation({ exit_code: 0, dollars: 0.05, tokens_in: 100, tokens_out: 200 });
     pushInvocation({ exit_code: 0, dollars: 0.03, tokens_in: 50, tokens_out: 150 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-A'],
       config,
       projectRoot: root,
@@ -634,7 +634,7 @@ describe('cost recording (no caps)', () => {
 // ---------------------------------------------------------------------------
 
 describe('planner cost recording (round-2 issue 1)', () => {
-  it('runPlanPhase writes a CostRecord with packet_id:null and spec_id:<intent>', () => {
+  it('runPlanPhase writes a CostRecord with packet_id:null and spec_id:<intent>', async () => {
     const root = mkRoot();
     const config = makeBaseConfig({} as unknown as FactoryConfig['pipeline']);
     writeConfig(root, config);
@@ -701,7 +701,7 @@ describe('planner cost recording (round-2 issue 1)', () => {
     });
     pushInvocation({ exit_code: 0, dollars: 0.05, tokens_in: 100, tokens_out: 200 });
 
-    const result = runOrchestrator({
+    const result = await runOrchestrator({
       args: ['spec-P'],
       config,
       projectRoot: root,

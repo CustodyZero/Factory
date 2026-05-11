@@ -170,7 +170,7 @@ function readEvents(runId: string, root: string): Array<{ event_type: string }> 
 // ---------------------------------------------------------------------------
 
 describe('runPlanPhase — first-attempt success: no recovery events', () => {
-  it('returns feature_id; emits NO recovery.* events', () => {
+  it('returns feature_id; emits NO recovery.* events', async () => {
     const root = mkRoot();
     writeIntentFile(root);
     // Mock invokeAgent returns success; THEN the test fixture writes
@@ -180,7 +180,7 @@ describe('runPlanPhase — first-attempt success: no recovery events', () => {
     // succeeds. Real planner agents create this file as a side
     // effect; we simulate that.
     writeFeatureFile(root, 'feat-x');
-    const result = runPlanPhase({
+    const result = await runPlanPhase({
       intent: makeIntent(),
       config: makeConfig(),
       artifactRoot: root,
@@ -198,7 +198,7 @@ describe('runPlanPhase — first-attempt success: no recovery events', () => {
 });
 
 describe('runPlanPhase — ProviderTransient retry succeeds', () => {
-  it('first call fails with 503; retry succeeds; feature_id returned; recovery.succeeded fired', () => {
+  it('first call fails with 503; retry succeeds; feature_id returned; recovery.succeeded fired', async () => {
     const root = mkRoot();
     writeIntentFile(root);
     // Two queued outcomes: 503 then success. The success will trigger
@@ -224,7 +224,7 @@ describe('runPlanPhase — ProviderTransient retry succeeds', () => {
     // recovery layer dispatches at the planner boundary, the events
     // stream contains recovery.attempt_started. We can do that with
     // a planner-failed-but-retried-and-still-failed scenario.
-    const result = runPlanPhase({
+    const result = await runPlanPhase({
       intent: makeIntent(),
       config: makeConfig(),
       artifactRoot: root,
@@ -244,11 +244,11 @@ describe('runPlanPhase — ProviderTransient retry succeeds', () => {
 });
 
 describe('runPlanPhase — ProviderUnavailable escalates immediately', () => {
-  it('planner stderr says provider disabled -> escalated; feature_id is null; escalation file written', () => {
+  it('planner stderr says provider disabled -> escalated; feature_id is null; escalation file written', async () => {
     const root = mkRoot();
     writeIntentFile(root);
     __invokeQueue.push({ exit_code: 1, stderr: "Provider 'claude' is disabled" });
-    const result = runPlanPhase({
+    const result = await runPlanPhase({
       intent: makeIntent(),
       config: makeConfig(),
       artifactRoot: root,
