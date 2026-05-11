@@ -143,6 +143,21 @@ export interface PipelineConfig {
    * tools/pipeline/cost.ts.
    */
   readonly rate_card?: CostRateCardOverrides;
+  /**
+   * Optional heartbeat cadence in milliseconds for long-running agent
+   * invocations (planner / developer / reviewer / qa). The first
+   * heartbeat fires after this many milliseconds of the child still
+   * running, then every interval after.
+   *
+   * Absent (or undefined) => 30000 ms (preserves the
+   * pre-configurable behavior; HEARTBEAT_INTERVAL_DEFAULT_MS in
+   * tools/pipeline/agent_invoke.ts is the load-bearing default).
+   *
+   * Minimum: 1000 (1 s). The schema enforces the floor; the loader
+   * does not silently coerce — operators who write a smaller value
+   * see a validation error from validate.ts.
+   */
+  readonly heartbeat_interval_ms?: number;
 }
 
 export interface FactoryConfig {
