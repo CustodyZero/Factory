@@ -4,7 +4,15 @@ title: Remove shell:true from spawn; split provider command into command + prefi
 depends_on: []
 ---
 
-# DEP0190 shell removal
+# DEP0190 shell removal ✅ COMPLETE
+
+**Status:** Merged in commit `89cb66d` (2026-05-11). 4 commits, 713 → 738 tests, 2 review rounds (REQUEST-CHANGES → APPROVE). Independent QA APPROVE on all 15 acceptance criteria + 16 specific checks.
+
+**Windows decision (locked at dispatch):** Path (a) — POSIX-only support boundary. Windows operators run under WSL. The factory does not include `.cmd`/`.bat` shim code; no `cmd.exe /c` fallback. Documented at the top of `tools/pipeline/agent_invoke.ts`.
+
+**Round-1 finding worth recording:** Codex caught a test that pinned the buggy behavior under a misleading test name — the loader's whitespace-split rule broke POSIX absolute paths with spaces (e.g., `/Applications/Tool With Space/bin/codex`), but the existing test claimed "preservation" while asserting the broken split. The disambiguation rule was corrected to `command.includes('/')` (path) vs whitespace-without-`/` (legacy). Second time in this session that bounded-iteration caught the test-pins-the-bug facade — first time was the convergence pass's reviewer fallback. Pattern worth carrying as a recognition signal.
+
+---
 
 ## Problem statement
 
