@@ -7,13 +7,26 @@
  * X...") want a closing transition line that confirms the agent
  * exited cleanly and names the next step.
  *
- * This test pins the operator-UX contract by driving a happy-path
- * develop_phase run with mocked agent invocations and asserting at
- * least two of the transition lines fire at the expected points:
+ * Round-2 contract (post-codex review): one transition line per
+ * AGENT invocation, no more. The happy-path finalize runs
+ * `completePacket` only — no agent — so it emits NO transition line.
+ * When the BuildFailed recovery loop re-invokes the developer to fix
+ * the build, that ADDITIONAL invocation does emit its own line.
  *
- *   - `developer finished implementing '<packet-id>' — proceeding to review`
- *   - `review complete for '<packet-id>' — proceeding to finalize`
- *   - `developer finished finalize on '<packet-id>'`
+ * Two scenarios are pinned here:
+ *
+ *   1. Happy path (no remediation): TWO agent transition lines.
+ *        - `developer finished implementing '<packet-id>' — proceeding to review`
+ *        - `review complete for '<packet-id>' — proceeding to finalize`
+ *      NO `developer finished finalize on '<packet-id>'` — that line
+ *      was an over-log; the channel='agent' implied an agent ran when
+ *      none did. Removed.
+ *
+ *   2. BuildFailed-remediation path: THREE agent transition lines.
+ *      The happy-path two PLUS a build-remediation line emitted at
+ *      the point the dev-agent's remediation invocation completes
+ *      inside the finalize recovery closure:
+ *        - `developer finished build remediation on '<packet-id>'`
  *
  * Mocking shape mirrors `develop_phase_cascade.test.ts`: invokeAgent
  * is replaced with a deterministic queue and the reviewer-auto-approve
@@ -91,14 +104,48 @@ vi.mock('../pipeline/agent_invoke.js', () => ({
   },
 }));
 
-// completePacket mock — happy path always succeeds (ci_pass=true) and
-// stamps the completion record to disk so the develop loop sees the
-// terminal `completed` state.
+// completePacket mock — supports an optional queue so tests that
+// exercise the BuildFailed-remediation path can drive a fail-then-
+// succeed sequence. Empty queue defaults to ci_pass=true (the happy
+// path). Mirrors the atomic-completion contract from
+// `develop_phase_recovery.test.ts`: only writes the completion record
+// on success; on failure leaves no artifact so the retry re-runs.
+interface CompleteOutcome {
+  readonly ci_pass: boolean;
+  readonly build_pass: boolean;
+  readonly lint_pass: boolean;
+  readonly tests_pass: boolean;
+}
+const __completeQueue: CompleteOutcome[] = [];
+
 vi.mock('../lifecycle/complete.js', () => ({
   completePacket: (opts: Record<string, unknown>) => {
     const packetId = opts['packetId'] as string;
     const projectRoot = opts['projectRoot'] as string | undefined;
+
+    // Idempotency: if a completion record exists, return its values
+    // without consuming the queue.
     if (typeof projectRoot === 'string') {
+      const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
+      if (existsSync(completionPath)) {
+        return {
+          packet_id: packetId,
+          ci_pass: true,
+          build_pass: true,
+          lint_pass: true,
+          tests_pass: true,
+          files_changed: [],
+          already_complete: true,
+        };
+      }
+    }
+
+    const next = __completeQueue.shift() ?? {
+      ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
+    };
+
+    // Atomic write: only on success.
+    if (next.ci_pass && typeof projectRoot === 'string') {
       const completionPath = join(projectRoot, 'completions', `${packetId}.json`);
       writeFileSync(completionPath, JSON.stringify({
         packet_id: packetId,
@@ -107,7 +154,10 @@ vi.mock('../lifecycle/complete.js', () => ({
         summary: 'mock completion',
         files_changed: [],
         verification: {
-          ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
+          ci_pass: next.ci_pass,
+          build_pass: next.build_pass,
+          lint_pass: next.lint_pass,
+          tests_pass: next.tests_pass,
           notes: 'ok',
         },
       }, null, 2) + '\n', 'utf-8');
@@ -118,12 +168,13 @@ vi.mock('../lifecycle/complete.js', () => ({
         writeFileSync(packetPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
       }
     }
+
     return {
       packet_id: packetId,
-      ci_pass: true,
-      build_pass: true,
-      lint_pass: true,
-      tests_pass: true,
+      ci_pass: next.ci_pass,
+      build_pass: next.build_pass,
+      lint_pass: next.lint_pass,
+      tests_pass: next.tests_pass,
       files_changed: [],
       already_complete: false,
     };
@@ -159,10 +210,12 @@ afterEach(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
   dirs = [];
   __invokeQueue.length = 0;
+  __completeQueue.length = 0;
 });
 
 beforeEach(() => {
   __invokeQueue.length = 0;
+  __completeQueue.length = 0;
   __reviewerArtifactRoot = null;
 });
 
@@ -237,7 +290,7 @@ const noopGit: GitRunner = () => ({ exitCode: 0, stdout: '', stderr: '' });
 // ---------------------------------------------------------------------------
 
 describe('runDevelopPhase — closing transition log lines (Item B)', () => {
-  it('emits at least two transition lines on a happy-path packet through implement -> review -> finalize', async () => {
+  it('happy path: emits EXACTLY two agent transition lines (implement, review) — finalize without remediation runs no agent and emits no transition', async () => {
     const root = mkRoot();
     writePacket(root, 'pkt-happy');
     // Two successful agent invocations: implement + review.
@@ -268,22 +321,77 @@ describe('runDevelopPhase — closing transition log lines (Item B)', () => {
     // Collect the transition lines (channel='agent') so we can assert
     // on them independently of the operator-facing per-phase log lines.
     const transitionLines = calls.filter((c) => c.channel === 'agent');
-
-    // CRITICAL: at least two of the three documented transitions fire
-    // on the happy path. The brief asks for "at least 2", so we pin
-    // the implement->review and finalize ones explicitly. The review
-    // transition is a third bonus that also fires here.
     const messages = transitionLines.map((c) => c.message);
-    expect(messages).toContain(
+
+    // Round-2 contract: EXACTLY two agent transitions on the happy
+    // path. Finalize without remediation invokes no agent, so the
+    // previous unconditional 'developer finished finalize on ...'
+    // line was an over-log and has been removed.
+    expect(messages).toEqual([
       `developer finished implementing 'pkt-happy' — proceeding to review`,
-    );
-    expect(messages).toContain(
-      `developer finished finalize on 'pkt-happy'`,
-    );
-    // And the third transition fires too — pin it as well so the
-    // operator-UX contract is fully covered.
-    expect(messages).toContain(
       `review complete for 'pkt-happy' — proceeding to finalize`,
-    );
+    ]);
+    // Defense in depth: the removed line MUST NOT reappear.
+    expect(messages).not.toContain(`developer finished finalize on 'pkt-happy'`);
+  });
+
+  it('BuildFailed remediation: emits THREE agent transition lines (implement, review, build-remediation)', async () => {
+    const root = mkRoot();
+    writePacket(root, 'pkt-bf');
+
+    // Agent invocation sequence:
+    //   1. developer implement -> success
+    //   2. code reviewer       -> success (auto-approves packet)
+    //   3. developer build remediation (inside finalize recovery) -> success
+    __invokeQueue.push({ exit_code: 0 });
+    __invokeQueue.push({ exit_code: 0 });
+    __invokeQueue.push({ exit_code: 0 });
+
+    // completePacket sequence: first call fails build, recovery loop
+    // dispatches retry_with_guardrail_prompt; second call succeeds.
+    __completeQueue.push({
+      ci_pass: false, build_pass: false, lint_pass: true, tests_pass: true,
+    });
+    __completeQueue.push({
+      ci_pass: true, build_pass: true, lint_pass: true, tests_pass: true,
+    });
+
+    const calls: Array<{ readonly channel: string; readonly message: string }> = [];
+    const spy = vi.spyOn(fmt, 'log').mockImplementation((channel, message) => {
+      calls.push({ channel, message });
+    });
+
+    try {
+      const result = await runDevelopPhase({
+        feature: writeFeature('feat-bf', ['pkt-bf']),
+        config: makeConfig(),
+        artifactRoot: root,
+        projectRoot: root,
+        dryRun: false,
+        runId: 'run-bf',
+        specId: 'spec-bf',
+        gitRunner: noopGit,
+      });
+      expect(result.completed).toEqual(['pkt-bf']);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const messages = calls
+      .filter((c) => c.channel === 'agent')
+      .map((c) => c.message);
+
+    // THREE transitions: one per actual dev/reviewer invocation. The
+    // remediation line is emitted INSIDE `runRemediation` at the
+    // point the dev-agent's invocation completes — NOT at the
+    // finalize-branch exit (where no agent ran).
+    expect(messages).toEqual([
+      `developer finished implementing 'pkt-bf' — proceeding to review`,
+      `review complete for 'pkt-bf' — proceeding to finalize`,
+      `developer finished build remediation on 'pkt-bf'`,
+    ]);
+    // Defense in depth: the removed unconditional finalize line MUST
+    // NOT fire even on the remediation path.
+    expect(messages).not.toContain(`developer finished finalize on 'pkt-bf'`);
   });
 });

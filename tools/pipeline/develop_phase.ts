@@ -1065,6 +1065,13 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
                 },
               };
             }
+            // Closing transition line — pinned to the dev-agent
+            // invocation that just succeeded. Finalize without
+            // remediation runs NO agent and emits NO transition; this
+            // line fires ONLY when the BuildFailed recovery loop
+            // actually re-invoked the developer to fix the build.
+            // Routed through 'agent' to match the heartbeat surface.
+            fmt.log('agent', `developer finished build remediation on '${packet.id}'`);
             return null;
           };
 
@@ -1188,12 +1195,14 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
             break;
           }
           fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
-          // Closing transition line — finalize is the terminal develop
-          // step for this packet. The dev-agent may have been invoked
-          // for BuildFailed remediation inside the recovery closure, so
-          // the line names the packet rather than a "next step" (there
-          // is none within develop).
-          fmt.log('agent', `developer finished finalize on '${packet.id}'`);
+          // No closing transition line here. The happy-path finalize
+          // is `completePacket` only — no agent invocation — and the
+          // 'agent' channel implies an agent ran. When the BuildFailed
+          // recovery loop DOES re-invoke the dev agent for build
+          // remediation, the transition line is emitted INSIDE
+          // `runRemediation` at the point the invocation completes
+          // (see above). That keeps the contract "one transition line
+          // per agent invocation" intact.
           completionIds.add(packet.id);
           currentPoint = nextPointAfterFinalize(true);
           break;
