@@ -28,3 +28,53 @@ If implementation chooses POSIX-only support boundary, the completion evidence s
 ## Round budget
 
 2 of 3 rounds used. Bounded-iteration model honored.
+
+# DEP0190 Mini-Spec QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+All 11 acceptance criteria PASS, all 12 sub-checks PASS.
+
+## Critical verifications
+
+- Frontmatter matches `single-entry-pipeline.md` shape (id, title, depends_on: [])
+- All 8 sections present and structured
+- 3 phases each have explicit Deliverables + Acceptance
+- Risk table covers all 5 risk categories including Windows `.cmd`/`.bat` shim and operator migration friction
+- Command contract section explicitly supports bare-name AND absolute-path-with-spaces (macOS + Windows examples)
+- Unsupported legacy shape (`"gh copilot --"`) explicitly called out as the migration boundary
+- Acceptance criteria measurable
+- Tests + validate unaffected (713 pass, validate reports 2 specs)
+- No code changes; only `specs/dep0190-shell-removal.md`
+- No emojis
+
+## Facade audit
+
+- Dual-acceptance migration story is load-bearing AND required (not just mentioned): L74 "accepts BOTH shapes", L129-141 Phase 1 deliverables, L192 risk row marks it load-bearing.
+- Windows shim decision explicitly deferred to the implementing developer with an explicit binary choice (POSIX-only support boundary OR cross-platform shim test). Honest deferral, not hidden punt.
+- No partial-success patterns.
+
+## Strongest aspects (independent assessment)
+
+1. **Windows `.cmd`/`.bat` risk row is exceptionally well-scoped**: names the concrete failure mode (`spawn` on Windows resolves only `.exe`-style natively; npm/Scoop/Chocolatey ship `.cmd` shims), then forces an explicit, documented binary choice on the implementing developer. No false neutrality.
+2. **The legacy-shape migration boundary is unambiguous**: states exactly which previously-working string breaks under `shell: false`, exactly why, and exactly what the operator must do. The contract between "supported" and "migration boundary" is the kind of explicit, reviewable seam §3.2 asks for.
+
+# DEP0190 Mini-Spec Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-11
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Mini-spec scoping the DEP0190 `shell:true` deprecation fix. 2 commits. 250 lines. Spec-only.
+
+- 2 review rounds (codex REQUEST-CHANGES with Windows shim + absolute-paths-clarity → codex APPROVE)
+- Independent QA APPROVE on all 11 criteria + 12 sub-checks
+- This is a PLANNING artifact; implementation lands in a future packet/spec invocation
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
