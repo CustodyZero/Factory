@@ -237,4 +237,55 @@ describe('runSingleSpec — approval semantics: spec vs intent', () => {
     expect(result.success).toBe(true);
     expect(result.specs[0]!.status).toBe('completed');
   });
+
+  it("intent-driven with status: 'delivered' is accepted (idempotent rerun semantics)", async () => {
+    // `delivered` is the post-`planned` terminal-success status. A
+    // re-run on a delivered intent is legitimate idempotent replay
+    // (e.g. operator re-invokes the pipeline after a deploy failure
+    // to confirm the feature still passes verification). The
+    // approval gate must NOT reject this — `isPostApprovalStatus`
+    // returns true for 'delivered'.
+    const f = makeFixture();
+    writeIntent(f.root, 'delivered-intent', 'delivered');
+    const result = await runOrchestrator({
+      args: ['delivered-intent'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.id).toBe('delivered-intent');
+    expect(result.specs[0]!.status).toBe('completed');
+  });
+
+  it("intent-driven with status: 'superseded' is rejected", async () => {
+    // `superseded` is the terminal-discard status — the intent was
+    // replaced by a newer one. Running a superseded intent is
+    // operator error; the gate must reject with the same actionable
+    // message used for 'proposed' (names the file and the required
+    // status flip).
+    const f = makeFixture();
+    writeIntent(f.root, 'superseded-intent', 'superseded');
+    const result = await runOrchestrator({
+      args: ['superseded-intent'],
+      config: f.config,
+      projectRoot: f.root,
+      artifactRoot: f.root,
+      dryRun: true,
+    });
+    expect(result.success).toBe(false);
+    expect(result.specs).toHaveLength(1);
+    expect(result.specs[0]!.status).toBe('failed');
+    if (result.specs[0]!.status === 'failed') {
+      // Operator-facing error names the file and the required
+      // status flip — same shape as the 'proposed' rejection.
+      expect(result.specs[0]!.reason).toMatch(/intents\/superseded-intent\.json/);
+      expect(result.specs[0]!.reason).toMatch(/approved/);
+      // And it names the current status so the operator knows why
+      // the rerun was rejected (not just "wrong status").
+      expect(result.specs[0]!.reason).toMatch(/superseded/);
+    }
+  });
 });
