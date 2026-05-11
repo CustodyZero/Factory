@@ -1,0 +1,48 @@
+# Backlog Cleanup Pass Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** backlog-cleanup-pass (commits 8e8e473, bcdc5f9, 1d64b43, 148314b, 59b5099)
+**Verdict:** REQUEST-CHANGES
+
+## Issues
+
+### 1. Finalize transition line is unconditional but implies agent invocation
+
+**File:** `tools/pipeline/develop_phase.ts:1196`
+
+The line `fmt.log('agent', 'developer finished finalize on '<packet-id>'')` fires unconditionally after `completePacket` succeeds in the finalize branch. But finalize normally just runs `completePacket` — NO dev agent invocation. The transition line uses the `'agent'` channel (per Item B's brief: "matching the heartbeat surface") which implies an agent ran when it didn't.
+
+The closure CAN invoke the dev agent inside finalize when `attempt.action === 'retry_with_guardrail_prompt'` fires (Phase 6 BuildFailed remediation), but that's the failure-recovery path, not the happy path. The unconditional line over-logs on the happy path.
+
+The current test `develop_phase_transition_lines.test.ts:243` asserts the finalize line on a happy-path packet — confirming the over-log is reflected in tests, not just in code.
+
+**Fix:** Make the finalize transition line conditional. Two options:
+- **(A)** Track `dev_agent_invoked_in_finalize` inside the closure and emit the line only when true.
+- **(B)** Remove the finalize transition line entirely. `completePacket` already emits its own success logging via `fmt.log('develop', 'Completed')`. The transition line is redundant when no agent ran.
+
+I lean **B** — simpler. The brief's framing was "one transition line per agent invocation" — finalize without remediation has zero agent invocations, so zero transition lines is correct.
+
+Update `develop_phase_transition_lines.test.ts` to assert the TWO happy-path agent lines (implement, review), not three. Add a test for the BuildFailed-remediation path that asserts the additional agent transition line fires there.
+
+### 2. Configurable heartbeat tests bypass the production resolver
+
+**File:** `tools/test/agent_invoke.test.ts:459`
+
+The new tests call `_startHeartbeat(persona, ctx, configuredInterval)` directly with `5_000`. They would still pass if `invokeAgent` ignored `config.pipeline.heartbeat_interval_ms` and always passed `HEARTBEAT_INTERVAL_MS` to `_startHeartbeat`. The Item A main behavior — that invokeAgent reads the config and passes it through — is under-pinned.
+
+**Fix:** Two options:
+- **(A)** Add a focused test that drives `invokeAgent` end-to-end with a config containing `pipeline.heartbeat_interval_ms`, observe the spawn behavior + heartbeat cadence at the integration level. Harder to write (spawns a real child).
+- **(B)** Extract a pure `resolveHeartbeatInterval(config: FactoryConfig): number` helper that returns `config.pipeline?.heartbeat_interval_ms ?? HEARTBEAT_INTERVAL_MS`. Test the helper directly AND verify `invokeAgent` calls it (via a spy or by reading the source structurally — e.g., the existing tests can assert that the resolver is called and the result threads through to `_startHeartbeat`).
+
+I lean **B**: cleaner, more testable, and makes the resolution point a named contract.
+
+## Confirmed correct
+
+- `spec_runner.test.ts` is self-contained.
+- `delivered`/`superseded` cases go through `runOrchestrator` (not shortcut).
+- `resolvePlanAction` approval-status removal is cleanly centralized back to `spec_runner.ts`.
+
+## Round budget remaining
+
+2 rounds.
