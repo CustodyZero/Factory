@@ -1,0 +1,37 @@
+# DEP0190 Implementation Code Review — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** dep0190-shell-removal (commits 9e4086c, 1bf4ca1, fedb861)
+**Verdict:** REQUEST-CHANGES
+
+## Issue
+
+### Loader rejects/mis-normalizes documented new-shape absolute paths with spaces
+
+**Files:** `tools/config.ts:313` (normalizeProviderCommand), `tools/test/config.test.ts:354` (test pinning broken behavior)
+
+The spec explicitly supports POSIX absolute paths with internal whitespace as `command`:
+- `/Applications/Tool With Space/bin/codex`
+- `/usr/local/Tool With Space/bin/codex`
+
+But `normalizeProviderCommand()` treats ANY space/tab in `command` as legacy shape and splits. So:
+- `"/Applications/Tool With Space/bin/codex"` → `command: "/Applications/Tool"`, `prefix_args: ["With","Space/bin/codex"]` (WRONG)
+- If the operator ALSO sets `prefix_args` explicitly, the config is rejected as "ambiguous" instead of preserved.
+
+The existing test at `config.test.ts:354` PINS the broken behavior while the test name claims preservation. This is the test-pins-the-bug facade pattern.
+
+**Fix:** Disambiguate legacy command strings from POSIX absolute/relative paths BEFORE splitting. Codex proposes `rawCommand.startsWith('/')` as the heuristic. Alternative (more robust): check for path-separator presence (any `/`), which handles relative paths like `./local/tool with space` too. Pick whichever the implementer prefers; document the rule.
+
+Update the config test to assert absolute paths with spaces round-trip unchanged, with AND without `prefix_args`. Add a test for the relative-path-with-spaces case if the chosen rule supports it.
+
+## Confirmed correct
+
+- Main spawn path removed `shell: true`.
+- The `invokeAgent` argv fixture really exercises the spawn path.
+- The metacharacter test compares the prompt verbatim through JSON argv echo.
+- Raw-entry normalization runs BEFORE merging defaults — correct order for legacy copilot configs.
+
+## Round budget remaining
+
+2 rounds.
