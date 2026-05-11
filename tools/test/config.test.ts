@@ -2,13 +2,14 @@
  * Tests for factory configuration utilities.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   loadConfig,
   normalizePersonaProvider,
+  normalizeProviderCommand,
   resolveArtifactRoot,
   resolveFactoryRoot,
   resolveToolScriptPath,
@@ -265,7 +266,8 @@ describe('loadConfig — Phase 7 persona_providers normalization', () => {
           claude: { enabled: true, command: 'claude' },
           copilot: {
             enabled: true,
-            command: 'gh copilot --',
+            command: 'gh',
+            prefix_args: ['copilot', '--'],
             model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4' },
             model_failover: ['claude-opus-4-6', 'GPT-5.4'],
           },
@@ -286,5 +288,288 @@ describe('loadConfig — Phase 7 persona_providers normalization', () => {
     ]);
     // Direct providers without the field still report undefined.
     expect(cfg.pipeline?.providers['codex']?.model_failover).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEP0190 — normalizeProviderCommand (pure helper)
+//
+// Pins the (command, prefix_args) normalization contract directly,
+// independent of the surrounding loader. The loader-integration block
+// below exercises the full path including warning frequency.
+// ---------------------------------------------------------------------------
+
+describe('normalizeProviderCommand (DEP0190)', () => {
+  it('passes through the new shape unchanged (single-token command + prefix_args array)', () => {
+    const recorded: Array<{ name: string; rawCommand: string }> = [];
+    const out = normalizeProviderCommand(
+      'copilot',
+      'gh',
+      ['copilot', '--'],
+      (name, rawCommand) => { recorded.push({ name, rawCommand }); },
+    );
+    expect(out.command).toBe('gh');
+    expect(out.prefix_args).toEqual(['copilot', '--']);
+    // No legacy-shape signal.
+    expect(recorded).toEqual([]);
+  });
+
+  it('passes through a bare single-token command with no prefix_args (codex/claude shape)', () => {
+    const recorded: Array<{ name: string; rawCommand: string }> = [];
+    const out = normalizeProviderCommand(
+      'codex',
+      'codex',
+      undefined,
+      (name, rawCommand) => { recorded.push({ name, rawCommand }); },
+    );
+    expect(out.command).toBe('codex');
+    expect(out.prefix_args).toBeUndefined();
+    expect(recorded).toEqual([]);
+  });
+
+  it('normalizes the legacy whitespace-string shape and signals the migration', () => {
+    const recorded: Array<{ name: string; rawCommand: string }> = [];
+    const out = normalizeProviderCommand(
+      'copilot',
+      'gh copilot --',
+      undefined,
+      (name, rawCommand) => { recorded.push({ name, rawCommand }); },
+    );
+    expect(out.command).toBe('gh');
+    expect(out.prefix_args).toEqual(['copilot', '--']);
+    expect(recorded).toEqual([{ name: 'copilot', rawCommand: 'gh copilot --' }]);
+  });
+
+  it('rejects the ambiguous shape (whitespace command AND prefix_args set)', () => {
+    expect(() =>
+      normalizeProviderCommand(
+        'copilot',
+        'gh copilot --',
+        ['copilot', '--'],
+        () => undefined,
+      ),
+    ).toThrow(/both a whitespace-containing command.*prefix_args.*mutually exclusive/i);
+  });
+
+  it('preserves absolute paths containing spaces as a single token (no whitespace tokenization)', () => {
+    // Absolute paths with internal spaces are legitimate (e.g.
+    // macOS /Applications/Tool With Space/...) under shell:false. The
+    // detector triggers on any internal whitespace, so this case
+    // falls into the legacy branch and the token split happens. THIS
+    // IS THE LIMIT of the legacy normalization: an operator with an
+    // absolute path containing spaces must migrate to the new shape
+    // explicitly (command + prefix_args). The warning is what
+    // surfaces this; the test pins the behavior so a future
+    // reviewer doesn't accidentally claim the legacy path "just
+    // works" for paths with spaces.
+    const recorded: Array<{ name: string; rawCommand: string }> = [];
+    const out = normalizeProviderCommand(
+      'codex',
+      '/Applications/Tool With Space/bin/codex',
+      undefined,
+      (name, rawCommand) => { recorded.push({ name, rawCommand }); },
+    );
+    // The legacy branch fired (split the whitespace).
+    expect(out.command).toBe('/Applications/Tool');
+    expect(out.prefix_args).toEqual(['With', 'Space/bin/codex']);
+    expect(recorded.length).toBe(1);
+    // -- This documents the migration boundary: the operator must
+    // switch to the new shape to keep the path together. See the
+    // schema's prefix_args description.
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEP0190 — loadConfig integration (deprecation warning + dual acceptance)
+//
+// Pins the on-disk -> in-memory normalization for the new and legacy
+// provider-command shapes, including the warning frequency contract.
+// ---------------------------------------------------------------------------
+
+describe('loadConfig — DEP0190 provider command normalization', () => {
+  it('accepts the new shape (single-token command + prefix_args) with NO deprecation warning', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const dir = writeConfigDir({
+        pipeline: {
+          providers: {
+            codex: { enabled: true, command: 'codex' },
+            claude: { enabled: true, command: 'claude' },
+            copilot: {
+              enabled: true,
+              command: 'gh',
+              prefix_args: ['copilot', '--'],
+            },
+          },
+          persona_providers: {
+            planner: 'claude', developer: 'codex', code_reviewer: 'claude', qa: 'claude',
+          },
+          completion_identities: {
+            developer: 'codex-dev', code_reviewer: 'claude-cr', qa: 'claude-qa',
+          },
+          max_review_iterations: 3,
+        },
+      });
+      const cfg = loadConfig(dir);
+      expect(cfg.pipeline?.providers['copilot']?.command).toBe('gh');
+      expect(cfg.pipeline?.providers['copilot']?.prefix_args).toEqual(['copilot', '--']);
+      // No DEP0190-style warning fired.
+      const dep0190Calls = warnSpy.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('DEP0190'),
+      );
+      expect(dep0190Calls).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('normalizes the legacy whitespace-string shape into split form', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const dir = writeConfigDir({
+        pipeline: {
+          providers: {
+            codex: { enabled: true, command: 'codex' },
+            claude: { enabled: true, command: 'claude' },
+            copilot: { enabled: true, command: 'gh copilot --' },
+          },
+          persona_providers: {
+            planner: 'claude', developer: 'codex', code_reviewer: 'claude', qa: 'claude',
+          },
+          completion_identities: {
+            developer: 'codex-dev', code_reviewer: 'claude-cr', qa: 'claude-qa',
+          },
+          max_review_iterations: 3,
+        },
+      });
+      const cfg = loadConfig(dir);
+      // Downstream consumers see the split shape only.
+      expect(cfg.pipeline?.providers['copilot']?.command).toBe('gh');
+      expect(cfg.pipeline?.providers['copilot']?.prefix_args).toEqual(['copilot', '--']);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('emits the deprecation warning exactly once per loadConfig call (not once per provider)', () => {
+    // Two legacy-shape providers in the same config should still
+    // result in ONE console.warn line — not two — naming both.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const dir = writeConfigDir({
+        pipeline: {
+          providers: {
+            // Two legacy-shape providers.
+            copilot: { enabled: true, command: 'gh copilot --' },
+            // A second one: a hypothetical operator-defined provider.
+            // We name it after an existing key to exercise the
+            // multi-provider warning aggregation.
+            custom: { enabled: true, command: 'my-cli sub --' } as never,
+          },
+          persona_providers: {
+            planner: 'claude', developer: 'codex', code_reviewer: 'claude', qa: 'claude',
+          },
+          completion_identities: {
+            developer: 'codex-dev', code_reviewer: 'claude-cr', qa: 'claude-qa',
+          },
+          max_review_iterations: 3,
+        },
+      });
+      const cfg = loadConfig(dir);
+      // Both normalized correctly.
+      expect(cfg.pipeline?.providers['copilot']?.command).toBe('gh');
+      expect(cfg.pipeline?.providers['copilot']?.prefix_args).toEqual(['copilot', '--']);
+      expect(cfg.pipeline?.providers['custom']?.command).toBe('my-cli');
+      expect(cfg.pipeline?.providers['custom']?.prefix_args).toEqual(['sub', '--']);
+      // Exactly one warn call mentioning DEP0190, naming both
+      // providers.
+      const dep0190Calls = warnSpy.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('DEP0190'),
+      );
+      expect(dep0190Calls).toHaveLength(1);
+      const message = dep0190Calls[0]![0] as string;
+      expect(message).toContain("'copilot'");
+      expect(message).toContain("'custom'");
+      expect(message).toContain('specs/dep0190-shell-removal.md');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('emits NO deprecation warning when every provider uses the new shape (per-load frequency contract)', () => {
+    // Even the copilot default migration target carries the new
+    // shape internally, so a clean config with new-shape entries
+    // must not emit any DEP0190 warning at all.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const dir = writeConfigDir({
+        pipeline: {
+          providers: {
+            codex: { enabled: true, command: 'codex' },
+            claude: { enabled: true, command: 'claude' },
+            copilot: { enabled: false, command: 'gh', prefix_args: ['copilot', '--'] },
+          },
+          persona_providers: {
+            planner: 'claude', developer: 'codex', code_reviewer: 'claude', qa: 'claude',
+          },
+          completion_identities: {
+            developer: 'codex-dev', code_reviewer: 'claude-cr', qa: 'claude-qa',
+          },
+          max_review_iterations: 3,
+        },
+      });
+      loadConfig(dir);
+      const dep0190Calls = warnSpy.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('DEP0190'),
+      );
+      expect(dep0190Calls).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects the ambiguous shape (whitespace command AND prefix_args set on the same provider)', () => {
+    const dir = writeConfigDir({
+      pipeline: {
+        providers: {
+          codex: { enabled: true, command: 'codex' },
+          claude: { enabled: true, command: 'claude' },
+          copilot: {
+            enabled: true,
+            // Both a whitespace-containing command AND prefix_args
+            // — ambiguous. Loader must refuse.
+            command: 'gh copilot --',
+            prefix_args: ['copilot', '--'],
+          },
+        },
+        persona_providers: {
+          planner: 'claude', developer: 'codex', code_reviewer: 'claude', qa: 'claude',
+        },
+        completion_identities: {
+          developer: 'codex-dev', code_reviewer: 'claude-cr', qa: 'claude-qa',
+        },
+        max_review_iterations: 3,
+      },
+    });
+    // The loader's catch block in `loadConfig` redirects parse/throw
+    // errors to console.error + process.exit(1). We need to assert
+    // on that surface here. Spy on process.exit so the test doesn't
+    // actually exit, and spy on console.error to capture the
+    // message.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      loadConfig(dir);
+      // Exit was called.
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      // The error message names the conflict.
+      const errorCalls = errSpy.mock.calls.map((c) => c.join(' '));
+      const composed = errorCalls.join(' | ');
+      expect(composed).toMatch(/copilot/i);
+      expect(composed).toMatch(/mutually exclusive|whitespace-containing command/i);
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 });

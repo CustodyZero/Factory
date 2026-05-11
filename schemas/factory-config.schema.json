@@ -161,6 +161,12 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "command": { "type": "string", "minLength": 1 },
+        "prefix_args": {
+          "type": "array",
+          "description": "DEP0190 shell removal. Optional fixed leading argv elements prepended to every invocation of this provider (before the per-provider suffix flags). Used when a provider CLI requires sub-command-style invocation (e.g. 'gh copilot --' splits into command='gh' + prefix_args=['copilot', '--']). When absent, the per-provider argv is built from the suffix flags alone. Each element is a literal argv token — no shell tokenization, no whitespace splitting. The legacy single-string form (command containing whitespace) is still accepted by the loader for backward compatibility but emits a deprecation warning. See specs/dep0190-shell-removal.md.",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
         "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"] },
         "permission_mode": { "type": "string", "enum": ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"] },
         "model_map": { "$ref": "#/$defs/model_map" },

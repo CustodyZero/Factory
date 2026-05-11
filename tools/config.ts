@@ -37,7 +37,37 @@ export type ModelMap = { readonly [K in ModelTier]?: string };
 
 export interface PipelineProviderConfig {
   readonly enabled: boolean;
+  /**
+   * The provider executable. After loader normalization (see
+   * `normalizeProviderCommand`), this is always a single argv token —
+   * either a bare executable name resolved against `PATH` (`"gh"`,
+   * `"codex"`, `"claude"`) or an absolute path that may contain
+   * whitespace (e.g. `"/Applications/Tool With Space/bin/codex"`).
+   * Internal whitespace is preserved as part of the path; it is NOT
+   * tokenized.
+   *
+   * Legacy shape (DEP0190 migration): the on-disk `command` may
+   * contain whitespace and encode leading argv (e.g.
+   * `"gh copilot --"`). The loader detects this, whitespace-splits it
+   * once, normalizes to the split shape, and emits a deprecation
+   * warning. Downstream code only ever sees the split shape.
+   */
   readonly command: string;
+  /**
+   * DEP0190 shell removal — optional fixed leading argv elements
+   * prepended to every invocation (before the per-provider suffix
+   * flags). Used when a provider CLI requires sub-command-style
+   * invocation (e.g. `"gh copilot --"` splits into command=`"gh"` +
+   * prefix_args=`["copilot", "--"]`). When absent, the per-provider
+   * argv is built from the suffix flags alone.
+   *
+   * Each element is a literal argv token — no shell tokenization,
+   * no whitespace splitting. The legacy single-string `command`
+   * shape is still accepted at the loader boundary (with a
+   * deprecation warning) but is normalized into this field before
+   * any consumer sees it.
+   */
+  readonly prefix_args?: ReadonlyArray<string>;
   readonly sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   readonly permission_mode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
   readonly model_map?: ModelMap;
@@ -203,6 +233,123 @@ export function findProjectRoot(): string {
 }
 
 /**
+ * DEP0190 shell removal — emit a single console.warn naming every
+ * provider that used the legacy whitespace-in-`command` shape during
+ * the current `loadConfig` call.
+ *
+ * The contract is "once per load, not once per provider per call":
+ * a config with multiple legacy-shape providers triggers ONE
+ * console.warn line listing them all. Repeated `loadConfig` calls
+ * each emit their own warning (the operator may have changed the
+ * file between calls); this is per-call, not per-process.
+ *
+ * Exported for unit tests that want to assert the exact message
+ * shape — not for direct use by other tools (which should rely on
+ * `loadConfig` doing this automatically).
+ */
+export function emitLegacyShapeWarning(
+  legacyShapeProviders: ReadonlyArray<{ name: string; rawCommand: string }>,
+): void {
+  // The message is shaped for an operator scanning their terminal.
+  // It must name the provider and the legacy value so the operator
+  // can find it in their config, and it must point at the migration
+  // target (specs/dep0190-shell-removal.md) so they know where to
+  // read more.
+  const entries = legacyShapeProviders
+    .map((p) => `'${p.name}' uses legacy shell-tokenized command ${JSON.stringify(p.rawCommand)}`)
+    .join('; ');
+  const example = legacyShapeProviders[0]!;
+  const exampleTokens = example.rawCommand.split(/[ \t]+/).filter((t) => t.length > 0);
+  const migrationHint = exampleTokens.length > 1
+    ? `Migrate to command: ${JSON.stringify(exampleTokens[0])}, prefix_args: ${JSON.stringify(exampleTokens.slice(1))}.`
+    : `Migrate to command: ${JSON.stringify(exampleTokens[0] ?? example.rawCommand)}, prefix_args: [<tokens>].`;
+  console.warn(
+    `[factory] DEP0190: ${entries}. ${migrationHint} ` +
+    `See specs/dep0190-shell-removal.md.`,
+  );
+}
+
+/**
+ * DEP0190 shell removal — normalize a raw provider config to the new
+ * shape (single-token `command` + optional `prefix_args` array).
+ *
+ * Accepts BOTH on-disk shapes:
+ *
+ *   1. New shape (preferred): `command` is a single argv token —
+ *      either bare ("gh", "codex") or an absolute path that may
+ *      contain whitespace ("/Applications/Tool With Space/bin/codex").
+ *      `prefix_args` carries any leading argv. Loaded unchanged.
+ *
+ *   2. Legacy shape (DEP0190 migration): `command` contains internal
+ *      whitespace and encodes leading argv as a single string (e.g.
+ *      "gh copilot --"). The loader whitespace-splits it once: the
+ *      first token becomes `command`, the rest become `prefix_args`.
+ *      This shape is normalized in-memory; downstream code only sees
+ *      the split shape. Emits a one-shot deprecation warning per
+ *      `loadConfig` call via the `onLegacyShape` callback.
+ *
+ * The two shapes are ambiguous when both are encoded — a `command`
+ * with internal whitespace AND a separately-specified `prefix_args`.
+ * That combination is rejected here with a descriptive error. The
+ * operator must choose one shape.
+ *
+ * Returns the normalized `{ command, prefix_args }` pair (with
+ * `prefix_args` omitted when it is absent or empty). Pure — does no
+ * I/O of its own; the caller decides what to do with the warning
+ * signal.
+ */
+export function normalizeProviderCommand(
+  providerName: string,
+  rawCommand: string,
+  rawPrefixArgs: ReadonlyArray<string> | undefined,
+  onLegacyShape: (providerName: string, rawCommand: string) => void,
+): { command: string; prefix_args?: ReadonlyArray<string> } {
+  // The legacy-shape detector keys on internal whitespace in `command`.
+  // We use a strict whitespace regex (space + tab) rather than \s so
+  // newlines or unusual unicode whitespace are NOT silently treated as
+  // tokenizers (they would have been broken under the old shell:true
+  // path too, depending on the shell — better to surface them as
+  // literal characters in `command` and let spawn fail visibly).
+  const hasInternalWhitespace = /[ \t]/.test(rawCommand);
+
+  if (hasInternalWhitespace && rawPrefixArgs !== undefined) {
+    // Ambiguous shape: the operator wrote BOTH the legacy
+    // whitespace-string form AND the new array form. We refuse to
+    // guess which they meant; loading must fail with a clear message.
+    throw new Error(
+      `Provider '${providerName}' has both a whitespace-containing command ` +
+      `(${JSON.stringify(rawCommand)}) and a 'prefix_args' array. These are ` +
+      `mutually exclusive: pick one shape. Recommended: set command to the ` +
+      `executable token only (the first word) and put the remaining tokens ` +
+      `in prefix_args. See specs/dep0190-shell-removal.md.`,
+    );
+  }
+
+  if (hasInternalWhitespace) {
+    // Legacy single-string shape — whitespace-split once. No quoting
+    // support: the factory has only ever shipped flat space-separated
+    // strings in this position ("codex", "claude", "gh copilot --"),
+    // and shell-feature emulation is explicitly out of scope (per the
+    // spec's "Out of scope" section). If an operator's command relied
+    // on shell quoting, the migration target is the explicit array.
+    const tokens = rawCommand.split(/[ \t]+/).filter((t) => t.length > 0);
+    onLegacyShape(providerName, rawCommand);
+    return tokens.length > 1
+      ? { command: tokens[0]!, prefix_args: tokens.slice(1) }
+      : { command: tokens[0] ?? rawCommand };
+  }
+
+  // New shape — passthrough. We keep prefix_args undefined when the
+  // operator omitted it; passing it through verbatim preserves the
+  // distinction between "absent" and "empty array" for any future
+  // schema-level checks (the JSON Schema already enforces minItems: 1
+  // when present).
+  return rawPrefixArgs !== undefined && rawPrefixArgs.length > 0
+    ? { command: rawCommand, prefix_args: rawPrefixArgs }
+    : { command: rawCommand };
+}
+
+/**
  * Phase 7 — normalize a `persona_providers.<persona>` raw value
  * (string | string[] | undefined) to a non-empty
  * `ReadonlyArray<PipelineProvider>`.
@@ -271,7 +418,14 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       claude: { enabled: true, command: 'claude', permission_mode: 'bypassPermissions' },
       copilot: {
         enabled: false,
-        command: 'gh copilot --',
+        // DEP0190 — defaults use the new split shape (command =
+        // executable, prefix_args = leading argv). An operator whose
+        // on-disk config still carries the legacy whitespace string
+        // will see their value override the default at merge time,
+        // and the loader's `normalizeProviderCommand` step will
+        // surface the deprecation warning for them.
+        command: 'gh',
+        prefix_args: ['copilot', '--'],
         model_map: { high: 'claude-opus-4-6', medium: 'GPT-5.4', low: 'claude-haiku-4-5' },
       },
     };
@@ -306,8 +460,60 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       | undefined;
     const rawProviders = rawPipeline?.providers as Record<string, Partial<PipelineProviderConfig>> | undefined;
     const mergedProviders: Record<string, PipelineProviderConfig> = {};
+    // DEP0190 — track which providers used the legacy whitespace-in-
+    // command shape so the warning aggregates into a single
+    // console.warn per loadConfig call. The warning fires once per
+    // load (not once per provider per call), matching the contract
+    // pinned by the deprecation-warning-frequency tests.
+    const legacyShapeProviders: Array<{ name: string; rawCommand: string }> = [];
+    const recordLegacyShape = (name: string, rawCommand: string): void => {
+      legacyShapeProviders.push({ name, rawCommand });
+    };
     for (const key of new Set([...Object.keys(defaultProviders), ...Object.keys(rawProviders ?? {})])) {
-      mergedProviders[key] = { ...defaultProviders[key], ...rawProviders?.[key] } as PipelineProviderConfig;
+      // Normalize (command, prefix_args) at the RAW boundary, before
+      // merging with defaults. If we merged first, an operator's
+      // legacy-shape command would collide with the default's
+      // already-split prefix_args (copilot) and trigger the
+      // ambiguous-shape rejection — which is not what the operator
+      // intended. The operator's command overrides the default;
+      // their prefix_args (or absence thereof) overrides the
+      // default's. Normalization runs on the operator's raw entry
+      // only when they supplied a command of their own.
+      const rawEntry = rawProviders?.[key];
+      const defaultEntry = defaultProviders[key];
+      let normalized: { command: string; prefix_args?: ReadonlyArray<string> } | undefined;
+      if (rawEntry?.command !== undefined) {
+        normalized = normalizeProviderCommand(
+          key,
+          rawEntry.command,
+          rawEntry.prefix_args,
+          recordLegacyShape,
+        );
+      }
+      // Compose the final entry: defaults first, then raw overrides,
+      // then the normalized (command, prefix_args) on top. When the
+      // operator did not provide their own command, the default
+      // (already in the new shape) wins.
+      const composed: PipelineProviderConfig = {
+        ...defaultEntry,
+        ...rawEntry,
+        ...(normalized !== undefined
+          ? normalized.prefix_args !== undefined
+            ? { command: normalized.command, prefix_args: normalized.prefix_args }
+            : { command: normalized.command, prefix_args: undefined }
+          : {}),
+      } as PipelineProviderConfig;
+      // The conditional `prefix_args: undefined` above intentionally
+      // clears the field when the operator's command had no
+      // whitespace and they supplied no prefix_args — preventing a
+      // stale default `prefix_args` from leaking through when the
+      // operator wrote the new shape with a single-token command.
+      mergedProviders[key] = composed.prefix_args === undefined
+        ? (({ prefix_args, ...rest }) => rest as PipelineProviderConfig)(composed)
+        : composed;
+    }
+    if (legacyShapeProviders.length > 0) {
+      emitLegacyShapeWarning(legacyShapeProviders);
     }
     // Phase 5.7: cost_caps and rate_card pass through unchanged from
     // the raw config. Both are optional and have no defaults — absent
