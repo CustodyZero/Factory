@@ -1,0 +1,30 @@
+# DEP0190 Mini-Spec Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** worktree-agent-ad052c3e79cbdd690 (round-2 commit 89e0bad)
+**Verdict:** APPROVE
+
+## Both round-1 issues fixed
+
+- Command contract now explicitly supports bare executables AND absolute paths with spaces, with macOS/Windows examples. `"gh copilot --"` called out as the unsupported legacy multi-arg shape with the rewrite target.
+- Risk table now names the concrete Windows `.cmd`/`.bat` spawn failure and gives two viable mitigation paths (POSIX-only support boundary OR cross-platform spawn-boundary test exercising wrapper shims).
+
+## Confirmed intact
+
+- 3-phase plan unchanged.
+- Dual-acceptance migration story preserved.
+- References still resolve.
+
+## Non-blocking observation
+
+If implementation chooses POSIX-only support boundary, the completion evidence should state that native Windows support is intentionally out of scope so the "cross-platform" test language is not overread.
+
+## Strongest parts
+
+- Clarifies the core argv contract.
+- Turns the Windows concern into a concrete implementation decision instead of a vague platform risk.
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
