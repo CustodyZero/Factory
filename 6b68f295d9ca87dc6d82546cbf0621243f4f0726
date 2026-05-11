@@ -1,0 +1,23 @@
+# DEP0190 Implementation Code Review — Round 2
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** dep0190-shell-removal (round-2 commit 6b68f29)
+**Verdict:** APPROVE
+
+## Summary
+
+No blocking findings. The loader now uses the intended `command.includes('/')` disambiguation: POSIX absolute and relative paths with spaces pass through as one argv token; bare whitespace legacy commands still split and warn. The rewritten test at `tools/test/config.test.ts:354` correctly asserts preservation and no deprecation callback. The ambiguous `gh copilot --` + `prefix_args` rejection remains covered.
+
+## Non-blocking observation
+
+`docs/integration.md` migration note says a command "containing whitespace" is legacy. Should be tightened to "bare command with whitespace and no `/`" to match implementation exactly. Future cleanup, not merge-blocking.
+
+## Strongest parts
+
+- The previously mis-pinned test was corrected directly.
+- The implementation comment is explicit enough to prevent a future "split on any whitespace" regression.
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
