@@ -31,3 +31,59 @@
 ## Round budget
 
 2 of 3 rounds used. Bounded-iteration model honored.
+
+# Backlog Cleanup Pass QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+All 11 acceptance criteria PASS, all 16 specific checks PASS.
+
+## Critical verifications
+
+- **Item A (configurable heartbeat)**: `resolveHeartbeatInterval` at `agent_invoke.ts:108`, consumed at `:427`, schema floor 1000, default 30s preserved.
+- **Item B (transition log lines)**: Happy path EXACTLY 2 lines (implement + review). BuildFailed-remediation path EXACTLY 3 lines. Test uses `.toEqual([...])` AND `.not.toContain(removed-line)` for defense-in-depth.
+- **Item C (resolvePlanAction)**: `grep intentApproved tools/plan.ts` empty. Gate cited as `spec_runner.ts:isPostApprovalStatus`.
+- **Item D (delivered/superseded)**: both tests in `spec_runner.test.ts:241,263` drive through `runOrchestrator`.
+- **Item E (test split)**: `spec_runner.test.ts` exists; `orchestrator.test.ts` retains top-level orchestrator tests.
+- **No scope creep**: `shell: true` at `agent_invoke.ts:385`; `review.ts` references at `prompts.ts:87-88,57,104` — both verifiably UNTOUCHED.
+- **No regressions**: 713/713 pass under both default TZ and `TZ=Pacific/Kiritimati`. Phase 6 `expectEscalationInvariants` at 4 sites intact.
+
+## Facade-risk audit
+
+- `intentApproved` removal is genuinely dead — callers no longer pass it, approval gate now solely in `spec_runner.ts:isPostApprovalStatus`.
+- Build-remediation transition fires INSIDE `runRemediation` at `develop_phase.ts:1074`, bound to actual dev-agent invocation, NOT finalize-branch exit.
+- 50ms-vs-500ms-child heartbeat test is real signal: override-respected ≥ 1 fire; ignored = 0 fires. Asymmetry cannot be satisfied accidentally.
+
+## Strongest aspects
+
+1. The codex round-1 finding was substantive — the configurable-heartbeat tests were tautological (exercised `_startHeartbeat` directly; couldn't detect `invokeAgent` ignoring the override). The round-2 fix extracts `resolveHeartbeatInterval` as a named pure function AND adds a behavioral end-to-end test that observes a real `setInterval` firing against a real spawned child. CLAUDE.md §3.5 boundary discipline.
+2. The round-2 finalize-transition correction is rigorous: the over-logged "developer finished finalize" line implied an agent ran when only `completePacket` did. The pinning test asserts the removed line `.not.toContain(...)` as defense-in-depth — a future regression that re-adds it would fail.
+
+# Backlog Cleanup Pass Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-11
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Backlog cleanup pass bundles 5 small follow-up items from the convergence pass:
+- A (configurable heartbeat), B (transition log lines), C (resolvePlanAction simplification), D (test pinning backfill), E (spec_runner test split).
+
+Items 1 (shell:true) and 2 (reviewer stdout parsing) from the original 7-item backlog are deliberately deferred per orchestrator scoping; verifiably untouched.
+
+- 7 commits across 2 review rounds: REQUEST-CHANGES (finalize over-log + tautological heartbeat tests), APPROVE
+- 701 → 713 tests (+12)
+- Independent QA APPROVE on 11 criteria + 16 checks; TZ-invariance independently verified
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration honored.
+
+## Remaining backlog after this merge
+
+Two items remain from the original 7-item backlog:
+1. **DEP0190 `shell:true` deprecation** — requires config schema change (separate space-separated `command` into `command` + `prefix_args`). Should be scoped as a focused mini-spec.
+2. **Reviewer stdout parsing as alternative to review.ts CLI** — recommend REJECT: contradicts the `single_entry_pipeline.md` decision doc that LLMs are unreliable at structured output. Better to formalize the reviewer-CLI exception as a decision doc than reintroduce structured-output fragility.
