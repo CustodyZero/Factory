@@ -45,11 +45,29 @@ configured providers (codex / claude / copilot).
 `schemas/factory-config.schema.json` adds an optional `prefix_args:
 string[]` (non-empty items, `minItems: 1` when present) to
 `$defs/pipeline_provider`. Schema remains `additionalProperties: false`.
-After the change, `command` carries the executable only (single token,
-no internal whitespace by contract — e.g. `"gh"`); `prefix_args` carries
+After the change, `command` carries the executable only — a single argv
+token interpreted by `spawn` as the program path; `prefix_args` carries
 the fixed leading arguments (e.g. `["copilot", "--"]`). Per-provider
 suffix logic (claude/codex/copilot/generic) in `buildProviderArgs` is
 unchanged.
+
+Supported `command` shapes (under `spawn` with `shell: false`, a single
+argv command is treated as a literal executable path — no shell
+tokenization — so internal whitespace inside the path is preserved):
+
+- Bare executable name resolved against `PATH`: `"gh"`, `"codex"`,
+  `"claude"`, `"npx"`. Most common.
+- Absolute executable path, possibly containing spaces:
+  `"/Applications/Tool With Space/bin/codex"`,
+  `"C:\\Program Files\\GitHub CLI\\gh.exe"`. Supported; spaces inside an
+  argv-mode `command` are part of the path, not argument separators.
+
+Unsupported (migration boundary): a space-separated string carrying
+multiple arguments, e.g. `"gh copilot --"`. This shape only worked under
+the previous `shell: true` because the shell tokenized it. Operators on
+that shape must split into `command: "gh"` + `prefix_args: ["copilot",
+"--"]`. Phase 1's loader normalizes this once, with a deprecation
+warning.
 
 ### Config loader normalization
 
@@ -169,6 +187,7 @@ projects have had time to migrate.
 | Risk | Mitigation |
 |------|------------|
 | Argument escaping diverges from current shell-tokenized behavior on Windows vs Unix | Cross-platform tests for prompts containing spaces, quotes, backticks, and newlines, asserting byte-identical delivery to the child. No reliance on shell-specific quoting. |
+| Windows wrapper-script providers (`.cmd` / `.bat`) fail to spawn without shell: `spawn("gh", ["copilot", "--", ...], { shell: false })` on Windows does not find `gh.cmd` because Node's spawn on Windows resolves only `.exe`-style executables natively; npm/pnpm/Scoop/Chocolatey commonly install `gh`, `codex`, `claude`, and `npx` as `.cmd` shims | The implementing developer picks one explicitly: **(a)** Documented support boundary — factory operates with POSIX-style argv-mode spawn; Windows operators run under WSL (or equivalent POSIX environment) and the factory does not claim native-Windows support for `.cmd`/`.bat` providers; OR **(b)** Cross-platform spawn-boundary test that exercises wrapper-style commands (not just native stub children — e.g. a `.cmd` shim on Windows CI), with a documented Windows-specific shim path in `invokeAgent` (e.g. extension probing or explicit `cmd.exe /c` for `.cmd`/`.bat`, isolated and labeled). The spec does not prefer one path; the choice is made when the fix lands and documented in that packet. |
 | Operators have hand-edited `command` strings that depend on shell features (tilde, glob, env-var substitution, command substitution) | Phase 1 keeps the legacy shape working (with a warning). Phase 3 does not break the legacy shape. Shell-feature emulation is explicitly out of scope; operators relying on those features were deviating from the documented surface and must move to a literal argv. |
 | **Operator config migration friction**: existing operators across host projects have `command: "gh copilot --"` in their `factory.config.json` | Phase 1's dual-acceptance is load-bearing. The legacy shape continues to work indefinitely with a deprecation warning. A future spec may move to strict rejection, but only after host projects have had observed time to migrate. |
 | Cost extraction, recovery classification, event emission depend on `child.stdout` / `child.stderr` / `exit_code` | The spawn boundary is below all three seams. Tests pin the InvokeResult shape (exit_code, stdout, stderr, cost) and the cost-recording flow against fixture stdout strings; they pass unchanged when `shell: true` is removed. Verify by running the existing recovery + cost + events test suites unmodified. |
