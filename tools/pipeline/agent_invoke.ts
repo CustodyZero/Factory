@@ -4,6 +4,32 @@
  * Pure helpers that prepare provider-CLI invocations PLUS the
  * imperative I/O wrapper that actually spawns one.
  *
+ * SUPPORT BOUNDARY — POSIX-only argv-mode spawn (DEP0190)
+ *
+ * `invokeAgent` spawns provider CLIs in argv mode (no `shell: true`).
+ * Per the DEP0190 migration in `specs/dep0190-shell-removal.md` and
+ * the orchestrator's explicit choice (path (a) "documented support
+ * boundary"), the factory operates under POSIX-style argv semantics
+ * only:
+ *
+ *   - `command` is a literal executable token — either a bare name
+ *     resolved against `PATH` (`"gh"`, `"codex"`, `"claude"`) or an
+ *     absolute path (whitespace in the path is preserved as part of
+ *     the path, NOT tokenized).
+ *   - `prefix_args` carries any fixed leading argv elements
+ *     (`["copilot", "--"]` for the copilot/gh sub-command).
+ *   - Prompts containing shell metacharacters (spaces, single/double
+ *     quotes, backticks, newlines) reach the child byte-identical
+ *     — no shell escaping is needed because no shell is involved.
+ *
+ * Windows operators run under WSL (or an equivalent POSIX
+ * environment). The factory does NOT claim native-Windows support for
+ * `.cmd` / `.bat` provider wrappers; npm/Chocolatey-installed
+ * `gh.cmd`, `codex.cmd`, etc. would not be found by argv-mode spawn
+ * on native Windows. No `cmd.exe /c` fallback or extension probing
+ * is supplied. The alternative (path (b) — Windows-specific shim
+ * paths) is explicitly out of scope.
+ *
  * SCOPE CHANGE — PHASE 4.5
  *
  * Phase 1 of specs/single-entry-pipeline.md kept this file pure
@@ -197,26 +223,32 @@ export interface ProviderInvocation {
  * Build CLI arguments for a provider invocation.
  *
  * Each provider has its own conventions for autonomous mode and
- * model selection. The contract here matches the original
- * buildProviderArgs in run.ts byte-for-byte:
+ * model selection. The argv shape is:
+ *
+ *   [...providerConfig.prefix_args ?? [],   // fixed leading argv
+ *    ...per-provider suffix flags,
+ *    ...(modelId ? ['--model', modelId] : []),
+ *    prompt or nothing for copilot]
+ *
+ * Per-provider suffix logic:
  *
  *   claude:
- *     args = ['--print', '--dangerously-skip-permissions',
- *             ...(modelId ? ['--model', modelId] : []),
- *             prompt]
+ *     suffix = ['--print', '--dangerously-skip-permissions', ..., prompt]
  *
  *   codex:
- *     args = ['--quiet', '--full-auto',
- *             ...(modelId ? ['--model', modelId] : []),
- *             prompt]
+ *     suffix = ['--quiet', '--full-auto', ..., prompt]
  *
  *   copilot:
- *     args = ['--yolo', '--no-ask-user',
- *             ...(modelId ? ['--model', modelId] : [])]
+ *     suffix = ['--yolo', '--no-ask-user', ...]
  *     -- prompt is delivered via stdin by the caller, not here.
  *
  *   anything else:
- *     args = [...(modelId ? ['--model', modelId] : []), prompt]
+ *     suffix = [..., prompt]
+ *
+ * `prefix_args` (DEP0190) carries any sub-command-style leading argv
+ * (e.g. `["copilot", "--"]` so the executable `gh` receives them as
+ * `gh copilot -- --yolo ...`). Returns `{ command, args }` where
+ * `command` is a single executable token (post-loader normalization).
  */
 export function buildProviderArgs(
   provider: string,
@@ -225,7 +257,10 @@ export function buildProviderArgs(
   modelId: string | undefined,
 ): ProviderInvocation {
   const command = providerConfig.command;
-  const args: string[] = [];
+  // DEP0190 — prefix_args is the post-loader split argv. Prepend
+  // verbatim. When absent, this is the empty array (no change to
+  // the per-provider suffix shape).
+  const args: string[] = [...(providerConfig.prefix_args ?? [])];
 
   switch (provider) {
     case 'claude':
@@ -379,10 +414,14 @@ export function invokeAgent(
   const useStdin = provider === 'copilot';
 
   return new Promise<InvokeResult>((resolve) => {
+    // DEP0190 — argv-mode spawn (no `shell: true`). `command` is a
+    // single executable token after loader normalization; the prompt
+    // and any shell metacharacters it contains pass through as
+    // literal argv elements. See the top-of-file SUPPORT BOUNDARY
+    // comment for the POSIX-only stance.
     const child = spawn(command, args, {
       cwd: findProjectRoot(),
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true,
     });
 
     let stdout = '';
