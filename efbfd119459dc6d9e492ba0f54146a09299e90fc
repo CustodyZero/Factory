@@ -1,0 +1,19 @@
+# Reviewer-CLI Exception Decision Doc — Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** decision/reviewer-cli-exception (commit efbfd11)
+**Verdict:** APPROVE
+
+## Summary
+
+No blocking findings. Frontmatter matches the local convention, all seven required sections are present, the three alternatives are concrete, and the references resolve to real files. Implementation claims verified against `prompts.ts`, `develop_phase.ts`, and `recovery.ts`.
+
+## Strongest parts
+
+- Honest about the reviewer being a load-bearing exception.
+- The `ReviewDecisionMissing` section ties the decision to an actual integrity guard instead of hand-waving over the failure mode.
+
+## Round budget
+
+2 rounds remaining (not needed — proceeding to QA).
