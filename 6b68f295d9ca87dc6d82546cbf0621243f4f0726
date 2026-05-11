@@ -21,3 +21,50 @@ No blocking findings. The loader now uses the intended `command.includes('/')` d
 ## Round budget
 
 2 of 3 rounds used. Bounded-iteration model honored.
+
+# DEP0190 Implementation QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+All 15 acceptance criteria PASS, all 16 specific checks PASS.
+
+## Critical verifications
+
+- **DEP0190 not emitted**: real `process.on('warning')` listener filtered on `code === 'DEP0190'`, asserts zero captures over real spawn (not mocked).
+- **Shell-injection regression defense**: real-spawn fixture via `node -e` ARGV_ECHO_SCRIPT (NO `vi.mock('child_process')`). Metacharacters (`$`, backtick, `;`, `|`, `\n`) round-trip byte-identical — would FAIL if anyone re-added `shell: true`.
+- **Disambiguation rule sound**: `looksLikePath = includes('/')`; `hasInternalWhitespace = /[ \t]/.test(...)`; legacy = `!path && whitespace`. Comments explain why `startsWith('/')` would have been wrong (relative paths).
+- **Round-2 fix honest**: path-with-spaces test name ("preserves... as a single argv token") matches assertion (`out.command === '/Applications/Tool With Space/bin/codex'`) — not the test-pins-the-bug facade pattern.
+- **POSIX-only support boundary**: top-of-file comment at `agent_invoke.ts:7-31` explicitly names POSIX-only, WSL guidance, "no `.cmd`/`.bat` shim", references the path (a) decision.
+- **No regression in cost/recovery/events**: diff scoped only to agent_invoke + config + the one preexisting test that needed the new shape (`develop_phase_cascade.test.ts`).
+- **Copilot stdin behavior preserved**: prompt NOT in argv; written via `child.stdin.write(prompt)` when `useStdin`.
+- **10-min timeout preserved**: SIGTERM then SIGKILL fallback at +2s.
+
+## Strongest aspects (independent assessment)
+
+1. **Round-2 fix is real, not a facade.** The path-with-spaces test is named for the actual contract AND asserts the actual behavior. It would FAIL if the disambiguator were a naive whitespace-only check.
+2. **Real-spawn fixture for shell-injection regression defense.** The argv-echo tests via `node -e` would catch a regression to `shell: true` even if no one re-reads the spawn call — shell metacharacters round-trip byte-identical only when `shell: false`. Process-level DEP0190 listener adds a second guard.
+
+# DEP0190 Implementation Orchestrator Approval
+
+**Orchestrator identity:** Opus session (separate from developer and QA per FI-7)
+**Date:** 2026-05-11
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Implements the DEP0190 mini-spec (`specs/dep0190-shell-removal.md`) across 4 commits.
+
+- 4 commits across 2 review rounds: REQUEST-CHANGES (loader broke POSIX absolute paths with spaces; existing test pinned the broken behavior — exactly the test-pins-the-bug facade) → APPROVE
+- 713 → 738 tests (+25)
+- Independent QA APPROVE on 15 criteria + 16 checks
+- POSIX-only support boundary path (a) locked at dispatch; verified throughout
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
+
+## Operational note
+
+The round-1 finding was particularly valuable: codex caught a test that pinned the buggy behavior under a misleading test name (claimed preservation, asserted broken split). This is the second time the bounded-iteration model has surfaced a test-pins-the-bug pattern within the same architectural change. Worth carrying as a pattern recognition signal for future reviews.
