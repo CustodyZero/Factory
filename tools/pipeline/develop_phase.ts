@@ -679,6 +679,9 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
           }
           // recovered.kind === 'ok'
           fmt.log('develop', `  ${fmt.sym.ok} Implementation done`);
+          // Closing transition line — see plan_phase.ts for rationale.
+          // Routed through 'agent' to match the heartbeat surface.
+          fmt.log('agent', `developer finished implementing '${packet.id}' — proceeding to review`);
           currentPoint = nextPointAfterImplement(true);
           break;
         }
@@ -882,6 +885,11 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
           } else if (afterStatus === 'changes_requested') {
             fmt.log('review', `  ${fmt.sym.warn} Changes requested`);
           }
+          // Closing transition line — names the next step explicitly
+          // so the operator can correlate it with the next heartbeat
+          // surface. Routed through 'agent' to match the heartbeats.
+          const reviewNextLabel = afterStatus === 'changes_requested' ? 'rework' : 'finalize';
+          fmt.log('agent', `review complete for '${packet.id}' — proceeding to ${reviewNextLabel}`);
           currentPoint = nextPointAfterReview(true, afterStatus);
           break;
         }
@@ -953,6 +961,8 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
             escalated = true;
             break;
           }
+          // Closing transition line — see implement case for rationale.
+          fmt.log('agent', `developer finished rework on '${packet.id}' — proceeding to review`);
           currentPoint = nextPointAfterRework(true);
           break;
         }
@@ -1055,6 +1065,13 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
                 },
               };
             }
+            // Closing transition line — pinned to the dev-agent
+            // invocation that just succeeded. Finalize without
+            // remediation runs NO agent and emits NO transition; this
+            // line fires ONLY when the BuildFailed recovery loop
+            // actually re-invoked the developer to fix the build.
+            // Routed through 'agent' to match the heartbeat surface.
+            fmt.log('agent', `developer finished build remediation on '${packet.id}'`);
             return null;
           };
 
@@ -1178,6 +1195,14 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
             break;
           }
           fmt.log('develop', `  ${fmt.sym.ok} ${fmt.success('Completed')}`);
+          // No closing transition line here. The happy-path finalize
+          // is `completePacket` only — no agent invocation — and the
+          // 'agent' channel implies an agent ran. When the BuildFailed
+          // recovery loop DOES re-invoke the dev agent for build
+          // remediation, the transition line is emitted INSIDE
+          // `runRemediation` at the point the invocation completes
+          // (see above). That keeps the contract "one transition line
+          // per agent invocation" intact.
           completionIds.add(packet.id);
           currentPoint = nextPointAfterFinalize(true);
           break;

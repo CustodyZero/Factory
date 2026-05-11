@@ -174,9 +174,15 @@ export function hydrateIntent(
 }
 
 export function resolvePlanAction(input: PlanInput): PlanAction {
+  // Plan-state derivation only — this helper answers "given an intent and
+  // the set of features on disk, what's the next planner action?". The
+  // intent's approval status is NOT consulted here. The approval gate
+  // lives in `tools/pipeline/orchestrator/spec_runner.ts:isPostApprovalStatus`
+  // (kind-aware: spec-driven runs skip the gate; intent-driven runs
+  // require a post-approval status). Reading `intent.status` from this
+  // helper would duplicate the gate and risk drift between the two sites.
   const linkedFeatures = input.features.filter((f) => f.intent_id === input.intent.id);
   const linkedFeature = linkedFeatures[0] ?? null;
-  const intentApproved = input.intent.status === 'approved';
   const plannerInstructions = [
     ...(input.plannerPersona?.instructions ?? []),
     'Create exactly one feature artifact with status "planned".',
@@ -200,9 +206,7 @@ export function resolvePlanAction(input: PlanInput): PlanAction {
         spec: input.intent.spec,
         constraints: input.intent.constraints ?? [],
       },
-      message: intentApproved
-        ? `Intent '${input.intent.id}' is approved and ready for planning. Create a planned feature and dev/qa packet pairs.`
-        : `Intent '${input.intent.id}' is ready for planning. Create a planned feature and dev/qa packet pairs.`,
+      message: `Intent '${input.intent.id}' is ready for planning. Create a planned feature and dev/qa packet pairs.`,
     };
   }
 

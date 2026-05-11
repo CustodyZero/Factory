@@ -109,6 +109,11 @@
               "additionalProperties": false
             }
           }
+        },
+        "heartbeat_interval_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Optional heartbeat cadence in milliseconds for long-running agent invocations (planner / developer / reviewer / qa). The first heartbeat fires after this many milliseconds of the child still running, then every interval after. Absent => 30000 ms (the pre-configurable default). Minimum 1000 (1 s)."
         }
       },
       "additionalProperties": false

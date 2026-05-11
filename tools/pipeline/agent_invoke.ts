@@ -68,17 +68,46 @@ import { computeCost, extractTokens, mergeRateCard } from './cost.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Heartbeat cadence in milliseconds. The first heartbeat fires after
- * this many milliseconds of the child still running, then every
+ * Default heartbeat cadence in milliseconds. The first heartbeat fires
+ * after this many milliseconds of the child still running, then every
  * interval after.
  *
  * 30 s is the chosen tradeoff: short enough that an operator watching
  * the terminal sees motion (a 10-min agent gets 19 reassurances),
  * long enough that fast happy-path invocations (planner < 30 s) emit
- * zero heartbeats. Hardcoded today; if operators report it as wrong
- * the right move is a config knob, not a flag.
+ * zero heartbeats. Operators can override via
+ * `factory.config.json` -> `pipeline.heartbeat_interval_ms` (integer,
+ * min 1000); see `tools/config.ts:PipelineConfig`. When absent the
+ * default below applies — this constant is the load-bearing fallback
+ * referenced by the resolution at the `invokeAgent` call site.
+ *
+ * Kept as `HEARTBEAT_INTERVAL_MS` (the original name) so existing
+ * tests that imported the constant for the default-cadence assertion
+ * keep compiling.
  */
 export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Resolve the heartbeat cadence for an invocation.
+ *
+ * Operator override wins: `pipeline.heartbeat_interval_ms` from the
+ * factory config (validated as integer >= 1000 by the ajv schema).
+ * Otherwise the load-bearing default (`HEARTBEAT_INTERVAL_MS`, 30 s)
+ * applies. This pure function is the single named resolution point
+ * for the cadence — extracted so tests can pin it directly AND verify
+ * that `invokeAgent` actually consumes it. Without an extracted
+ * helper a test could only assert on `_startHeartbeat` directly and
+ * would still pass if `invokeAgent` silently ignored the config.
+ *
+ * `config` is typed optional because the early-return paths of
+ * `invokeAgent` are reachable with a config that has no pipeline
+ * block (configuration-error branches). Returning the default in that
+ * case mirrors the production behavior: a misconfigured pipeline
+ * never reaches the spawn path that would consume the cadence.
+ */
+export function resolveHeartbeatInterval(config: FactoryConfig | undefined): number {
+  return config?.pipeline?.heartbeat_interval_ms ?? HEARTBEAT_INTERVAL_MS;
+}
 
 /**
  * Optional heartbeat context: what label to print and which packet/
@@ -107,6 +136,12 @@ export interface HeartbeatContext {
  * fake timers to advance virtual time and assert that fmt.log fires
  * exactly once per interval.
  *
+ * `intervalMs` is required (no default) so the call site is forced
+ * to thread the resolved cadence through explicitly. The resolution
+ * (`config.pipeline?.heartbeat_interval_ms ?? HEARTBEAT_INTERVAL_MS`)
+ * lives at the `invokeAgent` boundary; injecting the value here
+ * keeps `_startHeartbeat` pure with respect to configuration.
+ *
  * The leading-underscore export name signals "test-only public".
  * Production callers should NOT consume this; they get heartbeats
  * for free via `invokeAgent`.
@@ -114,13 +149,14 @@ export interface HeartbeatContext {
 export function _startHeartbeat(
   provider: string,
   heartbeat: HeartbeatContext | undefined,
+  intervalMs: number,
 ): { stop: () => void } {
   const channel = heartbeat?.channel ?? 'agent';
   const message = heartbeat?.message
     ?? `${provider} agent still running (no progress signal yet)`;
   const handle = setInterval(() => {
     fmt.log(channel, message);
-  }, HEARTBEAT_INTERVAL_MS);
+  }, intervalMs);
   // unref so the heartbeat never keeps the process alive on its own.
   handle.unref?.();
   return {
@@ -377,10 +413,19 @@ export function invokeAgent(
     }, TIMEOUT_MS);
     timeoutHandle.unref();
 
-    // Heartbeat: every HEARTBEAT_INTERVAL_MS, emit one progress line.
+    // Heartbeat: every `heartbeatInterval` ms, emit one progress line.
     // Cleared when the child closes. The cadence is unit-tested via
-    // _startHeartbeat directly; here we just consume the helper.
-    const heartbeatTimer = _startHeartbeat(provider, heartbeat);
+    // _startHeartbeat directly; the resolution is unit-tested via
+    // `resolveHeartbeatInterval`. Here we just thread them together.
+    //
+    // Resolution: operator override (`pipeline.heartbeat_interval_ms`)
+    // wins; otherwise the load-bearing default (30 s) applies. The
+    // schema enforces the floor (>= 1000 ms); we don't re-validate here
+    // — defense-in-depth against a hand-edited config that bypassed
+    // ajv would risk masking a real misconfiguration (CLAUDE.md §3.3
+    // failures must be visible).
+    const heartbeatInterval = resolveHeartbeatInterval(config);
+    const heartbeatTimer = _startHeartbeat(provider, heartbeat, heartbeatInterval);
 
     const cleanup = (): void => {
       clearTimeout(timeoutHandle);

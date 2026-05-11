@@ -365,7 +365,13 @@ async function runPlanPhaseInner(opts: PlanPhaseOptions): Promise<PlanPhaseResul
   }
 
   const result = recovered.value;
-  fmt.log('plan', fmt.success('Planner completed'));
+  // Closing transition line — pairs with the in-flight heartbeats
+  // emitted by `invokeAgent`. Operators following the heartbeat
+  // surface ("planner still running for spec '<id>'...") want a
+  // single closing line that confirms the invocation succeeded and
+  // names the next step. Routed through the 'agent' channel to
+  // match the heartbeat surface from the convergence pass.
+  fmt.log('agent', `planner finished spec '${opts.specId ?? intent.id}' — generating feature`);
 
   // Re-read features to find what was created.
   const newFeatures = readJsonDir<{ id: string; intent_id?: string; status: string }>(join(artifactRoot, 'features'));
