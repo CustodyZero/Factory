@@ -1,0 +1,56 @@
+# Host-Project Memory Graph-RAG Decision Doc Review
+
+**Reviewer:** codex GPT-5.5 (round 1, read-only)
+**Date:** 2026-05-11
+**Branch:** worktree-agent-ab4dea2bbeadf2753 (commit 3304a6d)
+**Verdict:** APPROVE
+
+## Summary
+
+No blocking issues. The decision doc commits to substantive architectural shape (typed knowledge graph, composite weights, three-axis retrieval, first-class consolidation, storage split) while honestly deferring A-level tuning choices (embedding model, sqlite-vec dependency, retrieval scope, consolidation cadence, authority resolution, schema versioning, contradiction policy, migration tooling).
+
+## Strongest parts
+
+1. Unambiguous commitment that host-project memory is graph-based RAG, NOT a flat catalog.
+2. Correct boundary for a commitment-level decision: architecture/storage/retrieval/consolidation are committed; A-level implementation choices explicitly deferred.
+
+# QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+## All 13 criteria PASS, all 16 specific checks PASS
+
+- File exists; frontmatter matches convention.
+- 6 required sections in expected order.
+- Node taxonomy enumerates all 6 types; edge taxonomy names 8+ edge types; composite weights name all 6 components.
+- Retrieval shape (semantic + graph + weighted + MMR), consolidation incremental + periodic, storage split (markdown + SQLite+sqlite-vec), write/read paths, host integration — all present.
+- 8 deferrals enumerated honestly (embedding model, sqlite-vec call, injection scope, cadence, authority resolution, schema versioning, contradiction policy, migration tooling).
+- Implementation cost: 6 specs across 3 stages.
+- References: all parent decision docs verified present.
+- MEMORY.md refresh: both `reviewer_cli_exception.md` (the staleness from the audit) and the new doc added in alphabetical position.
+- 182 lines (within 150-220 target). No emojis. Doc-only; 738 tests pass.
+
+## Facade-risk audit
+
+The commitment is substantive — node taxonomy, edge taxonomy, weight vector, retrieval pipeline shape, storage split, write/read paths, and host integration model are all decided. Deferrals are genuinely A-level (specific embedding model, vector-store dependency call, injection-scope tradeoff, cadence policy) — they legitimately require context not yet available (cost data, host-project experience). NOT a wishlist; future implementation specs have coherent ground to stand on.
+
+## Strongest qualities (independent assessment)
+
+1. **The "What this decides" vs "What this does NOT decide" split is honest and load-bearing.** A reviewer can tell exactly what is on the hook and what is not.
+2. **The composite-weights section explicitly rejects "a single counter"** — gives the design real teeth by committing to the *shape* of the learning behavior, not just the existence of memory.
+
+# Orchestrator Approval
+
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Decision doc recording architectural commitment for host-project memory. Single commit (3304a6d). 1 round (codex APPROVE on round 1). Independent QA APPROVE on 13 criteria + 16 checks.
+
+Bundled MEMORY.md refresh resolves the F1 finding from the orchestrator's memory audit (one entry stale).
+
+## Round budget
+
+1 of 3 rounds used. Bounded-iteration model honored (APPROVE first round).
