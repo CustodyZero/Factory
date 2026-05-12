@@ -1,7 +1,7 @@
 ---
 name: Recurring workflow patterns — recognition signals from session work that should govern future sessions
 description: >-
-  Meta-lesson recorded 2026-05-12 generalizing from the two concrete revert lessons ([ajv_migration_attempt](ajv_migration_attempt.md), [phase_6_recovery_attempt](phase_6_recovery_attempt.md)) and the session experience that produced Phases 1-8, the post-5.7 orchestrator decomposition, the convergence pass, the backlog cleanup, DEP0190, the host-project memory graph-RAG decision, and the Tier 1 memory alignment. Eight named recognition signals an orchestrator/reviewer should watch for during architectural work, each with concrete session examples and the corrective move when the signal fires. The patterns are not a workflow document — they're a checklist of failure shapes that recur across architectural work, captured so the next session can recognize the signal before it costs a round. Patterns covered: bounded-iteration model (3 rounds → revert), test-pins-the-bug (test name vs assertion mismatch), doc-creates-inconsistency (documenting a contract surfaces silent fallbacks), observable-vs-controlling (signals must be both visible and dispatched on), state-machine-integration-is-architecture (cross-cutting layer wiring is the load-bearing design concern), reverted-lesson preservation (force-delete branch + write research note), codex hang-and-restart (SIGKILL watchdog around `codex exec` because process hangs 5/8 dispatches at startup), and FI-7 distinct identity (orchestrator / developer / QA / reviewer separation). Authored as Tier 1 memory loaded into every factory-development session; referenced by `docs/decisions/QUEUE.md` and indexed in `docs/decisions/MEMORY.md`.
+  Meta-lesson recorded 2026-05-12 generalizing from the two concrete revert lessons ([ajv_migration_attempt](ajv_migration_attempt.md), [phase_6_recovery_attempt](phase_6_recovery_attempt.md)) and the session experience that produced Phases 1-8, the post-5.7 orchestrator decomposition, the convergence pass, the backlog cleanup, DEP0190, the host-project memory graph-RAG decision, and the Tier 1 memory alignment. Eight named recognition signals an orchestrator/reviewer should watch for during architectural work, each with one or more concrete session examples or observations and the corrective move when the signal fires. The patterns are not a workflow document — they're a checklist of failure shapes that recur across architectural work, captured so the next session can recognize the signal before it costs a round. Patterns covered: bounded-iteration model (3 rounds → revert when brief is wrong, role-flip when progress is real but slow), test-pins-the-bug (test name vs assertion mismatch), doc-creates-inconsistency (documenting a contract surfaces silent fallbacks), observable-vs-controlling (signals must be both visible and dispatched on), state-machine-integration-is-architecture (cross-cutting layer wiring is the load-bearing design concern), reverted-lesson preservation (force-delete branch + write research note), codex hang-and-restart (SIGKILL watchdog around `codex exec` because process hangs 5/8 dispatches at startup), and distinct verification identities (FI-7 plus the four-role session workflow built on top of it). Authored as Tier 1 memory loaded into every factory-development session; referenced by `docs/decisions/QUEUE.md` and indexed in `docs/decisions/MEMORY.md`.
 type: lesson
 ---
 
@@ -18,7 +18,7 @@ type: lesson
 Each section names a recurring failure shape and gives:
 
 1. **Pattern statement** — the underlying mechanism.
-2. **Session examples** — 2-3 concrete instances with citations.
+2. **Session examples** — one or more concrete instances or session observations with citations.
 3. **Recognition signal** — what a reviewer or orchestrator should watch for.
 4. **Corrective move** — what to do when the signal fires.
 
@@ -28,16 +28,30 @@ The patterns are not exhaustive. New patterns get appended at the bottom as they
 
 ## 1. Bounded-iteration model
 
-**Pattern.** Three review rounds maximum per architectural change. After the third REQUEST-CHANGES, the verdict is RECOMMEND-REVERT: force-delete the branch and write a `type: lesson` research note recording what was tried, what went wrong per round, what's salvageable for the next attempt, and the reverted branch name.
+**Pattern.** Three review rounds maximum per architectural change before the orchestrator must change something structural about the attempt. After the third REQUEST-CHANGES, the round-3 outcome is one of two moves — **revert** or **role-flip** — determined by whether progress is real but converging slowly, or whether the brief itself is architecturally wrong. Continuing into a fourth round of the same agents on the same brief is forbidden; the bounded-iteration cap exists precisely because past three rounds, the loop is no longer making forward motion.
 
-**Examples.**
+**The decision criterion at round 3.** The orchestrator asks: **is progress real, or is the brief wrong?**
 
-- Phase 4.6 ajv migration revert. Three rounds produced regressions, lax-mode filters, and a drop-rule mini-DSL that grew 785 lines into 1,396 across three files plus the new dependency. Round 3 verdict was RECOMMEND-REVERT; the integrity-layer extraction shipped instead (Phase 4.6 revised, commit `192e971`). Lesson at [ajv_migration_attempt.md](ajv_migration_attempt.md).
-- Phase 6 recovery layer revert. Three rounds: R1 found facade labels (CLAUDE.md §3.5), R2 found production-unreachable + wrong-packet bugs, R3 found that `StaleBranch` escalation was observable but not controlling. RECOMMEND-REVERT; revised Phase 6 shipped at commit `2f86856`. Lesson at [phase_6_recovery_attempt.md](phase_6_recovery_attempt.md).
+- **Progress real, iteration slow → role-flip.** R1, R2, and R3 are surfacing disciplinary fixes on a sound design — the implementation is converging on the brief's intent, just not fast enough. A different developer chair on the same problem would likely converge in 1-2 more rounds. The corrective move is to swap roles, not to abandon the work.
+- **Progress stalled → revert.** R1 and R2 surfaced increasingly deep correctness gaps; R3 found a still-deeper one. The brief is the bug, not the implementation. No amount of fresh-eyes developer effort will fix a brief whose premise is architecturally wrong. Force-delete the branch and write a `type: lesson` research note.
 
-**Recognition signal.** At review round 3, the reviewer should ask: "does another round actually converge on something correct, or is the brief architecturally wrong?" If R1 and R2 surfaced increasingly deep correctness gaps (not just disciplinary fixes), the brief is the bug, not the implementation.
+**Role-flip mechanism (literal swap).** When the orchestrator selects role-flip at round 3:
 
-**Corrective move.** Revert and write the lesson before the branch is deleted. The next attempt's brief incorporates what the lesson taught — re-write the brief, don't re-dispatch the same scope.
+- The original reviewer agent becomes the developer for round 4. They bring the iteration arc as context: they've seen all three rounds, know which fixes landed and which didn't, and know exactly where the previous developer stalled.
+- The original developer agent becomes the reviewer. They bring architectural context from their attempts: where they tried things that didn't work, what the brief's edge cases really look like, which dead ends to flag immediately.
+- Both contexts become leverage, not blind spots. The swap re-frames accumulated context as positional advantage rather than as the rut the loop was stuck in.
+
+**Examples (both progress-stalled — revert was correct).**
+
+- Phase 4.6 ajv migration revert. Three rounds produced regressions, lax-mode filters, and a drop-rule mini-DSL that grew 785 lines into 1,396 across three files plus the new dependency. The brief assumed the hand-rolled validator was doing schema-driven validation; it was doing semantic checks dressed as schema validation. No fresh developer chair would have solved this — the bug was in the brief's premise. Round 3 verdict was RECOMMEND-REVERT; the integrity-layer extraction shipped instead (Phase 4.6 revised, commit `192e971`). Lesson at [ajv_migration_attempt.md](ajv_migration_attempt.md). Role-flip would have been wrong because the architectural premise was wrong.
+- Phase 6 recovery layer revert. Three rounds: R1 found facade labels (CLAUDE.md §3.5), R2 found production-unreachable + wrong-packet bugs, R3 found that `StaleBranch` escalation was observable but not controlling. Each round surfaced a deeper architectural gap (label-facade → wrong-target wiring → state-machine-integration-is-architecture). The brief framed integration as wiring; the gaps showed integration was the load-bearing design problem. RECOMMEND-REVERT; revised Phase 6 shipped at commit `2f86856`. Lesson at [phase_6_recovery_attempt.md](phase_6_recovery_attempt.md). Role-flip would have been wrong because the integration model itself needed to change.
+
+**Recognition signal.** At review round 3, the orchestrator asks: **"if a different agent took the developer chair with this round's review feedback, would they likely converge in 1-2 more rounds?"** If yes, role-flip. If no, revert. The diagnostic question is about the brief's correctness, not about how hard the developer is trying.
+
+**Corrective move.**
+
+- **Role-flip.** Dispatch a fresh agent into the developer chair carrying: the original brief, the round-3 review findings, and the accumulated commit history from rounds 1-3. The original developer becomes the reviewer for round 4 (and round 5 if needed). Same brief, swapped chairs.
+- **Revert.** Force-delete the branch. Write the `type: lesson` research note before deletion, recording what was tried, what went wrong per round, comparison stats at rejection, the meta-pattern, what's salvageable for the next attempt, and the reverted branch name. The next attempt's brief incorporates what the lesson taught — re-write the brief, don't re-dispatch the same scope.
 
 ---
 
@@ -140,24 +154,35 @@ The 360-second bound is chosen empirically: a successful review typically lands 
 
 ---
 
-## 8. FI-7 distinct identity for orchestrator / developer / QA
+## 8. Distinct verification identities (FI-7 plus session workflow)
 
-**Pattern.** Architectural changes use three distinct Opus identities (separately spawned via the Agent tool, fresh context each) plus codex GPT-5.5 as the reviewer for genuine cross-vendor independence. Same-model instances share blind spots; cross-identity verification catches what one identity would miss.
+**Pattern.** Two distinct concerns are at play here and must not be conflated:
 
-**The four roles.**
+- **FI-7 (the narrow invariant).** A factory invariant: the agent identity that records a packet's QA verification must differ from the identity that performed the dev work on the same packet. This prevents self-certifying completion. It is the pre-commit hook's enforcement target. FI-7 says nothing about the broader session workflow — only that dev and QA on a given packet are distinct identities.
+- **The four-role session workflow (built on top of FI-7).** A pattern that factory-development sessions adopt for architectural work: four separately-spawned identities — orchestrator, developer-agent, reviewer-agent, QA-agent — each with fresh context and (where applicable) their own worktree, with codex GPT-5.5 used for the reviewer chair for cross-vendor independence. This is broader than FI-7: it adds orchestrator/reviewer separation and cross-vendor reviewer choice, neither of which FI-7 itself requires.
+
+Same-model instances share blind spots; cross-identity verification catches what one identity would miss. FI-7 enforces the load-bearing minimum; the session workflow is the practiced expansion.
+
+**The four roles in the session workflow.**
 
 | Role | Identity | Worktree | Reason |
 |---|---|---|---|
 | Orchestrator | Opus (this conversation) | main / parent | Scopes work, dispatches, integrates verdicts |
 | Developer-Agent | Opus, fresh context | isolated worktree | Implements the brief; no orchestrator-conversation context to bias toward "what the orchestrator already believes" |
-| Reviewer | codex GPT-5.5 | implementation worktree | Different vendor for genuine model-independence; runs against the freshly-pushed commit |
-| QA Verifier | Opus, fresh context | independent worktree | Post-implementation audit against acceptance criteria; no developer-conversation context |
+| Reviewer-Agent | codex GPT-5.5 | implementation worktree | Different vendor for genuine model-independence; runs against the freshly-pushed commit |
+| QA-Agent | Opus, fresh context | independent worktree | Post-implementation audit against acceptance criteria; no developer-conversation context. **This is the role FI-7 directly enforces against the developer-agent.** |
 
-**Example.** Throughout this session, QA independently verified every architectural change's acceptance criteria and caught nuances the developer missed — for instance, the test-pins-bug facade in DEP0190 round 1 (per (2) above) was a QA-surfaced finding.
+**Example.** Throughout this session, QA independently verified every architectural change's acceptance criteria and caught nuances the developer missed — for instance, the test-pins-bug facade in DEP0190 round 1 (per (2) above) was a QA-surfaced finding. The pre-commit hook (FI-7) would have rejected a self-certified completion regardless of session workflow; the session workflow is what surfaced the finding in time to act on it.
 
-**Recognition signal.** A single agent identity doing all three roles. The orchestrator implements, then reviews its own implementation, then approves it. Self-review's blind-spots are systematic.
+**Recognition signal.** Two distinct failure shapes to watch for:
 
-**Corrective move.** Dispatch sub-agents with `isolation: "worktree"` and fresh prompts for each role. Each agent gets the brief plus the necessary context; none gets the others' conversation. The reviewer (codex) and the QA verifier (Opus) are independent verification surfaces, not pipeline stages.
+- **FI-7 violation surface.** A single identity is about to write both the dev commit and the completion record for the same packet. The pre-commit hook will reject this, but the orchestrator should recognize it before dispatch.
+- **Session-workflow collapse.** A single agent identity doing multiple session roles — orchestrator implements, then reviews its own implementation, then signs off as QA. Self-review's blind-spots are systematic. This is broader than FI-7: the hook won't catch reviewer-as-orchestrator collapse on architectural work, only the dev/QA same-identity case on a specific packet.
+
+**Corrective move.**
+
+- **For FI-7.** Ensure the QA-agent for a packet is dispatched as a fresh sub-agent, never the same identity that authored the dev commits. The pre-commit hook enforces this; the orchestrator should not rely on the hook alone — dispatch correctly.
+- **For the session workflow.** Dispatch sub-agents with `isolation: "worktree"` and fresh prompts for each role. Each agent gets the brief plus the necessary context; none gets the others' conversation. The reviewer-agent (codex) and the QA-agent (Opus, fresh) are independent verification surfaces, not pipeline stages.
 
 ---
 
