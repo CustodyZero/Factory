@@ -12,17 +12,7 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
 
 ## Planned (next up)
 
-### 1. Tier 2 — `docs/decisions/workflow.md`
-
-- **Status:** ready to author; first item to pick up now that patterns + queue are committed.
-- **Why:** Capture HOW factory development is governed — Coordinator → Developer-Agent (worktree-isolated Opus, fresh context) → codex GPT-5.5 review (SIGKILL watchdog wrapped) → Opus QA verifier (FI-7 distinct identity, fresh context) → Orchestrator integration → merge. The recurring patterns at `docs/research/recurring_workflow_patterns.md` are the recognition signals; `workflow.md` is the procedure those signals govern.
-- **References:**
-  - `docs/research/recurring_workflow_patterns.md` — recognition signals to embed by reference
-  - `docs/decisions/reviewer_cli_exception.md` — the reviewer's verdict channel (CLI exception)
-  - Valet's `docs/decisions/workflow.md` — style reference, NOT content reference (factory's workflow is session-grounded, not packet-numbered)
-- **Waiting on:** nothing — this is next-up.
-
-### 2. Host-project memory implementation — Stage 1 (schema + storage + write path)
+### 1. Host-project memory implementation — Stage 1 (schema + storage + write path)
 
 - **Status:** scoped pending A-decisions enumerated in the decision doc.
 - **Why:** Implement the architectural commitment in `docs/decisions/host_project_memory_graph_rag.md` — typed-node, typed-edge knowledge graph with composite weights, semantic+graph retrieval, continuous consolidation. Stage 1 lands the schema (markdown source-of-truth at `factory/memory/<category>/<id>.md`), the storage substrate (derived SQLite + vector index at `factory/memory/.index/`, gitignored), and the write path (best-effort extraction at pipeline end).
@@ -31,7 +21,7 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
   - `docs/decisions/memory_scope_split.md` — host-project vs factory-development split
 - **Waiting on:** the A-decisions still deferred in `host_project_memory_graph_rag.md` — embedding model, vector store dependency (sqlite-vec vs alternatives), retrieval-injection scope, consolidation cadence, authority resolution, schema versioning, contradiction policy, migration tooling. Decision doc anticipates 4-6 implementation specs across 3 staging steps once the A-decisions land.
 
-### 3. `factory doctor` sister spec (post-Phase-8 trigger)
+### 2. `factory doctor` sister spec (post-Phase-8 trigger)
 
 - **Status:** scoped pending accumulated host-project experience.
 - **Why:** Unified preflight diagnostic command per `docs/decisions/doctor_diagnostic_deferred.md`. Replaces today's fragmented health-checking across `tools/status.ts`, `tools/validate.ts`, manual provider checks, and the pre-commit completion-gate hook.
@@ -40,7 +30,7 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
   - `docs/research/claw_code_audit.md` §10 — `claw doctor` precedent
 - **Waiting on:** accumulated host-project experience to inform the full check list (multi-spec sequencing state, recovery state, cost-cap status, event-stream health, worktree state). The deferral is deliberate; Phase 8 just landed (commit `4472b7f`).
 
-### 4. Verification grading sister spec (post-Phase-8 trigger)
+### 3. Verification grading sister spec (post-Phase-8 trigger)
 
 - **Status:** scoped pending accumulated host-project experience.
 - **Why:** Green Contract tiered verification per `docs/decisions/verification_grading_deferred.md` (`TargetedTests` / `Package` / `Workspace` / `MergeReady`). Factory's current binary build/lint/test pass-or-fail is over-rigorous (every packet runs every check); the tier vocabulary depends on host-project tooling shape.
@@ -55,6 +45,8 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
 
 Most recent first. Each line: title — merge commit — outcome.
 
+- **Factory development workflow doc** — `ab4770d` — `docs/decisions/workflow.md` captures HOW factory development is governed: four roles (Orchestrator + Developer Agent + Reviewer + QA), session-grounded lifecycle, bounded-iteration + role-flip embedded by reference to `recurring_workflow_patterns.md` Pattern 1, W-1 through W-11 defaults table. Round 1 codex REQUEST-CHANGES (docs-only QA-skip carve-out, CLAUDE.md § references unverifiable in-repo, codex described as the notes mutator instead of verdict emitter); round 2 addressed all three; round 2 codex APPROVE; QA APPROVE on all 23 criteria.
+- **Recurring workflow patterns + work queue** — `56efaba` — `docs/research/recurring_workflow_patterns.md` (8 patterns, `type: lesson`) and `docs/decisions/QUEUE.md` introduced; MEMORY.md indexes both. Pattern 1 round-3 decision rule (revert vs role-flip) and Pattern 8 FI-7 disambiguation locked in. Follow-up tightening at `d167851` aligned the role-flip corrective-move bullet with the literal-swap mechanism above it (trivial docs alignment, direct-on-main per `workflow.md`).
 - **Tier 1 memory alignment** — `c037d8c` — frontmatter convention (sentence-case `name`, `description: >-` folded scalar, `type: <value>`), `MEMORY.md` rewritten with rich bullets + pin-closure preamble + bidirectional links, all decision + research notes brought onto the convention.
 - **Host-project memory graph-RAG decision** — `ac8bdea` — architectural commitment that when the host-project memory write-side lands, it will be a graph-based knowledge layer (typed nodes + typed edges + composite weights + semantic+graph retrieval + continuous consolidation), NOT a flat catalog. A-decisions deferred to 4-6 future specs across 3 staging steps.
 - **DEP0190 spec completion + Windows decision + R1 lesson** — `31a158f` — marked the DEP0190 mini-spec complete, recorded the Windows-deferral decision, captured the round-1 lesson surfaced by codex review (test-name vs assertion mismatch under `tools/test/config.test.ts:354`).
