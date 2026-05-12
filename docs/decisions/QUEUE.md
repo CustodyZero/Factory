@@ -1,6 +1,6 @@
 # Factory — Work Queue
 
-Authoritative state of in-flight, planned, and accepted work items for factory development. Future sessions enter via this file alongside `workflow.md` (TBD — first planned item below) and `MEMORY.md` (decision-doc + research index).
+Authoritative state of in-flight, planned, and accepted work items for factory development. Future sessions enter via this file alongside [`workflow.md`](workflow.md) (the factory-development procedure) and [`MEMORY.md`](MEMORY.md) (decision-doc + research index).
 
 ---
 
