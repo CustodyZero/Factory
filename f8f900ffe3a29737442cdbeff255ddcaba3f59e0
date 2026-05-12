@@ -1,0 +1,13 @@
+# Codex Round 2 Review — workflow.md
+
+**Date:** 2026-05-12
+**Reviewer:** codex GPT-5.5 (`codex exec`, SIGKILL-watchdog-wrapped, 420s bound, completed without watchdog firing)
+**Verdict:** APPROVE
+
+Round 2 addresses the prior findings faithfully. The docs-only QA-skip path is gone: acceptance now requires `codex APPROVE + QA APPROVE` at `docs/decisions/workflow.md:110`, and merge without both approvals is rejected at `docs/decisions/workflow.md:141`.
+
+The unverifiable `CLAUDE.md §...` citations were replaced with valid in-repo references to AGENTS.md §3.4 / §3.5 at `docs/decisions/workflow.md:45`, `:126`, `:132`, and `:143`. AGENTS.md actually contains those rules at lines 209-212. The no-equivalent trivial-change citation was replaced with commit `d167851` at `docs/decisions/workflow.md:117` and `:140`; the commit message honestly describes a direct-on-main role-flip wording tightening.
+
+The Codex verdict mechanism is now accurate at `docs/decisions/workflow.md:50` and `:86`: Codex emits stdout, and the Orchestrator attaches it with `git notes`. Frontmatter still parses with `yaml.safe_load`. Scope is limited to `docs/decisions/workflow.md`, with no unrelated edits found.
+
+**Non-blocking observation:** `docs/decisions/workflow.md:4` and `:36` still use shorthand around verdicts living in `refs/notes/reviews`, but the operational sections now state the actor split clearly, so I would not block on that.
