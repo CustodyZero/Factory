@@ -1,6 +1,6 @@
 ---
-name: factory-event-observability
-description: Factory emits typed events during pipeline execution. Events have provenance labels distinguishing live runs from tests, healthchecks, replays, and dry runs. Events are recorded as a stream consumable by the recovery layer, the future memory write-side, and external tooling. This is foundational — the recovery scenarios in Phase 6 are event classifications, and the memory write-side will extract facts from event streams.
+name: Factory event observability — typed events with provenance labels as the observability backbone
+description: Factory emits typed events at every meaningful state transition during pipeline execution. The taxonomy is a closed TypeScript union (unknown types rejected); each event carries a provenance label distinguishing live runs from tests, healthchecks, replays, and dry runs, so consumers can filter appropriately. Events are written append-only to the host's tracked artifact tree as a structured `{ event_type, timestamp, provenance, payload }` stream — free-form `console.log` is not an event. The recovery layer matches recipes on event types rather than on raw stderr (Phase 6); the future memory write-side will extract facts from `live_run`-labelled streams without test pollution; future operator tooling (doctor, dashboards, an external dispatcher) consumes the same stream. Events are an observability stream, not the state of record — packet status remains authoritative in `packets/<id>.json`. Decided 2026-05-01; informed by [claw_code_audit.md](../research/claw_code_audit.md) §4 (lane events) and §6 (recovery consumes events).
 type: project
 ---
 

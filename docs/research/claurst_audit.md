@@ -1,3 +1,9 @@
+---
+name: claurst research audit — Rust reimplementation of Claude Code; manager-executor, memdir, single-loop patterns
+description: Code-level audit of `claurst` (GPL-3.0, Rust workspace, ~13 MB / 266 files / 205 Rust files across 12 crates), surveyed 2026-04-30. Open-source Rust reimplementation of Claude Code that started from a `spec/` directory documenting Claude Code behavior, evolved into a TUI pair programmer with multi-provider support and a manager-executor orchestration mode, and now treats Claude Code as one provider behavior among many. Four layers — spec / core implementation / TUI runtime / divergence layer (multi-provider, managed agents, plugin system, the Rustle companion, chat forking, memory consolidation, voice modes). The audit informs three load-bearing factory decisions: cost visibility (claurst's `Arc<CostTracker>` shared across nested agent calls, `BudgetSplitPolicy` enum, per-preset cost analysis — §4.4, §10), memory scope split (claurst's three-layer memory subsystem of memdir + session_memory + AutoDream consolidation, ~2,000 lines treating memory as load-bearing — §9), and the single-entry pipeline (the `run_query_loop` single-loop design constraint where sub-agents, slash commands, and the manager are all the same loop with different configs — §3 and §4). Other patterns worth tracking: typed sub-crate decomposition by concern (12 crates) rather than by pipeline phase, worktree-per-spec isolation, manager-executor model where a larger manager (Opus/Pro) delegates to smaller executors (Sonnet/Haiku) through the existing `AgentTool` infrastructure.
+type: reference
+---
+
 # Research Audit — `claurst`
 
 **Source:** `/Users/andyhunter/localrepositories/claurst`

@@ -1,3 +1,9 @@
+---
+name: The ajv migration that wasn't — Phase 4.6 bounded-iteration revert lesson
+description: Bounded-iteration revert lesson recorded 2026-05-01. Phase 4.6 of `specs/single-entry-pipeline.md` was originally scoped as a pure-refactor migration of four hand-rolled artifact validators in `tools/validate.ts` (785 lines, the largest file in `tools/`) to ajv consuming the existing `schemas/*.schema.json` files. After three rounds of codex GPT-5.5 review, the verdict was RECOMMEND-REVERT: ajv enforced full-schema strictness the old validators ignored (`additionalProperties: false`, optional field constraints, `oneOf` mutex semantics), and successive lax-mode filters and drop-rule mini-DSLs fixed regressions but failed to reduce complexity — 785 lines became 1,396 across three files plus the new ajv dependency plus 46 regression-pinning tests. The lesson: when migrating a hand-rolled validator to a schema-driven engine, first verify the hand-rolled validator was actually doing schema-driven validation; if it's doing semantic checks dressed up as schema validation (here: `verifies` × `kind` constraints, spec-vs-spec_path mutex with non-empty-string semantics, conditional required-fields), the migration adds layers without removing complexity. What shipped instead (Phase 4.6 revised, commit `192e971`): integrity-layer extraction to `tools/pipeline/integrity.ts` (467 lines), `validate.ts` shrunk 785 → 423 lines, 29 compatibility tests pinning existing hand-rolled behavior, no ajv, no new dependencies. The compatibility tests are the most valuable artifact: any future schema-driven migration attempt has a deterministic safety net. First case where the bounded-iteration model surfaced an architectural error in the brief itself, not in the implementation. Original branch `worktree-agent-aa2a30d634d859b5c` was force-deleted post-revert.
+type: lesson
+---
+
 # Research Note — The ajv Migration That Wasn't
 
 **Date:** 2026-05-01

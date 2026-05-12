@@ -1,6 +1,6 @@
 ---
-name: factory-doctor-diagnostic-deferred
-description: Defer claw-code's `claw doctor` unified preflight diagnostic. Factory has fragmented health-checking today (status.ts + validate.ts + manual provider checks). A unified `factory doctor` command is high-value for operator UX but not on the architectural critical path. Revisit as a sister spec after Phase 8 of single-entry-pipeline. This decision exists to surface the deferral rather than leaving it as a silent omission.
+name: Doctor diagnostic deferred — no unified preflight command until after Phase 8
+description: Factory does not add claw-code's `claw doctor` unified-preflight equivalent in `specs/single-entry-pipeline.md` or its sister specs through Phase 8. Health-checking remains fragmented across `tools/status.ts` (factory state), `tools/validate.ts` (schema and integrity), manual provider checks, and the pre-commit completion-gate hook. A unified `factory doctor` command is high-value for operator UX but not on the architectural critical path — its lack costs setup friction, not correctness. Better designed late, once Phases 5-8 surface the full set of checks worth running (multi-spec sequencing, recovery state, cost-cap status, event stream health, worktree state). Revisit as a sister spec post-Phase 8. The decision exists to surface the deferral rather than leave it as a silent omission. Decided 2026-05-01; informed by [claw_code_audit.md](../research/claw_code_audit.md) §10.
 type: project
 ---
 

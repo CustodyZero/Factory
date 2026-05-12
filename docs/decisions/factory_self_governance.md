@@ -1,6 +1,6 @@
 ---
-name: factory-self-governance
-description: Factory is a tool that other projects use; it does not govern its own development. The pipeline runner (run.ts) is not invoked against the factory repo itself. Specs in this repo are implementation roadmaps for human+Claude execution, not inputs to autonomous factory runs. The canonical config is templates/factory.config.json (the host-project template), not the root factory.config.json.
+name: Factory self-governance — factory is a tool other projects use, it does not govern its own development
+description: Factory is a tool other projects use; it is not a self-hosting product. The pipeline runner (`run.ts`) is not invoked against this repo. Specs in `specs/` are implementation roadmaps for human + Claude collaborative execution, not inputs to autonomous factory runs — they're read by humans and Claude during design and implementation sessions; they don't decompose into intents → packets → autonomous execution the way host-project specs do. The canonical `factory.config.json` lives at `templates/factory.config.json` (the host-project template); the root `factory.config.json` is a non-canonical development convenience that exists because `tools/config.ts` and pre-commit hooks expect a loadable config in the working directory. The deferral of self-governance is deliberate, not a bootstrapping concession waiting for stabilization. Cleanup of the dual-config layout, and any future re-evaluation of self-governance, are deliberately out of scope. Decided 2026-04-30, re-establishing principle going forward after an earlier (now-discarded) 2026-03-22 memory note flagged the same posture during bootstrapping.
 type: project
 ---
 
