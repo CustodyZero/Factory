@@ -1,0 +1,49 @@
+# Factory-Side Memory Tier 1 — QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE
+
+All 15 acceptance criteria PASS, all 16 specific checks PASS.
+
+## Critical verifications
+
+- 11 decisions + 5 research/lessons all carry frontmatter; MEMORY.md correctly has none (it's the index, not an indexed entry).
+- All 16 use `name:` (sentence-case), `description: >-` folded scalar, `type:`.
+- Type counts: 11 `type: project`, 3 `type: reference`, 2 `type: lesson` (matches the locked design).
+- `yaml.safe_load` succeeds on all 16; all carry required keys.
+- MEMORY.md lifecycle preamble names all 4 markers (locked DATE / revised DATE — reason / Closes the DATE pin / superseded by [link]).
+- MEMORY.md bullets are 3-6 sentence rich summaries with headline + constraint + date + cross-references.
+- "Research and lessons" section bundles all 5 files; lesson entries explicitly invoke "bounded-iteration revert" and "post-revert force-delete" language.
+- Bidirectional links honest: cited relationships are real informational dependencies (audits drove the architecture decisions; lessons are reverts of attempts to implement them).
+- `factory_self_governance` and `reviewer_cli_exception` correctly do NOT cite research they didn't derive from.
+- Description content preserved byte-for-byte (memory_scope_split spot-check: prior one-line summary is subsumed, every fact retained).
+- 738 tests pass; validate PASS; no package.json changes.
+- Pre-existing emojis in `factory_script_audit.md` correctly left alone (out of scope per §5.6 scope discipline — Tier 1 is frontmatter alignment, not body content rewrites).
+
+## Strongest aspects (independent assessment)
+
+1. **Bidirectional link honesty without invention** — only the decisions that actually had research/lesson dependencies got "Informed by" notes. `factory_self_governance` and `reviewer_cli_exception` correctly do not cite research they did not derive from.
+2. **Lifecycle conventions preamble + dated lock markers** — every decision bullet carries a `**locked DATE**` (and revision notes where applicable), making MEMORY.md self-describing about state without forcing readers into individual files.
+
+# Orchestrator Approval
+
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Factory-side memory Tier 1 alignment: rewrites frontmatter convention across 11 decisions + 5 research/lessons to match the working pattern from sibling projects (valet, stationzero). Adopts:
+- Sentence-case `name` titles
+- `description: >-` folded scalar with dense paragraph (load-bearing context)
+- Three `type` values: `project`, `reference`, `lesson` (new — bounded-iteration revert findings)
+- MEMORY.md rewrite with rich bullets, lifecycle-conventions preamble, bundled "Research and lessons" section
+- Bidirectional `Informed by [X]` links between decisions and the research/lessons that actually informed them
+- Pin/lock language convention (forward-going + backfilled where git log unambiguous)
+
+- 3 commits across 2 review rounds: REQUEST-CHANGES (YAML parsing bug in `description` raw scalars containing colon-space) → APPROVE (folded scalar fix)
+- Independent QA APPROVE on 15 criteria + 16 checks
+- Tier 2 (`workflow.md`) correctly deferred
+
+## Round budget
+
+2 of 3 rounds used. Bounded-iteration model honored.
