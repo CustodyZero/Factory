@@ -1,0 +1,50 @@
+# Recurring Workflow Patterns + Work Queue — QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-11
+**Verdict:** APPROVE (round 2)
+
+All 14 acceptance criteria PASS, all 17 specific checks A-Q PASS.
+
+## Critical verifications
+
+- Frontmatter on `recurring_workflow_patterns.md` parses with `yaml.safe_load`; `name`/`description`/`type` shape consistent with Tier 1 convention.
+- `type: lesson` correctly used (this is a session observation, not a project decision or pure reference).
+- MEMORY.md entry alphabetized between `Factory script audit` and `The ajv migration that wasn't`.
+- QUEUE.md sections (In flight / Planned / Accepted) follow the valet pattern; cited commit SHAs verified to exist and match the work they reference.
+- All 8 patterns include one or more concrete instances/observations (doc body matches the round-2-narrowed promise; no overclaim).
+- Pattern 1 (bounded-iteration) carries the round-3 decision rule: revert when architectural premise is wrong, role-flip when premise is right but iteration is grinding. Both existing reverts (ajv, Phase 6) tagged as revert-was-correct examples — the rule does not retroactively rewrite history.
+- Pattern 8 (verification identities) disambiguates FI-7 (narrow dev/QA, pre-commit-hook enforced) from the four-role session workflow (orchestrator + developer + reviewer + QA) — closes the codex round 1 overstatement.
+- 738 tests pass; validate PASS; no package.json changes; pre-commit hook clean.
+
+## Strongest aspects (independent assessment)
+
+1. The Pattern 1 round-3 decision criterion (progress-real-but-slow vs brief-architecturally-wrong) is genuinely operational: the role-flip mechanism is described concretely (reviewer becomes developer, brings the iteration arc as context), and both existing reverts are explicitly tagged as "role-flip would have been wrong because the architectural premise was wrong" — that closes the rationalization loophole where role-flip becomes the default round-3 move.
+2. The Pattern 8 FI-7 disambiguation is precise and load-bearing: FI-7 is named as the narrow pre-commit-hook invariant, and the four-role workflow is named as the broader expansion built on top, with separate recognition signals and corrective moves.
+
+# Orchestrator Approval
+
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Captures 8 recurring workflow patterns observed across this session and prior sessions (`ajv_migration_attempt`, `phase_6_recovery_attempt`, factory script audit, MEMORY.md Tier 1 alignment) as `docs/research/recurring_workflow_patterns.md` (`type: lesson`). Introduces `docs/decisions/QUEUE.md` as the active work-item surface (In flight / Planned / Accepted), modeled on valet's pattern. Indexes the new lesson and queue from MEMORY.md.
+
+Round 1 codex flagged three real issues (FI-7 overstatement in Pattern 8, examples shortfall in patterns 3/5/7/8, MEMORY.md alphabetization). Round 2 addressed all three: Pattern 8 split into narrow-FI-7 vs four-role workflow with separate signals/moves; opening promise narrowed from "2-3 examples per pattern" to "one or more concrete instances or session observations" (no padding with weak examples); MEMORY.md entry repositioned. User refinement on Pattern 1 (round-3 role-flip when progress is real) integrated with explicit decision criterion and applied to both existing reverts.
+
+## Change classification
+
+Local behavioral, docs-only — three files added/modified under `docs/`, no code or test changes, no schema impact.
+
+## Why this is safe
+
+- Pure documentation; no production code path changes.
+- Frontmatter follows the Tier 1 convention locked in `c037d8c` (folded scalar, `name`/`description`/`type`).
+- QUEUE.md is a new state surface but it is markdown — read-only for tooling; no system depends on it parsing.
+- Pattern doc is grounded in observable session artifacts (commit SHAs, file paths, verdict shapes) rather than abstract advice.
+
+## What's preserved
+
+- FI-7 invariant (the doc reinforces it; does not weaken it).
+- Bounded-iteration model (the doc adds the role-flip refinement but explicitly preserves the revert path; both existing reverts remain correct precedent).
+- Tier 1 frontmatter convention (`type: lesson` was already allowed; this is the second lesson entry).
