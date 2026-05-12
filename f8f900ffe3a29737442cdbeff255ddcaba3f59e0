@@ -11,3 +11,63 @@ The unverifiable `CLAUDE.md §...` citations were replaced with valid in-repo re
 The Codex verdict mechanism is now accurate at `docs/decisions/workflow.md:50` and `:86`: Codex emits stdout, and the Orchestrator attaches it with `git notes`. Frontmatter still parses with `yaml.safe_load`. Scope is limited to `docs/decisions/workflow.md`, with no unrelated edits found.
 
 **Non-blocking observation:** `docs/decisions/workflow.md:4` and `:36` still use shorthand around verdicts living in `refs/notes/reviews`, but the operational sections now state the actor split clearly, so I would not block on that.
+
+# Factory Development Workflow — QA Verification
+
+**QA identity:** separate Opus agent (FI-7 distinct from developer and orchestrator)
+**Date:** 2026-05-12
+**Verdict:** APPROVE (round 2)
+
+All 23 acceptance criteria PASS.
+
+## Critical verifications
+
+- Frontmatter parses with `yaml.safe_load`; sentence-case `name`, `description: >-` folded scalar, `type: project`.
+- Scope boundary explicit (factory-development, not host-project pipeline) with cross-refs to `single_entry_pipeline.md` + `factory_self_governance.md`.
+- Roles table names all 4 roles + dispatch mechanism + why-this-model.
+- Lifecycle sequence concrete: Agent tool isolation=worktree, codex exec + SIGKILL watchdog, `git notes --ref=reviews`, `git merge --no-ff`, dual push, `git worktree remove`.
+- Bounded-iteration + role-flip cited from Pattern 1 (not restated); both ajv and Phase 6 reverts cited as precedent.
+- Codex review channel section honestly attributes the notes-ref mutation to the Orchestrator (post-R1 fix); codex emits stdout, Orchestrator runs `git notes add`.
+- Accept / Send back / Escalate decision tree with no docs-only QA-skip exception (post-R1 fix).
+- W-1 through W-11 defaults table (one more than the W-10 floor).
+- 7 rejection rules in "How to apply".
+- AGENTS.md §3.4 / §3.5 citations match the actual content at `AGENTS.md:209-215` (post-R1 fix verified independently).
+- `d167851` exists with the claimed shape (trivial role-flip wording tightening committed directly on main).
+- No `CLAUDE.md §` citations remain (post-R1 fix).
+- 738 tests pass; `tools/validate.ts` clean.
+- `git diff main..HEAD --stat` shows only the three docs files modified.
+
+## Strongest aspects (independent assessment)
+
+1. **Scope boundary is load-bearing.** Line 26 + 28 anchor the workflow against `single_entry_pipeline.md` and `factory_self_governance.md`, and the "When this workflow does NOT apply" section enforces it operationally rather than just declaratively.
+2. **Codex review channel section honestly attributes the notes-ref mutation to the Orchestrator** (line 86: "Codex does not run `git notes` itself"), closing the round-1 facade gap and matching what the Orchestrator can actually execute.
+3. **Trivial-direct-commit carve-out cites a real precedent (`d167851`)** with the correct shape and explicitly rejects using it as an escape hatch ("not an escape hatch for changes that touch contracts, invariants, or boundaries").
+4. **Pattern citations are by reference, not restatement** — the doc treats `recurring_workflow_patterns.md` as the source of truth and resists drift.
+
+# Orchestrator Approval
+
+**Verdict:** APPROVE — ready for merge
+
+## Summary
+
+Authors `docs/decisions/workflow.md` capturing HOW factory development (evolving this repo) is governed: four roles (Orchestrator + Developer Agent + Reviewer + QA Agent), a session-grounded lifecycle (worktree-isolated developer, codex exec with SIGKILL watchdog, refs/notes/reviews channel, merge + dual push + cleanup), bounded-iteration + role-flip embedded by reference to `recurring_workflow_patterns.md` Pattern 1, and a W-1 through W-11 defaults summary. The scope boundary against `single_entry_pipeline.md` (the host-project pipeline) is load-bearing.
+
+Round 1 codex REQUEST-CHANGES on three findings (docs-only QA-skip carve-out invented; CLAUDE.md § citations unverifiable in-repo; codex described as the notes-ref mutator rather than the verdict emitter). Round 2 addressed all three: removed the carve-out; replaced citations with AGENTS.md §3.4 / §3.5 plus the `d167851` precedent for the trivial-change case; rewrote the actor-attribution to make the Orchestrator the notes-ref actor. Codex R2 APPROVE. QA APPROVE on all 23 criteria.
+
+## Change classification
+
+Local behavioral, docs-only — three files added/modified under `docs/decisions/`, no code or schema impact.
+
+## Why this is safe
+
+- Pure documentation; no production code path changes.
+- Frontmatter follows the Tier 1 convention.
+- The doc commits no NEW invariants — it captures the procedure built on top of already-locked invariants (FI-7 from AGENTS.md §3.6, the recognition signals from `recurring_workflow_patterns.md`, the scope boundary from `factory_self_governance.md`).
+- W-N defaults are explicit re-statements of practice this session has already followed; the doc names what we do, it does not propose what we should do.
+
+## What's preserved
+
+- FI-7 invariant (W-8 reinforces; doesn't weaken).
+- Bounded-iteration + role-flip rule (W-7 cites Pattern 1; doesn't restate or modify).
+- Scope boundary against host-project pipeline (`single_entry_pipeline.md` remains the host-project authority; this doc operates within that boundary).
+- Tier 1 frontmatter convention (third `type: project` decision in this batch).
