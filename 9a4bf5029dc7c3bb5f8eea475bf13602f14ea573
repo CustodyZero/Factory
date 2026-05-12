@@ -1,0 +1,55 @@
+# Recurring Patterns + QUEUE.md — Code Review Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-12
+**Branch:** memory-recurring-patterns-queue (commits 128e164, 9a4bf50)
+**Verdict:** REQUEST-CHANGES
+
+## Codex findings
+
+### 1. FI-7 overstated (Pattern 8)
+
+**Files:** `docs/research/recurring_workflow_patterns.md:143`, `docs/decisions/MEMORY.md:35`
+
+FI-7 requires QA completion identity to differ from the dev counterpart. It does NOT itself require the four-way orchestrator/developer/reviewer/QA separation; that's a session workflow pattern built on top of FI-7's narrower invariant.
+
+**Fix:** Rename pattern 8 to "Distinct verification identities (FI-7 plus session workflow)". Explicitly state: FI-7 is the dev/QA invariant; the four-role split is the factory-development workflow pattern. Don't conflate.
+
+### 2. Examples shortfall on patterns 3, 5, 7, 8
+
+**File:** `docs/research/recurring_workflow_patterns.md:21`
+
+The doc's opening promises 2-3 examples per pattern but patterns 3 (doc-creates-inconsistency), 5 (state-machine-integration-is-architecture), 7 (codex hang-and-restart), and 8 (FI-7) have only one example or a session observation.
+
+**Fix:** Either add 2-3 cited examples to each, OR narrow the stated structure to "one or more concrete examples/observations." Honest framing: narrow the promise rather than pad with weak examples.
+
+### 3. MEMORY.md alphabetization
+
+**File:** `docs/decisions/MEMORY.md:35`
+
+The new "Recurring workflow patterns" lesson entry is not alphabetized within "Research and lessons" if sorted by title. It should come before the two "The ..." entries.
+
+**Fix:** Move the new entry after `Factory script audit` and before `The ajv migration...`.
+
+## Plus: user refinement to pattern 1 (bounded-iteration model)
+
+The doc currently says "round-3 REQUEST-CHANGES → RECOMMEND-REVERT." User clarifies the model is more nuanced:
+
+> Round 3 is **revert vs role-flip based on whether progress is being made**. If the brief itself is architecturally wrong (progress stalled), revert. If progress is real but iteration is converging slowly, **flip the roles**: reviewer agent becomes the developer; developing agent becomes the reviewer. Fresh eyes on the same problem from a different vantage point.
+
+The two existing reverts (ajv migration, Phase 6 first attempt) are examples of **progress-stalled** round-3 outcomes — role-flip would have been wrong for both because the bugs were in the briefs, not the developer execution.
+
+**Fix:** Expand pattern 1 to cover both round-3 outcomes (revert when stalled, role-flip when progressing). State the decision criteria explicitly. Note that role-flip preserves accumulated context: the original developer brings architectural context from their attempts; the original reviewer has seen the iteration arc and knows where fixes failed.
+
+## What codex confirmed correct
+
+- Frontmatter parses with `yaml.safe_load`.
+- Changed-file scope is docs-only.
+- Sampled SHAs exist.
+- QUEUE planned items point at real deferred docs.
+- QUEUE.md shape is a useful lightweight state surface.
+- Observable-vs-controlling and test-pins-the-bug patterns are at the right abstraction level.
+
+## Round budget remaining
+
+2 rounds.
