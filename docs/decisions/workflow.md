@@ -42,12 +42,12 @@ The concrete sequence covers three paths: happy-path acceptance, REQUEST-CHANGES
 
 ### Happy path
 
-1. **Orchestrator scopes from queue.** Reads `docs/decisions/QUEUE.md`, picks the top item under "Planned (next up)", validates that intent is clear and single-purpose per CLAUDE.md §5.2.
+1. **Orchestrator scopes from queue.** Reads `docs/decisions/QUEUE.md`, picks the top item under "Planned (next up)", validates that intent is clear and single-purpose per AGENTS.md §3.4 (single intent per change).
 2. **Orchestrator authors the brief.** Includes: the work item, acceptance criteria, anti-scope, file-update checklist, commit-discipline rules. The brief is the dispatch prompt.
 3. **Orchestrator dispatches the Developer Agent** via the `Agent` tool with `isolation: "worktree"`. The Developer Agent receives the brief and operates in a fresh worktree branch (typically `worktree-agent-<hash>`).
 4. **Developer Agent implements + commits.** One commit per dispatch on the worktree branch. The Developer Agent **does not** push, merge, or touch the parent worktree. On completion, the agent returns a summary to the Orchestrator.
 5. **Orchestrator dispatches codex review** against the worktree commit, using a SIGKILL-watchdog-wrapped `codex exec` invocation (per Pattern 7). Watchdog bound is 360 seconds; a hung dispatch is killed and re-dispatched.
-6. **Codex writes the verdict** to `refs/notes/reviews` attached to the reviewed commit, with the verdict body containing findings and an explicit `APPROVE` / `REQUEST-CHANGES` / `RECOMMEND-REVERT` marker.
+6. **Codex emits the verdict; Orchestrator attaches it.** Codex's verdict — findings plus an explicit `APPROVE` / `REQUEST-CHANGES` / `RECOMMEND-REVERT` marker — is written to its stdout during the `codex exec` invocation. The Orchestrator captures that stdout to a temp file, then runs `git notes --ref=reviews add -F <file> <sha>` to attach the verdict to the reviewed commit. Codex emits the text; the Orchestrator is the actor that mutates the `refs/notes/reviews` ref.
 7. **Orchestrator reads the verdict** via `git notes --ref=reviews show <sha>`.
 8. **If APPROVE:** Orchestrator dispatches the QA Agent via the `Agent` tool with a fresh sub-agent context, distinct identity from the Developer Agent. QA verifies the acceptance criteria end-to-end and emits `APPROVE` or `REQUEST-CHANGES`.
 9. **If QA APPROVE:** Orchestrator attaches an approval note (also at `refs/notes/reviews`), runs `git merge --no-ff <worktree-branch>` from `main`, pushes both `git push origin main` and `git push origin refs/notes/reviews`, then `git worktree remove` + `git branch -d <worktree-branch>` for cleanup. Queue entry moves from "Planned" to "Accepted (recent)" with the merge-commit SHA.
@@ -83,7 +83,7 @@ Both reverts followed the Pattern 6 preservation discipline: lesson notes commit
 
 ## Codex review channel — `refs/notes/reviews`
 
-Codex review verdicts live in the **`refs/notes/reviews`** notes namespace, not the default `refs/notes/commits` namespace. The split is deliberate:
+Codex review verdicts live in the **`refs/notes/reviews`** notes namespace, not the default `refs/notes/commits` namespace. Codex emits the verdict text to its stdout during `codex exec`; the Orchestrator captures that stdout and attaches it to `refs/notes/reviews` via `git notes --ref=reviews add -F <file> <sha>`. Codex does not run `git notes` itself — the notes-ref mutation is the Orchestrator's responsibility. The namespace split is deliberate:
 
 - `refs/notes/commits` is git's default notes namespace and is conventionally used for autocommit-history annotations (CI annotations, deployment markers, miscellaneous tooling output). Mixing review verdicts in with that stream would conflate two different concerns.
 - `refs/notes/reviews` keeps review verdicts cleanly isolated. They can be fetched, displayed, and pruned independently.
@@ -107,14 +107,14 @@ After reading codex's verdict + (where applicable) QA's verdict, the Orchestrato
 
 | Branch | Trigger | Action |
 |---|---|---|
-| **Accept** | codex `APPROVE` + QA `APPROVE` (or codex `APPROVE` for docs-only work where QA verification is the orchestrator's read of the merged contract), acceptance criteria met, no scope drift. | Orchestrator attaches approval note to `refs/notes/reviews`. `git merge --no-ff` from `main`. `git push origin main`. `git push origin refs/notes/reviews`. `git worktree remove` + `git branch -d`. Queue entry moves from "Planned" to "Accepted (recent)" with the merge-commit SHA. |
+| **Accept** | codex `APPROVE` + QA `APPROVE`, acceptance criteria met, no scope drift. | Orchestrator attaches approval note to `refs/notes/reviews`. `git merge --no-ff` from `main`. `git push origin main`. `git push origin refs/notes/reviews`. `git worktree remove` + `git branch -d`. Queue entry moves from "Planned" to "Accepted (recent)" with the merge-commit SHA. |
 | **Send back** | codex `REQUEST-CHANGES` with real correctness, scope, or facade findings; OR QA `REQUEST-CHANGES`. | Re-dispatch the Developer Agent with the findings appended to the brief. Increment round counter. Bounded-iteration (Pattern 1) applies — at round 3, decide revert or role-flip per the rule above. |
 | **Escalate** | codex `RECOMMEND-REVERT`; OR a design-revealing finding that falls outside the brief's premise (e.g., contradicts an existing decision doc); OR exhausted round budget (round 6); OR any case where the Orchestrator's judgment alone is insufficient. | Halt the work. Write a `type: lesson` research note in `docs/research/` (per Pattern 6) capturing what was tried, what went wrong, what's salvageable. Surface to the user with the lesson note and a recommendation (re-brief, drop, defer). User decides next move. |
 
 ## When this workflow does NOT apply
 
 - **Host-project pipeline runs.** Governed by [`single_entry_pipeline.md`](single_entry_pipeline.md) and executed by `npx tsx tools/run.ts <spec-id>`. Different roles (planner / developer / code_reviewer / qa across packets), different protocol (lifecycle CLIs as the agent protocol surface), different round budget (per-packet `max_review_iterations`).
-- **Trivial docs alignment** under CLAUDE.md §6.1 — direct commits on `main` are permitted for purely-local, no-semantic-impact changes (comments, formatting, renames without behavior change, doc wording tightening). Example: commit `d167851` was a role-flip wording tightening committed directly on `main`. The trivial-change exception is **not** an escape hatch for changes that touch contracts, invariants, or boundaries; if in doubt, run the workflow.
+- **Trivial docs alignment** — direct commits on `main` are permitted for purely-local, no-semantic-impact changes (comments, formatting, renames without behavior change, doc wording tightening). The observed precedent is commit `d167851`, a role-flip wording tightening committed directly on `main` on 2026-05-12. The trivial-change exception is **not** an escape hatch for changes that touch contracts, invariants, or boundaries; if in doubt, run the workflow.
 - **Read-only investigation, audits, or research** where no commit is intended. The Orchestrator may dispatch sub-agents to investigate without going through this workflow, provided no code or doc changes land. If the investigation discovers a needed change, the change goes through the workflow as a new queue item.
 
 ## Defaults summary (the W-N decisions)
@@ -123,13 +123,13 @@ After reading codex's verdict + (where applicable) QA's verdict, the Orchestrato
 |---|---|
 | W-1 | Cross-session state lives in repo: `docs/decisions/QUEUE.md` (the current-state surface) + `docs/decisions/MEMORY.md` (the decision-doc and research index) + `docs/research/` (lessons and audits). |
 | W-2 | Four-role lifecycle: Orchestrator (Opus, host session) → Developer Agent (Opus, worktree-isolated, fresh context, dispatched via `Agent` tool with `isolation: "worktree"`) → Reviewer (codex GPT-5.5 via `codex exec`, SIGKILL-watchdog-wrapped) → QA Agent (Opus, FI-7-distinct identity, fresh context, dispatched via `Agent` tool) → Orchestrator integration (merge + push + cleanup). |
-| W-3 | Tests at production bar — deterministic verification per CLAUDE.md §5.5. Build-green-or-process-starts is not acceptable proof of correctness; assertions must pin the named contract. |
+| W-3 | Tests at production bar — deterministic verification per AGENTS.md §3.5 (tests required for non-trivial changes). Build-green-or-process-starts is not acceptable proof of correctness; assertions must pin the named contract. |
 | W-4 | Completion = build green + `npx vitest run` clean + `npx tsx tools/validate.ts` clean + acceptance criteria explicitly verified by the QA Agent. |
 | W-5 | Codex CLI invocation wrapped in a SIGKILL watchdog per Pattern 7 in `recurring_workflow_patterns.md`. Bound: 360 seconds. Hung dispatches are killed and re-dispatched. |
 | W-6 | Review notes live at `refs/notes/reviews` (separate from the default `refs/notes/commits` namespace); pushed explicitly via `git push origin refs/notes/reviews` alongside the `main` push at merge time. |
 | W-7 | Round budget: 3 same-chair rounds maximum; at round 3 the Orchestrator decides revert vs role-flip per Pattern 1; hard cap at 5 rounds with chairs flipped on rounds 4-5; round 6 escalates to user. |
 | W-8 | QA Agent identity differs from Developer Agent identity (FI-7 echo at host-context level — see also [`reviewer_cli_exception.md`](reviewer_cli_exception.md) for the host-project pipeline analog). Dispatched as a fresh sub-agent, never the same identity that authored the dev commits. |
-| W-9 | Scope expansion within a workflow round is forbidden per CLAUDE.md §5.6 — surfaces a new queue item, not an extension of the current round. The Orchestrator splits scope; the agents do not. |
+| W-9 | Scope expansion within a workflow round is forbidden per AGENTS.md §3.4 (single intent per change) — surfaces a new queue item, not an extension of the current round. The Orchestrator splits scope; the agents do not. |
 | W-10 | This file (`docs/decisions/workflow.md`) is the workflow doc; `MEMORY.md` indexes it; `QUEUE.md` is the current-state surface. New rounds and accepted items update `QUEUE.md`; new decisions and lessons update `MEMORY.md`. |
 | W-11 | Reverts produce a `type: lesson` research note in `docs/research/` **before** the worktree branch is deleted, per Pattern 6 in `recurring_workflow_patterns.md`. Lesson preservation precedes branch deletion; this ordering is load-bearing. |
 
@@ -137,10 +137,10 @@ After reading codex's verdict + (where applicable) QA's verdict, the Orchestrato
 
 The Orchestrator runs these checks at dispatch time and at integration time. Each one is a rejection rule, not a guideline.
 
-- **Any proposal to dispatch a sub-agent without a corresponding `QUEUE.md` entry:** reject. The queue entry is the authority for the work and the visible surface across sessions. If a queue entry doesn't exist, create one (and decide whether it can be authored directly per CLAUDE.md §6.1 or needs a workflow round itself).
-- **Any proposal to merge a worktree branch without codex `APPROVE` AND QA `APPROVE` (where QA applies):** reject. The two verification surfaces are independent by design; collapsing them defeats the purpose. The only exception is the trivial-change carve-out under CLAUDE.md §6.1, which doesn't enter the workflow in the first place.
+- **Any proposal to dispatch a sub-agent without a corresponding `QUEUE.md` entry:** reject. The queue entry is the authority for the work and the visible surface across sessions. If a queue entry doesn't exist, create one (and decide whether it can be authored directly as trivial work per the precedent at commit `d167851`, or needs a workflow round itself).
+- **Any proposal to merge a worktree branch without codex `APPROVE` AND QA `APPROVE`:** reject. The two verification surfaces are independent by design; collapsing them defeats the purpose. Trivial direct-commit work is out of scope for this workflow entirely (see "When this workflow does NOT apply" above) — it is not a merge exception inside the workflow.
 - **Any proposal to dispatch the QA Agent under the same identity as the Developer Agent for the current round:** reject — FI-7 violation. Spawn a fresh QA sub-agent.
-- **Any proposal to expand a round's scope mid-implementation** (the "while we're here..." pattern from CLAUDE.md §5.6): reject. The expansion is a new queue item; surface it to `QUEUE.md` as a new "Planned" entry and continue the current round on the original brief.
+- **Any proposal to expand a round's scope mid-implementation** (the "while we're here..." pattern; AGENTS.md §3.4 single intent per change): reject. The expansion is a new queue item; surface it to `QUEUE.md` as a new "Planned" entry and continue the current round on the original brief.
 - **Any proposal to continue into a fourth same-chair round** (i.e., round 4 with the same Developer Agent and same Reviewer): reject — Pattern 1 violation. Decide revert or role-flip, don't continue.
 - **Any proposal to delete a reverted branch without writing the `type: lesson` research note first:** reject — Pattern 6 violation. Lesson preservation precedes branch deletion.
 - **Any proposal to merge without pushing `refs/notes/reviews`:** reject. The verdict is part of the contract; an unpushed verdict is a verdict that doesn't exist for other workers.
