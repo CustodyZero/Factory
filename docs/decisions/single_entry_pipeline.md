@@ -323,8 +323,10 @@ Specifically, **before this decision is implemented**:
 
 ## References
 
-- [`research/factory_script_audit.md`](../research/factory_script_audit.md) — diagnosis of run.ts and the script surface
+- [`research/factory_script_audit.md`](../research/factory_script_audit.md) — diagnosis of run.ts and the script surface; the audit that produced this decision
 - [`research/claurst_audit.md`](../research/claurst_audit.md) — manager-executor / worktree isolation / single-loop patterns
 - [`research/claw_code_audit.md`](../research/claw_code_audit.md) — recovery recipes / lane events / failure classification
+- [`research/ajv_migration_attempt.md`](../research/ajv_migration_attempt.md) — Phase 4.6 bounded-iteration revert lesson; what shipped instead was the integrity-layer extraction
+- [`research/phase_6_recovery_attempt.md`](../research/phase_6_recovery_attempt.md) — Phase 6 bounded-iteration revert lesson; recovery layer redesign required state-machine integration as a first-class concern
 - [`spec_artifact_model.md`](spec_artifact_model.md) — companion decision establishing the spec layer
 - [`memory_scope_split.md`](memory_scope_split.md) — pipeline-scope vs project-scope boundary that this design respects

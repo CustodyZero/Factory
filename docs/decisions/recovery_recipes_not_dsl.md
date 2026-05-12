@@ -80,5 +80,6 @@ Each recipe is a TypeScript function. Eight scenarios, eight recipes. Five auto-
 ## References
 
 - [`research/claw_code_audit.md`](../research/claw_code_audit.md) §8 — claw-code's policy engine
+- [`research/phase_6_recovery_attempt.md`](../research/phase_6_recovery_attempt.md) — Phase 6 bounded-iteration revert lesson; the recipes-not-DSL design choice was confirmed correct, but the state-machine integration required redesign
 - [`single_entry_pipeline.md`](single_entry_pipeline.md) — Phase 6 recovery layer
 - [`event_observability.md`](event_observability.md) — events are the substrate recipes match on; the cleaner the event taxonomy, the simpler recipes can be
