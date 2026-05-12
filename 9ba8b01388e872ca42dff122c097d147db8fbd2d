@@ -1,0 +1,15 @@
+# Codex Round 1 Review — workflow.md
+
+**Date:** 2026-05-12
+**Reviewer:** codex GPT-5.5 (`codex exec`, SIGKILL-watchdog-wrapped, 420s bound, completed without watchdog firing)
+**Verdict:** REQUEST-CHANGES
+
+## Findings
+
+1. **Must-fix** — `docs/decisions/workflow.md:110` and `docs/decisions/workflow.md:141`: the doc invents a docs-only accept path where codex approval can replace QA. That is not in the brief, and it weakens the four-role workflow the doc is supposed to lock down. Proposed fix: require `codex APPROVE + QA APPROVE` for every change that enters this workflow. Keep trivial direct commits only under "When this workflow does NOT apply," not as a merge exception inside the workflow.
+
+2. **Must-fix** — `docs/decisions/workflow.md:45`, `docs/decisions/workflow.md:117`, `docs/decisions/workflow.md:126`, `docs/decisions/workflow.md:132`, `docs/decisions/workflow.md:140`, `docs/decisions/workflow.md:143`: these cite CLAUDE.md sections §5.2, §5.5, §5.6, and §6.1, but this worktree's CLAUDE.md only has Critical Rules and Quick Reference content through line 40. The cross-references are false from the repo's perspective. Proposed fix: replace with real references, e.g. AGENTS.md §3.3 no facades, §3.4 single intent, §3.5 tests required, or remove section-number citations. For the trivial-docs precedent, cite commit `d167851` as observed practice rather than a nonexistent CLAUDE.md rule.
+
+3. **Should-fix** — `docs/decisions/workflow.md:50` and `docs/decisions/workflow.md:86`: the doc says codex writes verdicts directly to `refs/notes/reviews`, but the reviewed workflow prompt asks the reviewer to emit a verdict, not to run `git notes`, and no existing cited decision establishes codex as the actor that mutates notes. Proposed fix: make the Orchestrator responsible for attaching the emitted codex verdict to `refs/notes/reviews`, or document the exact codex invocation contract that requires the reviewer process to run `git notes add`.
+
+Notes: frontmatter parses with `yaml.safe_load`; `type: project` is correct. Codex could not run `npx tsx tools/status.ts` or `npx tsx tools/validate.ts` in its sandbox because TSX/macOS IPC setup was denied with `EPERM`; review is based on git/file inspection.
