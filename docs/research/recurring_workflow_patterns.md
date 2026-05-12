@@ -50,7 +50,7 @@ The patterns are not exhaustive. New patterns get appended at the bottom as they
 
 **Corrective move.**
 
-- **Role-flip.** Dispatch a fresh agent into the developer chair carrying: the original brief, the round-3 review findings, and the accumulated commit history from rounds 1-3. The original developer becomes the reviewer for round 4 (and round 5 if needed). Same brief, swapped chairs.
+- **Role-flip.** Move the original reviewer into the developer chair for round 4 (and round 5 if needed), carrying: the original brief, the round-3 review findings, and the accumulated commit history from rounds 1-3. The original developer becomes the reviewer. Same brief, swapped chairs — not a fresh dispatch.
 - **Revert.** Force-delete the branch. Write the `type: lesson` research note before deletion, recording what was tried, what went wrong per round, comparison stats at rejection, the meta-pattern, what's salvageable for the next attempt, and the reverted branch name. The next attempt's brief incorporates what the lesson taught — re-write the brief, don't re-dispatch the same scope.
 
 ---
