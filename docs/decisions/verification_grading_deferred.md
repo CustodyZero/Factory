@@ -1,6 +1,7 @@
 ---
-name: factory-verification-grading-deferred
-description: Defer claw-code's "Green Contract" graded verification (TargetedTests / Package / Workspace / MergeReady tiers). Factory uses binary build/lint/test pass/fail today. Graded verification is high-value but not on the architectural critical path; revisit after Phase 8 of single-entry-pipeline. This decision exists to surface the deferral rather than leaving it as a silent omission from the spec.
+name: Verification grading deferred — binary build/lint/test through Phase 8, no Green Contract tiers
+description: >-
+  Factory does not adopt claw-code's "Green Contract" graded verification (the `TargetedTests` / `Package` / `Workspace` / `MergeReady` ordered tier model where each packet specifies a required level and higher tiers stack to satisfy lower-tier requirements) in `specs/single-entry-pipeline.md` or its sister specs through Phase 8. Verification stays binary: build, lint, and test each pass or fail; a packet is complete only when all three pass. The current model is over-rigorous (every packet runs every check), not under-rigorous — the cost is wasted CI time, not shipped bugs. Graded verification is high-value but not load-bearing for correctness; the right tier vocabulary depends on host-project tooling shape (pnpm/npm, dotnet, custom build scripts) and factory doesn't yet have enough host-project diversity to design that vocabulary well. Adding it later is additive (optional `required_verification_level` field on packet schema; `complete.ts` learns to evaluate against the level; no data migration). Revisit as a future spec post-Phase 8, evaluated against accumulated host-project experience and likely composed with cost visibility (verification cost proportional to change size). Decided 2026-05-01; informed by [claw_code_audit.md](../research/claw_code_audit.md) §7.
 type: project
 ---
 

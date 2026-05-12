@@ -1,6 +1,7 @@
 ---
-name: factory-recovery-recipes-not-dsl
-description: Phase 6's recovery layer uses recipes (data-driven map of FailureScenario to RecoveryRecipe) rather than a configurable policy DSL with And/Or conditions. Recipes provide data-driven recovery without the implementation cost or learning curve of a DSL. If recipes prove insufficient, a DSL can be layered on top later. This decision exists to record the design choice; not adopting claw-code's PolicyEngine wholesale is intentional, not an oversight.
+name: Recovery uses recipes, not a policy DSL — scenario-keyed TypeScript functions over composable And/Or conditions
+description: >-
+  Phase 6's recovery layer uses scenario-keyed recipes — a data-driven map from `FailureScenario` to `RecoveryRecipe` typed `(scenario, context) => RecoveryAttempt | EscalateRequest` — rather than claw-code's `PolicyEngine`-style DSL with composable `And`/`Or` conditions over a `LaneContext`. Recipes are TypeScript, not config, and live in `tools/pipeline/recovery.ts` as a constant map. Eight scenarios, eight recipes; adding one means adding an enum variant and a recipe entry. The DSL is overkill for factory's failure-mode catalog and would impose a small DSL on host-project operators (humans authoring specs and reading output) without proportional return. claw-code's DSL exists because lanes are concurrent and policies cross lanes; factory's pipeline is sequential through Phase 5+, so cross-lane composition isn't a problem we have today. If recipes ever sprout `if` chains, a condition-evaluation library can be layered on top mechanically. The choice is intentional so future contributors don't read Phase 6 and "fix" the inconsistency by reaching for the policy engine. Decided 2026-05-01; informed by [claw_code_audit.md](../research/claw_code_audit.md) §8.
 type: project
 ---
 
@@ -80,5 +81,6 @@ Each recipe is a TypeScript function. Eight scenarios, eight recipes. Five auto-
 ## References
 
 - [`research/claw_code_audit.md`](../research/claw_code_audit.md) §8 — claw-code's policy engine
+- [`research/phase_6_recovery_attempt.md`](../research/phase_6_recovery_attempt.md) — Phase 6 bounded-iteration revert lesson; the recipes-not-DSL design choice was confirmed correct, but the state-machine integration required redesign
 - [`single_entry_pipeline.md`](single_entry_pipeline.md) — Phase 6 recovery layer
 - [`event_observability.md`](event_observability.md) — events are the substrate recipes match on; the cleaner the event taxonomy, the simpler recipes can be

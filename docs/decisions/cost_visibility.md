@@ -1,6 +1,7 @@
 ---
-name: factory-cost-visibility
-description: Factory tracks per-invocation cost (tokens in/out, dollars where derivable) and surfaces it in pipeline output. Configurable caps at run, packet, and per-day scope can abort or escalate. Cost data is recorded alongside completions in the host-project artifact tree. This is foundational for budget-aware downstream features (manager-executor tiering, recovery retry budgets, multi-spec scheduling).
+name: Factory cost visibility — per-invocation tokens and dollars, configurable caps at run/packet/per-day scope
+description: >-
+  Factory tracks the cost of every agent invocation (input/output tokens plus a derived dollar figure where the provider supports it), surfaces aggregate cost per packet, per spec, and per pipeline run, and enforces configurable caps at run, packet, and per-day scope that abort or escalate rather than silently continue. Cost records are written to the host's tracked artifact tree alongside completions, so the host owns the audit trail. Captured at the agent-call boundary in `tools/pipeline/agent_invoke.ts`. Foundational for budget-aware downstream features — recovery retry budgets, multi-spec scheduling, and the manager-executor tiering pattern lifted from claurst — all of which assume per-call cost data exists. Decided 2026-05-01 alongside four other previously-silent research patterns; informed by [claurst_audit.md](../research/claurst_audit.md) §4.4 (`BudgetSplitPolicy`) and §10 (cost tracking).
 type: project
 ---
 

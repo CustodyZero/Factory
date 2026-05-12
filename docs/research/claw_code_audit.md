@@ -1,3 +1,10 @@
+---
+name: claw-code research audit — autonomous Discord-driven coding harness; lane events, recovery recipes, doctor preflight
+description: >-
+  Code-level audit of `claw-code` (Rust workspace + Python reference, ~23 MB / 284 files / 80 Rust + 70 Python + 80 JSON across 10 Rust crates), surveyed 2026-04-30. Autonomous coding harness whose primary human interface is a Discord channel — humans set direction by sentence, agent "claws" coordinate work in parallel across planning/execution/review/recovery without human intervention. Three-part system: workflow layer (OmX) + event router (clawhip) + multi-agent coordination (OmO). End-state worker is offline while the system continues; the system is required to recover from real-world failure modes (bad branches, MCP handshake errors, prompt misdelivery, trust gates) on its own, which gives it an unusually mature failure model baked into the architecture. The audit informs five factory decisions: event observability (claw-code's lane events as a typed closed enum with provenance labels distinguishing live/test/healthcheck/replay/transport — §4); recovery recipes vs DSL (claw-code's `PolicyEngine` with composable `And`/`Or` conditions over `LaneContext`, which factory chose NOT to adopt because lanes-are-concurrent isn't a problem factory has — §8); verification grading deferred (the Green Contract `TargetedTests`/`Package`/`Workspace`/`MergeReady` stacked tier model — §7); doctor diagnostic deferred (unified `claw doctor` preflight, JSON-output mode for scripting — §10); and the memory scope split (claw-code's deliberate omission of learned memory: every worker starts fresh from CLAUDE.md and git context — §12). claw-code's posture is more aggressive autonomy than factory's "human approves intent, agents execute"; the audit makes that contrast load-bearing rather than incidental.
+type: reference
+---
+
 # Research Audit — `claw-code`
 
 **Source:** `/Users/andyhunter/localrepositories/claw-code`

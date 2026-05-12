@@ -1,6 +1,7 @@
 ---
-name: factory-single-entry-pipeline
-description: Factory has exactly one human entry point — run.ts — accepting one or more spec IDs. The factory drives plan, develop, review, verify, recovery, and completion without further human interaction. Internal lifecycle scripts remain as the agent-facing protocol. Recovery is scenario-recipe based with two-layer provider failover (cross-CLI and within-CLI for abstraction providers). LintFailed and TestFailed always escalate — auto-recovery would invite agents to disable rules or mutilate tests. Sequential dependency-aware first; parallel later.
+name: Single entry pipeline — one human entry point (run.ts), four-layer architecture, recipe-based recovery
+description: >-
+  Factory has exactly one human-invoked CLI during normal operation — `npx tsx tools/run.ts <spec-id> [<spec-id>...]` — that drives plan, develop, review, verify, recovery, and completion across all named specs without further human interaction. The runtime decomposes into four layers with clear responsibilities: ENTRY (`tools/run.ts`, arg parsing only) → DRIVER (`tools/pipeline/orchestrator.ts`, multi-spec topo-sort + per-spec sequencing) → PHASES (`pipeline/plan_phase.ts`, `develop_phase.ts`, `verify_phase.ts`, each a pure state machine over disk state with a thin imperative wrapper) → LIFECYCLE (`tools/lifecycle/{start,request_review,review,complete}.ts`, each exposing both a CLI for agents and a library function for `run.ts`, all properly idempotent). RECOVERY (`tools/pipeline/recovery.ts`) is orthogonal and wraps phases. CLI-as-agent-protocol — the lifecycle CLI invocation is itself the structured event, avoiding LLM structured-output parsing in the deterministic layer. Multi-spec runs are sequential and dependency-aware first; parallel later (worktree-per-spec isolation + scheduler) is designed-for, not committed-to. Recovery is scenario-keyed recipes (8 scenarios; auto-recoverable: `ProviderTransient`, `ProviderUnavailable`, `BuildFailed`, `StaleBranch`, `AgentNonResponsive`; escalate-only: `LintFailed`, `TestFailed`, `CompletionGateBlocked`) with two-layer provider failover (cross-CLI via ordered `persona_providers` list + within-CLI `model_failover` for abstraction providers like copilot). `LintFailed` and `TestFailed` always escalate by design — auto-recovery would invite agents to disable rules or mutilate tests. Recovery budget is 1 attempt per scenario per packet per phase, 3 total attempts per packet. Decided 2026-04-30 (recovery model refined the same day); this is the architectural backbone of factory v0.2.0+. Informed by [factory_script_audit.md](../research/factory_script_audit.md), [claurst_audit.md](../research/claurst_audit.md), and [claw_code_audit.md](../research/claw_code_audit.md). Implementation lessons surfaced in [ajv_migration_attempt.md](../research/ajv_migration_attempt.md) (Phase 4.6 revert) and [phase_6_recovery_attempt.md](../research/phase_6_recovery_attempt.md) (Phase 6 revert).
 type: project
 ---
 
@@ -323,8 +324,10 @@ Specifically, **before this decision is implemented**:
 
 ## References
 
-- [`research/factory_script_audit.md`](../research/factory_script_audit.md) — diagnosis of run.ts and the script surface
+- [`research/factory_script_audit.md`](../research/factory_script_audit.md) — diagnosis of run.ts and the script surface; the audit that produced this decision
 - [`research/claurst_audit.md`](../research/claurst_audit.md) — manager-executor / worktree isolation / single-loop patterns
 - [`research/claw_code_audit.md`](../research/claw_code_audit.md) — recovery recipes / lane events / failure classification
+- [`research/ajv_migration_attempt.md`](../research/ajv_migration_attempt.md) — Phase 4.6 bounded-iteration revert lesson; what shipped instead was the integrity-layer extraction
+- [`research/phase_6_recovery_attempt.md`](../research/phase_6_recovery_attempt.md) — Phase 6 bounded-iteration revert lesson; recovery layer redesign required state-machine integration as a first-class concern
 - [`spec_artifact_model.md`](spec_artifact_model.md) — companion decision establishing the spec layer
 - [`memory_scope_split.md`](memory_scope_split.md) — pipeline-scope vs project-scope boundary that this design respects
