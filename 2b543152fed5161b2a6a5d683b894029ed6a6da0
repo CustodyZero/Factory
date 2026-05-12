@@ -1,0 +1,45 @@
+# Factory-Side Memory Tier 1 — Code Review Round 1
+
+**Reviewer:** codex GPT-5.5 (read-only)
+**Date:** 2026-05-11
+**Branch:** memory-alignment-tier-1 (commits 9d256b7, 2b54315)
+**Verdict:** REQUEST-CHANGES
+
+## Issue
+
+### Invalid YAML frontmatter — `description` field contains unquoted `: ` sequences
+
+**Files:** 11 across decisions + research/lessons.
+
+The dense paragraph `description` fields contain `: ` (colon + space) sequences which YAML interprets as nested-mapping syntax. Standard YAML parsers (including the one Claude Code uses to read frontmatter for memory context) reject these with `mapping values are not allowed here`.
+
+Verified empirically with Python `yaml.safe_load`:
+- `single_entry_pipeline.md` line 2 col 325 — fails on "responsibilities: ENTRY"
+- `memory_scope_split.md` line 2 col 126 — fails on "invocations: developer"
+- `ajv_migration_attempt.md` line 2 col 406 — fails on "RECOMMEND-REVERT: ajv"
+
+This means the auto-loaded memory in Claude Code is silently failing to parse the new frontmatter, dropping the description field from the agent's context. That's worse than the pre-Tier-1 baseline.
+
+**Fix:** Convert all `description` values to YAML folded scalar (`>-`) form:
+
+```yaml
+description: >-
+  Dense paragraph text with colons: safe under YAML. Line breaks
+  become spaces within the paragraph; trailing newline trimmed.
+```
+
+This is the standard YAML pattern for paragraph-length values and reads naturally in plain text. Apply consistently to ALL files in `docs/decisions/` and `docs/research/`, not just the 11 codex flagged — the convention should be uniform across the memory tree.
+
+Verify with a parse check across the entire set after the fix.
+
+## What this round did well
+
+- Prose matches the valet/stationzero memory-index voice.
+- The `project` / `reference` / `lesson` split is correct.
+- Cross-references are honest (no invented links).
+- `workflow.md` correctly not added (deferred to Tier 2).
+- `host_project_memory_graph_rag.md` content body unchanged (only frontmatter rewrite).
+
+## Round budget remaining
+
+2 rounds.
