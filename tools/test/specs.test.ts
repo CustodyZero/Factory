@@ -106,6 +106,7 @@ describe('ensureIntentForSpec', () => {
     });
 
     expect(result.created).toBe(true);
+    expect(result.updated).toBe(false);
     expect(result.intentId).toBe('foo');
     expect(existsSync(join(f.root, 'intents', 'foo.json'))).toBe(true);
 
@@ -148,9 +149,50 @@ describe('ensureIntentForSpec', () => {
     });
 
     expect(second.created).toBe(false);
+    expect(second.updated).toBe(false);
     expect(second.intentId).toBe('foo');
     expect(readFileSync(intentPath, 'utf-8')).toBe(before);
     expect(statSync(intentPath).mtimeMs).toBe(mtimeBefore);
+  });
+
+  it('reconciles spec-derived fields on re-run while preserving runtime state', () => {
+    fixture = makeFixture();
+    const f = fixture;
+    writeSpec(f.root, 'foo', '---\nid: foo\ntitle: Old title\ndepends_on: [a]\n---\n');
+    const loaded = loadSpec('foo', f.root);
+
+    const first = ensureIntentForSpec({
+      spec: loaded,
+      artifactRoot: f.root,
+      creatorId: 'factory-run',
+      now: NOW,
+    });
+    expect(first.created).toBe(true);
+
+    writeSpec(f.root, 'foo', '---\nid: foo\ntitle: New title\ndepends_on: [a, b]\n---\n');
+    const loadedUpdated = loadSpec('foo', f.root);
+    const intentPath = first.intentPath;
+    const existing = JSON.parse(readFileSync(intentPath, 'utf-8')) as Record<string, unknown>;
+    existing['status'] = 'planned';
+    existing['feature_id'] = 'foo-feature';
+    writeFileSync(intentPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+
+    const second = ensureIntentForSpec({
+      spec: loadedUpdated,
+      artifactRoot: f.root,
+      creatorId: 'factory-run',
+      now: '2099-01-01T00:00:00.000Z',
+    });
+
+    expect(second.created).toBe(false);
+    expect(second.updated).toBe(true);
+
+    const reconciled = JSON.parse(readFileSync(intentPath, 'utf-8'));
+    expect(reconciled.title).toBe('New title');
+    expect(reconciled.depends_on).toEqual(['a', 'b']);
+    expect(reconciled.status).toBe('planned');
+    expect(reconciled.feature_id).toBe('foo-feature');
+    expect(reconciled.created_at).toBe(NOW);
   });
 
   it('throws when an existing intent has a mismatched id', () => {

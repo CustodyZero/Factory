@@ -76,6 +76,8 @@ export function resolveRunArg(
     }
     if (ensure.created) {
       fmt.log('plan', `Generated intent from spec: ${fmt.bold(ensure.intentPath)}`);
+    } else if (ensure.updated) {
+      fmt.log('plan', `Reconciled derived intent from spec: ${fmt.bold(ensure.intentPath)}`);
     }
     return {
       ok: true,

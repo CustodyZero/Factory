@@ -2,15 +2,33 @@
 
 Read `AGENTS.md` first. It defines all operating constraints.
 
+For **factory-development work in this repo**, the session entry surface is:
+
+1. `docs/decisions/QUEUE.md`
+2. `docs/decisions/workflow.md`
+3. `docs/decisions/MEMORY.md`
+
+This repo is not self-hosted by `tools/run.ts`. `run.ts` is the host-project
+pipeline entrypoint, not the workflow for evolving factory itself.
+
 ## Critical Rules
 
-1. **Run `npx tsx tools/status.ts` at the start of every session**
+1. **For factory-development sessions, start from `QUEUE.md` + `workflow.md` + `MEMORY.md`**
 2. **Never implement without a packet**
 3. **Never introduce facades or partial success paths**
 4. **One intent per change — no scope mixing**
 5. **Pre-commit hook enforces FI-7** (no commit while a started packet lacks a completion)
 
-## Quick Reference (operator)
+## Quick Reference
+
+### Factory development (this repo)
+
+```sh
+npx vitest run                                # Run factory tooling tests
+npx tsx tools/validate.ts                     # Validate factory integrity
+```
+
+### Host-project operator path
 
 The factory has one operator command: `run.ts`.
 

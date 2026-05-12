@@ -34,6 +34,13 @@ intent artifact from the spec at run time. (Hand-authored
 
 Everything after `run.ts` is autonomous.
 
+When evolving **factory itself**, this repo uses the factory-development workflow
+documented in [docs/decisions/workflow.md](/Users/andyhunter/repositories/custodyzero/factory/docs/decisions/workflow.md) with queue and memory state in
+[docs/decisions/QUEUE.md](/Users/andyhunter/repositories/custodyzero/factory/docs/decisions/QUEUE.md) and
+[docs/decisions/MEMORY.md](/Users/andyhunter/repositories/custodyzero/factory/docs/decisions/MEMORY.md).
+`run.ts` is the pipeline entrypoint for host projects that consume factory; this repo
+is deliberately not self-hosted by that pipeline.
+
 > **Operator vs. agent.** Operators run one command: `run.ts <spec-id>`.
 > The lifecycle scripts (`start`, `request-review`, `review`, `complete`)
 > are the underlying protocol surface; in autonomous mode the pipeline

@@ -114,6 +114,7 @@ Write-Host ''
 Write-Host 'Next steps:'
 Write-Host "  1. Edit factory.config.json - set project_name and verification commands"
 Write-Host '  2. Edit CLAUDE.md - customize for your project'
-Write-Host "  3. Create an intent under $ArtifactDir/intents/ and run:"
-Write-Host "     npx tsx $FactoryDir/tools/run.ts <intent-id>"
+Write-Host "  3. Create a spec under specs/<spec-id>.md and run:"
+Write-Host "     npx tsx $FactoryDir/tools/run.ts <spec-id>"
+Write-Host "     (hand-authored intents under $ArtifactDir/intents/ remain supported for back-compat)"
 Write-Host ''

@@ -45,6 +45,8 @@ export interface EnsureIntentResult {
   readonly intentPath: string;
   /** True if generated this call; false if a matching intent already existed. */
   readonly created: boolean;
+  /** True if an existing derived intent was reconciled to match the spec. */
+  readonly updated: boolean;
 }
 
 export class SpecLoadError extends Error {
@@ -106,8 +108,11 @@ interface EnsureIntentOptions {
  *   - If `intents/<spec-id>.json` does not exist, generate it from the spec
  *     (using specToIntent) and write it.
  *   - If it exists, validate that the existing intent's id and spec_path
- *     match the spec; throw SpecLoadError on mismatch. Returns
- *     `created: false` when a matching intent is found.
+ *     match the spec; reconcile spec-derived fields (`title`, `depends_on`)
+ *     when they drift, while preserving runtime state (`status`,
+ *     `feature_id`, timestamps, etc.). Throws SpecLoadError on id/path
+ *     mismatch. Returns `created: false` when a matching intent already
+ *     existed, with `updated: true` iff derived fields were rewritten.
  *
  * The function does not validate the spec's depends_on cycle property —
  * that's validate.ts's job. It only checks the local 1:1 invariant
@@ -131,7 +136,8 @@ export function ensureIntentForSpec(opts: EnsureIntentOptions): EnsureIntentResu
         `Intent at ${relative(artifactRoot, intentPath)} has spec_path '${existing.spec_path ?? '<unset>'}' but the spec is at '${spec.relativePath}'`,
       );
     }
-    return { intentId, intentPath, created: false };
+    const updated = reconcileDerivedIntentFields(intentPath, spec.spec);
+    return { intentId, intentPath, created: false, updated };
   }
 
   const now = opts.now ?? new Date().toISOString();
@@ -146,7 +152,7 @@ export function ensureIntentForSpec(opts: EnsureIntentOptions): EnsureIntentResu
     mkdirSync(intentDir, { recursive: true });
   }
   writeFileSync(intentPath, JSON.stringify(intent, null, 2) + '\n', 'utf-8');
-  return { intentId, intentPath, created: true };
+  return { intentId, intentPath, created: true, updated: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +162,32 @@ export function ensureIntentForSpec(opts: EnsureIntentOptions): EnsureIntentResu
 interface ExistingIntent {
   readonly id: string;
   readonly spec_path: string | null;
+}
+
+function reconcileDerivedIntentFields(intentPath: string, spec: ParsedSpec): boolean {
+  const raw = readFileSync(intentPath, 'utf-8');
+  const data = JSON.parse(raw) as Record<string, unknown>;
+  let dirty = false;
+
+  if (data['title'] !== spec.frontmatter.title) {
+    data['title'] = spec.frontmatter.title;
+    dirty = true;
+  }
+
+  const nextDependsOn = [...(spec.frontmatter.depends_on ?? [])];
+  const currentDependsOn = Array.isArray(data['depends_on']) &&
+    data['depends_on'].every((item) => typeof item === 'string')
+    ? [...(data['depends_on'] as string[])]
+    : [];
+  if (JSON.stringify(currentDependsOn) !== JSON.stringify(nextDependsOn)) {
+    data['depends_on'] = nextDependsOn;
+    dirty = true;
+  }
+
+  if (dirty) {
+    writeFileSync(intentPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  }
+  return dirty;
 }
 
 function readExistingIntent(intentPath: string): ExistingIntent {
@@ -187,4 +219,3 @@ function readExistingIntent(intentPath: string): ExistingIntent {
   const specPath = typeof specPathRaw === 'string' ? specPathRaw : null;
   return { id, spec_path: specPath };
 }
-

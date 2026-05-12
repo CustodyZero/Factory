@@ -26,9 +26,16 @@ npx vitest run --config .factory/vitest.config.ts         # Run factory tooling 
 
 ## Agent protocol (called by agents, not operators)
 
-The lifecycle scripts below are how agents signal back to the factory.
-Operators do not invoke them during normal pipeline runs — `run.ts`
-calls them as the pipeline drives state forward.
+The lifecycle scripts below are the protocol surface for moving packets
+through their states.
+
+- In **autonomous mode** (`run.ts <spec-id>`), the pipeline calls
+  `start`, `request-review`, and `complete` as library functions while
+  agents do the work. Agents do not call those three CLIs themselves.
+- The **reviewer is the exception**: it calls `review.ts --approve` or
+  `--request-changes` so the pipeline can record the verdict.
+- In **manual mode**, humans or self-driving agents may invoke any of
+  the lifecycle CLIs directly to walk a packet through its states.
 
 ```sh
 npx tsx .factory/tools/start.ts <packet>              # Agent claims a packet
@@ -38,3 +45,12 @@ npx tsx .factory/tools/complete.ts <packet>           # Agent records completion
 ```
 
 All four are idempotent — re-invocation on the same state is a no-op.
+
+## Approval semantics
+
+- **Spec-driven runs** (`run.ts <spec-id>`): spec authoring is the human gate.
+  The intent generated from the spec is derived state, so `run.ts` does not
+  require a separate intent approval step.
+- **Intent-driven runs** (`run.ts <intent-id>` where no matching spec exists):
+  the hand-authored intent's `status` is the governance gate. It must be
+  `approved`, `planned`, or `delivered`.

@@ -40,7 +40,9 @@ The factory translates `specs/<spec-id>.md` into `factory/intents/<spec-id>.json
 Existing hand-authored intents continue to work (backward compatibility).
 
 **Human gates:** exactly one — authoring the spec. The intent artifact is
-derived. (Hand-authored intents remain a supported back-compat path.)
+derived. Hand-authored intents remain a supported back-compat path; for
+those, `intent.status` IS the gate (must be `approved` before `run.ts`
+will plan them).
 
 Each story in a feature decomposes into a **dev packet** and a **QA packet**:
 
@@ -136,9 +138,22 @@ backward compatibility with hand-authored intents.
 
 ### Agent protocol (CLI-as-protocol)
 
-The lifecycle scripts below are how agents signal back to the factory.
-**Agents call these; operators do not.** All four lifecycle scripts are
-idempotent — re-invocation on the same state is a no-op.
+The lifecycle scripts below are the protocol surface for moving a packet
+through its states. They behave identically regardless of caller; what
+changes is *who* invokes them.
+
+**Autonomous mode (`run.ts <spec-id>`).** The orchestrator manages the
+lifecycle. It calls `start`, `request-review`, and `complete` as
+library functions while driving the develop and verify phases. Agents
+under autonomous mode perform the work but do **not** call those three
+CLIs themselves. The reviewer is the one exception: it calls
+`review.ts --approve` / `--request-changes` to record its verdict.
+
+**Manual mode.** Humans (or self-driving agents) may invoke any of the
+lifecycle CLIs directly to walk a packet through its states by hand.
+
+All four lifecycle scripts are idempotent — re-invocation on the same
+state is a no-op.
 
 | Command | Caller | Purpose |
 |---|---|---|
@@ -149,6 +164,18 @@ idempotent — re-invocation on the same state is a no-op.
 | `npx tsx .factory/tools/review.ts <packet-id> --approve` | code reviewer agent | Approve the code review |
 | `npx tsx .factory/tools/review.ts <packet-id> --request-changes` | code reviewer agent | Request changes |
 | `npx tsx .factory/tools/complete.ts <packet-id>` | dev/qa agent | Run build/lint/test, write completion record |
+
+### Approval semantics
+
+`run.ts` accepts two kinds of inputs and treats them differently:
+
+- **Spec-driven** (`specs/<id>.md` exists). The intent file is a
+  derived artifact. The factory skips the intent-status check on this
+  path because authoring the spec IS the gate.
+- **Intent-driven** (only `intents/<id>.json` exists, no spec). The
+  human edited the intent file directly. The intent's `status` IS the
+  gate — `run.ts` requires it to be one of `approved`, `planned`, or
+  `delivered` before planning.
 
 ---
 

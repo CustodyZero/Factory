@@ -217,6 +217,39 @@ describe('run.ts — both spec and intent present', () => {
     expect(r.stderr).not.toContain('Generated intent from spec');
   });
 
+  it('reconciles derived intent fields from the spec on subsequent runs', () => {
+    const f = makeFixture();
+    mkdirSync(join(f.root, 'specs'), { recursive: true });
+    writeFileSync(
+      join(f.root, 'specs', 'shared.md'),
+      '---\nid: shared\ntitle: original title\n---\n',
+      'utf-8',
+    );
+    runRun(['shared', '--dry-run'], f.root);
+
+    const intentPath = join(f.root, 'intents', 'shared.json');
+    const existing = JSON.parse(readFileSync(intentPath, 'utf-8'));
+    existing.title = 'stale title';
+    existing.status = 'planned';
+    existing.feature_id = 'feat-shared';
+    writeFileSync(intentPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+
+    writeFileSync(
+      join(f.root, 'specs', 'shared.md'),
+      '---\nid: shared\ntitle: updated title\ndepends_on: [dep-a]\n---\n',
+      'utf-8',
+    );
+
+    const r = runRun(['shared', '--dry-run'], f.root);
+    const reconciled = JSON.parse(readFileSync(intentPath, 'utf-8'));
+
+    expect(reconciled.title).toBe('updated title');
+    expect(reconciled.depends_on).toEqual(['dep-a']);
+    expect(reconciled.status).toBe('planned');
+    expect(reconciled.feature_id).toBe('feat-shared');
+    expect(r.stderr).toContain('Reconciled derived intent from spec');
+  });
+
   it('errors when the intent disagrees with the spec on id', () => {
     const f = makeFixture();
     mkdirSync(join(f.root, 'specs'), { recursive: true });

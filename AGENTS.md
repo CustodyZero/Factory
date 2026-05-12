@@ -13,8 +13,11 @@ No code changes happen outside the factory's packet system. Every implementation
 must trace back to a packet. Every packet must trace back to a feature. Every
 feature must trace back to an intent that a human approved.
 
-**Session reconstruction:** run `npx tsx tools/status.ts` at the start of every
-session. It tells you where things stand and what to do next.
+**Factory-development session entry:** for work on this repo itself, start from
+`docs/decisions/QUEUE.md`, `docs/decisions/workflow.md`, and `docs/decisions/MEMORY.md`.
+This repo is not self-hosted by `tools/run.ts`; that pipeline is for host projects
+that consume factory. `tools/status.ts` remains the host-project factory state
+reconstruction command.
 
 ## 2. Pipeline Lifecycle
 
@@ -223,7 +226,7 @@ typically `factory/`).
 
 | Directory | What | Created by |
 |-----------|------|------------|
-| `intents/` | High-level specs with constraints | Human |
+| `intents/` | High-level specs with constraints | Spec translator (`specs/` path) or human (legacy hand-authored path) |
 | `features/` | Planned execution units (packet lists) | Planner agent |
 | `packets/` | Individual dev/qa work units | Planner agent |
 | `completions/` | Verification evidence (build/lint/test) | `complete.ts` |
