@@ -12,16 +12,27 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
 
 ## Planned (next up)
 
-### 1. Host-project memory implementation — Stage 1 (schema + storage + write path)
+### 1. Re-open host-project memory direction before implementation
 
-- **Status:** scoped pending A-decisions enumerated in the decision doc.
+- **Status:** newly challenged; graph-RAG should not be treated as the automatic next step pending a comparative decision.
+- **Why:** The current graph-RAG direction may be premature as an immediate Stage 1 default. Before implementing `factory/memory/` schema + storage + write path, the repo should explicitly compare thinner alternatives: no memory yet, curated markdown memory, extracted flat memory, and full graph-RAG memory, using both external agent-memory patterns and actual host-project needs.
+- **References:**
+  - `docs/research/host_project_memory_reconsideration.md` — challenge note
+  - `docs/research/host_project_memory_documentation_note.md` — current-orientation note
+  - `docs/decisions/host_project_memory_graph_rag.md` — current committed target architecture under challenge
+  - `docs/decisions/memory_scope_split.md` — still-solid worker/project and host/guest boundaries
+- **Waiting on:** a comparative decision note grounded in both public agent-memory patterns and real host-project failure modes / usage evidence.
+
+### 2. Host-project memory implementation — Stage 1 (schema + storage + write path)
+
+- **Status:** deferred behind the comparative decision above.
 - **Why:** Implement the architectural commitment in `docs/decisions/host_project_memory_graph_rag.md` — typed-node, typed-edge knowledge graph with composite weights, semantic+graph retrieval, continuous consolidation. Stage 1 lands the schema (markdown source-of-truth at `factory/memory/<category>/<id>.md`), the storage substrate (derived SQLite + vector index at `factory/memory/.index/`, gitignored), and the write path (best-effort extraction at pipeline end).
 - **References:**
   - `docs/decisions/host_project_memory_graph_rag.md` — architectural commitment (locked 2026-05-11)
   - `docs/decisions/memory_scope_split.md` — host-project vs factory-development split
 - **Waiting on:** the A-decisions still deferred in `host_project_memory_graph_rag.md` — embedding model, vector store dependency (sqlite-vec vs alternatives), retrieval-injection scope, consolidation cadence, authority resolution, schema versioning, contradiction policy, migration tooling. Decision doc anticipates 4-6 implementation specs across 3 staging steps once the A-decisions land.
 
-### 2. `factory doctor` sister spec (post-Phase-8 trigger)
+### 3. `factory doctor` sister spec (post-Phase-8 trigger)
 
 - **Status:** scoped pending accumulated host-project experience.
 - **Why:** Unified preflight diagnostic command per `docs/decisions/doctor_diagnostic_deferred.md`. Replaces today's fragmented health-checking across `tools/status.ts`, `tools/validate.ts`, manual provider checks, and the pre-commit completion-gate hook.
@@ -30,7 +41,7 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
   - `docs/research/claw_code_audit.md` §10 — `claw doctor` precedent
 - **Waiting on:** accumulated host-project experience to inform the full check list (multi-spec sequencing state, recovery state, cost-cap status, event-stream health, worktree state). The deferral is deliberate; Phase 8 just landed (commit `4472b7f`).
 
-### 3. Verification grading sister spec (post-Phase-8 trigger)
+### 4. Verification grading sister spec (post-Phase-8 trigger)
 
 - **Status:** scoped pending accumulated host-project experience.
 - **Why:** Green Contract tiered verification per `docs/decisions/verification_grading_deferred.md` (`TargetedTests` / `Package` / `Workspace` / `MergeReady`). Factory's current binary build/lint/test pass-or-fail is over-rigorous (every packet runs every check); the tier vocabulary depends on host-project tooling shape.
@@ -45,6 +56,8 @@ Authoritative state of in-flight, planned, and accepted work items for factory d
 
 Most recent first. Each line: title — merge commit — outcome.
 
+- **Host-project memory documentation note** — pending commit — `docs/research/host_project_memory_documentation_note.md` added as a documentation-only synthesis of the existing host-project memory posture. It does not add a new commitment; it consolidates what `memory_scope_split.md`, `host_project_memory_graph_rag.md`, `event_observability.md`, and the external audits already imply, so future sessions can orient on host-project memory quickly without re-litigating settled questions.
+- **Host-project memory reconsideration note** — pending commit — `docs/research/host_project_memory_reconsideration.md` added as an explicit challenge to the current graph-RAG direction. It argues the host-project memory question should be reopened around both public agent-memory patterns and actual downstream failure modes before graph-RAG is treated as the Stage 1 default.
 - **Factory development workflow doc** — `ab4770d` — `docs/decisions/workflow.md` captures HOW factory development is governed: four roles (Orchestrator + Developer Agent + Reviewer + QA), session-grounded lifecycle, bounded-iteration + role-flip embedded by reference to `recurring_workflow_patterns.md` Pattern 1, W-1 through W-11 defaults table. Round 1 codex REQUEST-CHANGES (docs-only QA-skip carve-out, CLAUDE.md § references unverifiable in-repo, codex described as the notes mutator instead of verdict emitter); round 2 addressed all three; round 2 codex APPROVE; QA APPROVE on all 23 criteria.
 - **Recurring workflow patterns + work queue** — `56efaba` — `docs/research/recurring_workflow_patterns.md` (8 patterns, `type: lesson`) and `docs/decisions/QUEUE.md` introduced; MEMORY.md indexes both. Pattern 1 round-3 decision rule (revert vs role-flip) and Pattern 8 FI-7 disambiguation locked in. Follow-up tightening at `d167851` aligned the role-flip corrective-move bullet with the literal-swap mechanism above it (trivial docs alignment, direct-on-main per `workflow.md`).
 - **Tier 1 memory alignment** — `c037d8c` — frontmatter convention (sentence-case `name`, `description: >-` folded scalar, `type: <value>`), `MEMORY.md` rewritten with rich bullets + pin-closure preamble + bidirectional links, all decision + research notes brought onto the convention.
