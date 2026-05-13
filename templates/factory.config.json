@@ -3,6 +3,14 @@
   "project_name": "my-project",
   "factory_dir": ".factory",
   "artifact_dir": "factory",
+  "memory": {
+    "root_dir": "memory",
+    "cache_dir": "cache",
+    "suggestion_dir": "suggestions",
+    "max_additional_files": 4,
+    "max_file_bytes": 16384,
+    "max_cache_entries": 20
+  },
   "verification": {
     "build": "true",
     "lint": "true",

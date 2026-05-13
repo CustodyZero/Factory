@@ -127,6 +127,17 @@ artifacts are never written inside the submodule.
 | `features/` | Planned execution units (multi-packet) |
 | `packets/` | Individual work units (dev and qa) |
 | `completions/` | Verification evidence (build/lint/test results) |
+| `memory/` | Durable host-project memory (`MEMORY.md` + curated categories) |
+| `cache/` | Transient machine cache, safe to delete and rebuild |
+
+### Host-project memory
+
+Factory distinguishes durable host-project memory from transient cache:
+
+- `memory/MEMORY.md` is a small always-loaded index.
+- Category directories (`architectural-facts/`, `recurring-failures/`, `project-conventions/`, `code-patterns/`) hold durable curated memory.
+- `memory/suggestions/` holds pipeline-generated candidate updates that require human review before promotion.
+- `cache/` is machine state only. Do not treat it as durable memory.
 
 ### Operator commands
 

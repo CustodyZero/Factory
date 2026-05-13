@@ -7,6 +7,11 @@ type: project
 
 # Host-Project Memory: Graph-Based RAG
 
+> Historical note: this is no longer the operative near-term implementation
+> contract. The current contract is the thin layer in
+> [`host_project_memory_thin_layer.md`](host_project_memory_thin_layer.md).
+> Keep this document as a possible future architecture target only.
+
 ## Decision
 
 When factory implements the host-project memory write-side (deferred per [`memory_scope_split.md`](memory_scope_split.md)), it will be a **graph-based knowledge layer with semantic retrieval, weighted nodes, and continuous consolidation** — not a flat catalog of markdown notes.

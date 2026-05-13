@@ -22,6 +22,7 @@ import * as fmt from '../output.js';
 import { invokeAgent } from './agent_invoke.js';
 import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildQaPrompt } from './prompts.js';
+import { loadMemoryContext } from './memory.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
 import { completePacket } from '../lifecycle/complete.js';
@@ -90,6 +91,11 @@ export interface VerifyPhaseResult {
    * attempted yet because the dev side isn't done".
    */
   readonly skipped: string[];
+}
+
+function packetIntentText(packet: RawPacket): string | null {
+  const maybeIntent = (packet as unknown as { readonly intent?: unknown }).intent;
+  return typeof maybeIntent === 'string' ? maybeIntent : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +410,16 @@ async function runVerifyPhaseInner(opts: VerifyPhaseOptions): Promise<VerifyPhas
         // Phase 7 round-2 — primary derived from cascade[0]; see
         // develop_phase.ts for the rationale.
         const target = attempt.cascade ?? qaPrimary;
-        const qaPromptStr = buildQaPrompt(packet, config);
+        const qaMemory = loadMemoryContext({
+          persona: 'qa',
+          projectRoot,
+          config,
+          title: packet.title,
+          intent: packetIntentText(packet),
+          acceptanceCriteria: packet.acceptance_criteria,
+          changeClass: packet.change_class,
+        });
+        const qaPromptStr = buildQaPrompt(packet, config, qaMemory.block);
         const r = await invokeAgent(
           target.provider, qaPromptStr, config, qaTier, target.model,
           {
@@ -532,7 +547,16 @@ async function runVerifyPhaseInner(opts: VerifyPhaseOptions): Promise<VerifyPhas
           },
         };
       }
-      const basePrompt = buildDevPrompt(devPacketForRemediation, config);
+      const devMemory = loadMemoryContext({
+        persona: 'developer',
+        projectRoot,
+        config,
+        title: devPacketForRemediation.title,
+        intent: packetIntentText(devPacketForRemediation),
+        acceptanceCriteria: devPacketForRemediation.acceptance_criteria,
+        changeClass: devPacketForRemediation.change_class,
+      });
+      const basePrompt = buildDevPrompt(devPacketForRemediation, config, devMemory.block);
       const qaContext =
         `This dev packet is being verified by QA packet ${packet.id} ` +
         `("${packet.title}"); QA reported build failure.`;

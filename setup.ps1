@@ -17,7 +17,8 @@
         1. Installs factory dependencies (inside .factory/)
         2. Copies template files to host project root (no-clobber)
         3. Creates artifact directories under factory/
-        4. Configures git hooks
+        4. Seeds host-project memory + cache directories
+        5. Configures git hooks
 #>
 
 Set-StrictMode -Version Latest
@@ -88,12 +89,43 @@ try {
         if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
         Write-Host "  MKDIR $path/"
     }
+
+    # -- 4. Seed host-project memory + cache directories -----------------------
+
+    Write-Host ''
+    Write-Host 'Creating memory and cache directories...'
+    foreach ($subdir in @(
+        'memory',
+        'memory/architectural-facts',
+        'memory/recurring-failures',
+        'memory/project-conventions',
+        'memory/code-patterns',
+        'memory/suggestions',
+        'cache'
+    )) {
+        $path = "$ArtifactDir/$subdir"
+        if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path | Out-Null }
+        Write-Host "  MKDIR $path/"
+    }
+    Copy-Template "$FactoryDir/templates/memory.md" "$ArtifactDir/memory/MEMORY.md"
+
+    if (Test-Path '.gitignore') {
+        $ignoreLine = "$ArtifactDir/cache/"
+        $gitignore = Get-Content '.gitignore'
+        if ($gitignore -notcontains $ignoreLine) {
+            Add-Content '.gitignore' "`n$ignoreLine"
+            Write-Host "  APPEND .gitignore -> $ignoreLine"
+        }
+        else {
+            Write-Host "  SKIP  .gitignore ($ignoreLine already present)"
+        }
+    }
 }
 finally {
     Pop-Location
 }
 
-# -- 4. Configure git hooks ---------------------------------------------------
+# -- 5. Configure git hooks ---------------------------------------------------
 
 Write-Host ''
 Write-Host 'Configuring git hooks...'

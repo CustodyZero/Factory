@@ -18,7 +18,7 @@
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { findProjectRoot, resolveArtifactRoot } from './config.js';
+import { findProjectRoot, loadConfig, resolveArtifactRoot, resolveCacheRoot, resolveMemoryRoot } from './config.js';
 import { resolveSpecPath } from './plan.js';
 import { parseSpec, SpecParseError } from './pipeline/spec_parse.js';
 import type { ParsedSpec } from './pipeline/spec_parse.js';
@@ -36,6 +36,7 @@ import * as fmt from './output.js';
 // ---------------------------------------------------------------------------
 
 const PROJECT_ROOT = findProjectRoot();
+const CONFIG = loadConfig(PROJECT_ROOT);
 const ARTIFACT_ROOT = resolveArtifactRoot(PROJECT_ROOT);
 const VALID_CHANGE_CLASSES = ['trivial', 'local', 'cross_cutting', 'architectural'] as const;
 const VALID_IDENTITY_KINDS = ['human', 'agent', 'cli', 'ui'] as const;
@@ -384,6 +385,39 @@ function validateSpecFile(s: DiscoveredSpec): ValidationResult[] {
   return results;
 }
 
+function validateMemoryLayout(): ValidationResult[] {
+  const results: ValidationResult[] = [];
+  const memoryRoot = resolveMemoryRoot(PROJECT_ROOT, CONFIG);
+  const cacheRoot = resolveCacheRoot(PROJECT_ROOT, CONFIG);
+  const memoryPath = relativePath(memoryRoot);
+  const cachePath = relativePath(cacheRoot);
+  const w = (file: string, msg: string) => results.push({ file, severity: 'warning', error_type: 'schema', message: msg });
+
+  if (!existsSync(memoryRoot)) {
+    w(memoryPath, 'memory root does not exist yet (setup creates it for host projects)');
+    return results;
+  }
+  const indexPath = join(memoryRoot, 'MEMORY.md');
+  if (!existsSync(indexPath)) {
+    w(`${memoryPath}/MEMORY.md`, 'missing host-project memory index');
+  }
+  for (const category of ['architectural-facts', 'recurring-failures', 'project-conventions', 'code-patterns', CONFIG.memory.suggestion_dir]) {
+    const dir = join(memoryRoot, category);
+    if (!existsSync(dir)) {
+      w(`${memoryPath}/${category}`, 'recommended memory category directory missing');
+    }
+  }
+  if (existsSync(cacheRoot) && !statSync(cacheRoot).isDirectory()) {
+    w(cachePath, 'cache path exists but is not a directory');
+  }
+  return results;
+}
+
+function relativePath(path: string): string {
+  const rel = join('.', path.replace(`${PROJECT_ROOT}/`, ''));
+  return rel.startsWith('./') ? rel.slice(2) : rel;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -417,6 +451,7 @@ function main(): void {
   for (const f of features) { if (f.data != null) allResults.push(...validateFeatureSchema(f.filepath, f.data)); }
   for (const i of intents) { if (i.data != null) allResults.push(...validateIntentSchema(i.filepath, i.data)); }
   for (const s of specs) { allResults.push(...validateSpecFile(s)); }
+  allResults.push(...validateMemoryLayout());
 
   // Cross-artifact integrity + invariants (delegated to integrity module)
   const index = buildIndex(packets, completions, features, intents);

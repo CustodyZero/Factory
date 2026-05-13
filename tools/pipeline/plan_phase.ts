@@ -28,6 +28,7 @@ import { buildPlannerPrompt } from './prompts.js';
 import { invokeAgent } from './agent_invoke.js';
 import type { InvokeResult } from './agent_invoke.js';
 import { computeCascade } from './cascade.js';
+import { loadMemoryContext } from './memory.js';
 import type { CostRecord } from './cost.js';
 import { recordCost, localDateString } from '../cost.js';
 import {
@@ -114,6 +115,14 @@ function readJsonDir<T>(dir: string): T[] {
 
 function timestamp(): string {
   return new Date().toISOString();
+}
+
+function deriveProjectRoot(artifactRoot: string, config: FactoryConfig): string {
+  if (config.artifact_dir === '.') return artifactRoot;
+  const suffix = `/${config.artifact_dir}`;
+  return artifactRoot.endsWith(suffix)
+    ? artifactRoot.slice(0, -suffix.length)
+    : artifactRoot;
 }
 
 /**
@@ -255,11 +264,20 @@ async function runPlanPhaseInner(opts: PlanPhaseOptions): Promise<PlanPhaseResul
   // and defeats the purpose of spec_path (the agent should read the authoritative
   // source directly, not a snapshot embedded in the prompt).
   const rawIntent = readJson<RawIntentArtifact>(join(artifactRoot, 'intents', `${intent.id}.json`));
+  const memoryContext = loadMemoryContext({
+    persona: 'planner',
+    projectRoot: deriveProjectRoot(artifactRoot, config),
+    config,
+    title: intent.title,
+    intent: intent.title,
+    spec: intent.spec,
+  });
   const prompt = buildPlannerPrompt({
     intent,
     plannerInstructions: config.personas.planner.instructions,
     artifactDir: config.artifact_dir,
     specPath: rawIntent?.spec_path ?? null,
+    memoryBlock: memoryContext.block,
   });
 
   if (dryRun) {

@@ -29,6 +29,7 @@ import { topoSort } from './topo.js';
 import { invokeAgent } from './agent_invoke.js';
 import { computeCascade } from './cascade.js';
 import { buildDevPrompt, buildReviewPrompt, buildReworkPrompt } from './prompts.js';
+import { loadMemoryContext } from './memory.js';
 import { refreshCompletionId, safeCall } from './lifecycle_helpers.js';
 import { startPacket } from '../lifecycle/start.js';
 import { requestReview } from '../lifecycle/request_review.js';
@@ -215,6 +216,11 @@ export interface DevelopPhaseOptions {
 export interface DevelopPhaseResult {
   readonly completed: string[];
   readonly failed: string[];
+}
+
+function packetIntentText(packet: RawPacket): string | null {
+  const maybeIntent = (packet as unknown as { readonly intent?: unknown }).intent;
+  return typeof maybeIntent === 'string' ? maybeIntent : null;
 }
 
 // Module-private fs helpers (mirrors of the originals in run.ts).
@@ -602,7 +608,16 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
           // guardrailPrompt and re-issue the same prompt.
           const recovered = await runWithRecovery<InvokeResult>(
             async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
-              const basePrompt = buildDevPrompt(freshPacket, config);
+              const memoryContext = loadMemoryContext({
+                persona: 'developer',
+                projectRoot,
+                config,
+                title: freshPacket.title,
+                intent: packetIntentText(freshPacket),
+                acceptanceCriteria: freshPacket.acceptance_criteria,
+                changeClass: freshPacket.change_class,
+              });
+              const basePrompt = buildDevPrompt(freshPacket, config, memoryContext.block);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
@@ -773,7 +788,16 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
               // Phase 7 round-2 — primary derived from cascade[0]; see
               // implement closure for the rationale.
               const target = attempt.cascade ?? reviewerPrimary;
-              const reviewPromptStr = buildReviewPrompt(freshPacket, config);
+              const memoryContext = loadMemoryContext({
+                persona: 'code_reviewer',
+                projectRoot,
+                config,
+                title: freshPacket.title,
+                intent: packetIntentText(freshPacket),
+                acceptanceCriteria: freshPacket.acceptance_criteria,
+                changeClass: freshPacket.change_class,
+              });
+              const reviewPromptStr = buildReviewPrompt(freshPacket, config, memoryContext.block);
               const r = await invokeAgent(
                 target.provider, reviewPromptStr, config, reviewTier, target.model,
                 {
@@ -898,7 +922,16 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
           fmt.log('develop', `  Reworking via ${devProvider} (${devTier})...`);
           const reworkRecovered = await runWithRecovery<InvokeResult>(
             async (attempt: AttemptContext): Promise<OperationResult<InvokeResult>> => {
-              const basePrompt = buildReworkPrompt(freshPacket, config);
+              const memoryContext = loadMemoryContext({
+                persona: 'developer',
+                projectRoot,
+                config,
+                title: freshPacket.title,
+                intent: packetIntentText(freshPacket),
+                acceptanceCriteria: freshPacket.acceptance_criteria,
+                changeClass: freshPacket.change_class,
+              });
+              const basePrompt = buildReworkPrompt(freshPacket, config, memoryContext.block);
               const finalPrompt = attempt.guardrailPrompt !== undefined
                 ? `${basePrompt}\n\n---\n${attempt.guardrailPrompt}`
                 : basePrompt;
@@ -1031,7 +1064,16 @@ async function runDevelopPhaseInner(opts: DevelopPhaseOptions): Promise<DevelopP
             // Returns null on success (caller proceeds to
             // completePacket); returns OperationResult<true> with
             // outcome='fail' on agent failure.
-            const basePrompt = buildDevPrompt(freshPacket, config);
+            const memoryContext = loadMemoryContext({
+              persona: 'developer',
+              projectRoot,
+              config,
+              title: freshPacket.title,
+              intent: packetIntentText(freshPacket),
+              acceptanceCriteria: freshPacket.acceptance_criteria,
+              changeClass: freshPacket.change_class,
+            });
+            const basePrompt = buildDevPrompt(freshPacket, config, memoryContext.block);
             const remediationPrompt =
               `${basePrompt}\n\n---\n${guardrail}`;
             lastRemediationTarget = target;

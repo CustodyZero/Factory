@@ -1,7 +1,13 @@
 ---
 name: Host-project memory documentation note — current architecture, lessons learned, and non-goals
 description: >-
-  Documentation-only synthesis recorded 2026-05-12. This note does not introduce a new architectural commitment; it summarizes what the factory has already decided about host-project memory, what lessons those decisions encode, and what remains explicitly deferred. It exists so future sessions do not have to reconstruct the host-project memory posture by reading `memory_scope_split.md`, `host_project_memory_graph_rag.md`, `event_observability.md`, and the external research audits in parallel.
+  Documentation-only synthesis recorded 2026-05-12 and updated 2026-05-13.
+  This note does not introduce a new architectural commitment; it summarizes
+  what the factory has already decided about host-project memory, what lessons
+  those decisions encode, and what remains explicitly deferred. It exists so
+  future sessions do not have to reconstruct the host-project memory posture
+  by reading `memory_scope_split.md`, `host_project_memory_thin_layer.md`,
+  `event_observability.md`, and the external research audits in parallel.
 type: reference
 ---
 
@@ -14,7 +20,7 @@ type: reference
 Host-project memory is now spread across several committed decisions plus two external research audits:
 
 - [`../decisions/memory_scope_split.md`](../decisions/memory_scope_split.md)
-- [`../decisions/host_project_memory_graph_rag.md`](../decisions/host_project_memory_graph_rag.md)
+- [`../decisions/host_project_memory_thin_layer.md`](../decisions/host_project_memory_thin_layer.md)
 - [`../decisions/event_observability.md`](../decisions/event_observability.md)
 - [`claurst_audit.md`](claurst_audit.md)
 - [`claw_code_audit.md`](claw_code_audit.md)
@@ -48,19 +54,18 @@ Factory is a guest inside host projects. The committed boundary is:
 
 This is the main distinction between host-project memory and this repo's factory-development memory setup. The memdir-style symlink convention used for factory development is explicitly **not** the host-project contract.
 
-### 3. Host-project memory is not a flat notebook
+### 3. Host-project memory now has a thin implemented shape
 
-The architectural shape is already committed in [`../decisions/host_project_memory_graph_rag.md`](../decisions/host_project_memory_graph_rag.md):
+The current operative contract is in [`../decisions/host_project_memory_thin_layer.md`](../decisions/host_project_memory_thin_layer.md):
 
-- typed nodes
-- typed edges
-- composite weighting
-- semantic + graph retrieval
-- continuous consolidation
-- markdown files as source of truth
-- gitignored derived index for fast lookup
+- `factory/memory/MEMORY.md` as a small index
+- curated durable categories
+- `factory/memory/suggestions/` for candidate updates
+- `factory/cache/` for bounded machine state
+- selective prompt loading
+- no automatic durable-memory promotion
 
-This means the question is no longer "should host-project memory exist?" or "should it be a plain markdown folder?" The decision is already past that. The open work is implementation sequencing and unresolved A-decisions.
+This means the question is no longer "should host-project memory exist?" The thin layer exists. The open work is how promotion, retrieval tuning, and any future richer indexing should evolve from real host-project use.
 
 ### 4. Event streams are the extraction substrate
 
@@ -76,15 +81,15 @@ The memory system is therefore downstream of the observability system. That is a
 
 These are not new decisions. They are the practical lessons the existing docs already imply.
 
-### Lesson 1: Memory quality is a retrieval problem more than a storage problem
+### Lesson 1: Memory quality is a retrieval problem as much as a storage problem
 
-The graph-RAG decision is a direct response to a real failure mode: a flat pile of notes does not help an agent unless retrieval can rank and scope them well. The important lesson is:
+Even in the thin-layer model, a flat pile of notes does not help an agent unless retrieval can rank and scope them well. The important lesson is:
 
 - more memory is not automatically better
 - low-quality retrieval crowds out useful context
 - memory that cannot rank contradictions, centrality, and recency will eventually hurt the agent
 
-That is why the committed design is heavier than "just write markdown notes."
+That is why the thin layer uses selective prompt injection and a bounded cache rather than globally loading every file.
 
 ### Lesson 2: Memory must be best-effort, not run-blocking
 
@@ -97,11 +102,11 @@ So the right lesson is:
 
 ### Lesson 3: Source-of-truth files must remain human-readable
 
-The decisions preserve markdown files as the file-of-record even though retrieval will rely on a derived index. That encodes a governance lesson:
+The current design preserves markdown files as the file-of-record even though prompt-side loading may use cached selection. That encodes a governance lesson:
 
 - operators need to be able to inspect memory directly
 - project memory must remain reviewable in git
-- the derived index must be rebuildable, not authoritative
+- any machine cache must be rebuildable, not authoritative
 
 This keeps the system auditable and prevents "the vector store knows something the repo does not."
 
@@ -129,13 +134,11 @@ The lesson is:
 
 The following remain open by design:
 
-- embedding model choice
-- vector-store dependency choice
-- retrieval injection scope
-- consolidation cadence
-- contradiction resolution policy
-- authority resolution when human-authored and extracted memory disagree
-- schema versioning strategy
+- promotion workflow from `suggestions/` into durable categories
+- retrieval tuning and category-scoring heuristics
+- whether suggestions should become more structured than markdown reports
+- whether a richer index is justified later
+- whether graph-backed retrieval is earned by real host-project pressure
 - migration/bootstrap tooling for existing host projects
 
 Those are implementation questions, not documentation gaps.
@@ -145,23 +148,23 @@ Those are implementation questions, not documentation gaps.
 This note exists to prevent a few predictable mistakes:
 
 1. Treating host-project memory as if it were this repo's local memdir convention.
-2. Re-opening the "flat markdown notes vs graph retrieval" question as if it were unsettled.
+2. Treating the historical graph-RAG note as if it were the current implementation contract.
 3. Designing worker-level learned memory for developer/reviewer/QA invocations.
 4. Assuming memory writes are allowed to fail the delivery pipeline.
 5. Treating event observability and memory as independent systems.
 
 ## Recommended next move
 
-If the next step is implementation, the right starting point is still the planned queue item in [`../decisions/QUEUE.md`](../decisions/QUEUE.md):
+If the next step is implementation, the right starting point is the thin-layer follow-up in [`../decisions/QUEUE.md`](../decisions/QUEUE.md):
 
-- **Host-project memory implementation — Stage 1 (schema + storage + write path)**
+- **Thin host-project memory follow-up — promotion workflow and retrieval tuning**
 
 That work should consume this note as orientation, but the real authority remains the committed decisions it summarizes.
 
 ## References
 
 - [`../decisions/memory_scope_split.md`](../decisions/memory_scope_split.md)
-- [`../decisions/host_project_memory_graph_rag.md`](../decisions/host_project_memory_graph_rag.md)
+- [`../decisions/host_project_memory_thin_layer.md`](../decisions/host_project_memory_thin_layer.md)
 - [`../decisions/event_observability.md`](../decisions/event_observability.md)
 - [`claurst_audit.md`](claurst_audit.md)
 - [`claw_code_audit.md`](claw_code_audit.md)

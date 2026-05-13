@@ -11,7 +11,9 @@ import {
   normalizePersonaProvider,
   normalizeProviderCommand,
   resolveArtifactRoot,
+  resolveCacheRoot,
   resolveFactoryRoot,
+  resolveMemoryRoot,
   resolveToolScriptPath,
 } from '../config.js';
 import type { FactoryConfig, PipelineProvider } from '../config.js';
@@ -21,6 +23,14 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
     project_name: 'test',
     factory_dir: '.',
     artifact_dir: '.',
+    memory: {
+      root_dir: 'memory',
+      cache_dir: 'cache',
+      suggestion_dir: 'suggestions',
+      max_additional_files: 4,
+      max_file_bytes: 16384,
+      max_cache_entries: 20,
+    },
     verification: { build: 'true', lint: 'true', test: 'true' },
     validation: { command: 'true' },
     infrastructure_patterns: [],
@@ -76,6 +86,24 @@ describe('resolveArtifactRoot', () => {
   it('returns artifact subdir when artifact_dir is "factory"', () => {
     const config = makeConfig({ artifact_dir: 'factory' });
     expect(resolveArtifactRoot('/project', config)).toBe(join('/project', 'factory'));
+  });
+});
+
+describe('memory roots', () => {
+  it('resolves memory root inside artifact root', () => {
+    const config = makeConfig({
+      artifact_dir: 'factory',
+      memory: {
+        root_dir: 'memory',
+        cache_dir: 'cache',
+        suggestion_dir: 'suggestions',
+        max_additional_files: 4,
+        max_file_bytes: 16384,
+        max_cache_entries: 20,
+      },
+    });
+    expect(resolveMemoryRoot('/project', config)).toBe(join('/project', 'factory', 'memory'));
+    expect(resolveCacheRoot('/project', config)).toBe(join('/project', 'factory', 'cache'));
   });
 });
 
@@ -139,6 +167,14 @@ function writeConfigDir(rawConfig: Record<string, unknown>): string {
     project_name: 'cfg-test',
     factory_dir: '.',
     artifact_dir: '.',
+    memory: {
+      root_dir: 'memory',
+      cache_dir: 'cache',
+      suggestion_dir: 'suggestions',
+      max_additional_files: 4,
+      max_file_bytes: 16384,
+      max_cache_entries: 20,
+    },
     verification: { build: 'true', lint: 'true', test: 'true' },
     validation: { command: 'true' },
     infrastructure_patterns: [],

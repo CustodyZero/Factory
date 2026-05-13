@@ -122,6 +122,22 @@ The `.factory/` submodule contains only tooling (tools, schemas, hooks).
 | `factory/features/` | Planned execution units (multi-packet) |
 | `factory/packets/` | Individual work units (dev and qa) |
 | `factory/completions/` | Verification evidence (build/lint/test results) |
+| `factory/memory/` | Durable host-project memory (`MEMORY.md` + curated categories) |
+| `factory/cache/` | Transient machine cache, safe to delete and rebuild |
+
+### Host-project memory
+
+Factory distinguishes durable host-project memory from transient cache:
+
+- `factory/memory/MEMORY.md` is a small always-loaded index.
+- Category directories (`architectural-facts/`, `recurring-failures/`, `project-conventions/`, `code-patterns/`) hold durable curated memory.
+- `factory/memory/suggestions/` holds pipeline-generated candidate updates that require human review before promotion.
+- `factory/cache/` is machine state only. Do not treat it as durable memory.
+
+Use durable memory for stable project knowledge, not current execution state.
+Do not write packet status, feature status, or run narration into memory files.
+Treat memory as advisory context layered on top of the authoritative factory
+artifacts.
 
 ### Operator commands
 
@@ -234,7 +250,7 @@ If you are starting a new session or have lost context:
 4. If you (an agent) need manual control while debugging, run `npx tsx .factory/tools/execute.ts <feature-id>` to see what packets are ready
 5. The output tells you what to do next **and which persona to use**
 
-Do not rely on memory. Do not guess. Read the factory state.
+Treat memory as advisory context, not authority. Do not guess. Read the factory state.
 
 ---
 

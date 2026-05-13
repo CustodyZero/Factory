@@ -39,7 +39,7 @@ import type { IntentArtifact } from '../plan.js';
  * RawPacket type) and falls back to a placeholder string. This
  * matches the original behavior in run.ts.
  */
-export function buildDevPrompt(packet: RawPacket, config: FactoryConfig): string {
+export function buildDevPrompt(packet: RawPacket, config: FactoryConfig, memoryBlock = ''): string {
   const personaInstructions = config.personas.developer.instructions;
   const packetInstructions = packet.instructions ?? [];
   const criteria = packet.acceptance_criteria ?? [];
@@ -50,6 +50,7 @@ export function buildDevPrompt(packet: RawPacket, config: FactoryConfig): string
     `Title: ${packet.title}`,
     `Intent: ${(packet as Record<string, unknown>)['intent'] ?? 'See packet for details'}`,
     ``,
+    memoryBlock.length > 0 ? `${memoryBlock}\n` : '',
     criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
     personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
     packetInstructions.length > 0 ? `## Packet Instructions\n${packetInstructions.join('\n')}\n` : '',
@@ -75,13 +76,14 @@ export function buildDevPrompt(packet: RawPacket, config: FactoryConfig): string
  * to call lifecycle CLIs (the pipeline handles state transitions for
  * those phases). See AGENTS.md "Agent protocol" for the full split.
  */
-export function buildReviewPrompt(packet: RawPacket, config: FactoryConfig): string {
+export function buildReviewPrompt(packet: RawPacket, config: FactoryConfig, memoryBlock = ''): string {
   const personaInstructions = config.personas.code_reviewer.instructions;
   const criteria = packet.acceptance_criteria ?? [];
   return [
     `You are a code reviewer. Review the implementation for packet "${packet.id}".`,
     ``,
     `Title: ${packet.title}`,
+    memoryBlock.length > 0 ? `${memoryBlock}\n` : '',
     criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
     personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
     `Review the code changes. If acceptable, run: npx tsx ${config.factory_dir}/tools/review.ts ${packet.id} --approve`,
@@ -97,12 +99,13 @@ export function buildReviewPrompt(packet: RawPacket, config: FactoryConfig): str
  * not use it. We preserve that signature so swapping the call site
  * in run.ts is a true no-op refactor.
  */
-export function buildReworkPrompt(packet: RawPacket, _config: FactoryConfig): string {
+export function buildReworkPrompt(packet: RawPacket, _config: FactoryConfig, memoryBlock = ''): string {
   return [
     `You are a developer. Your code review for packet "${packet.id}" requested changes.`,
+    memoryBlock.length > 0 ? `${memoryBlock}\n` : '',
     `Address the review feedback and fix the issues.`,
     `Do not call request-review.ts or complete.ts yourself.`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -111,7 +114,7 @@ export function buildReworkPrompt(packet: RawPacket, _config: FactoryConfig): st
  * Requires: packet.id, packet.title, packet.verifies,
  *           packet.acceptance_criteria, config.personas.qa.instructions.
  */
-export function buildQaPrompt(packet: RawPacket, config: FactoryConfig): string {
+export function buildQaPrompt(packet: RawPacket, config: FactoryConfig, memoryBlock = ''): string {
   const personaInstructions = config.personas.qa.instructions;
   const criteria = packet.acceptance_criteria ?? [];
   return [
@@ -119,6 +122,7 @@ export function buildQaPrompt(packet: RawPacket, config: FactoryConfig): string 
     ``,
     `Title: ${packet.title}`,
     `Verifies: ${packet.verifies ?? 'unknown'}`,
+    memoryBlock.length > 0 ? `${memoryBlock}\n` : '',
     criteria.length > 0 ? `## Acceptance Criteria\n${criteria.map((c) => `- ${c}`).join('\n')}\n` : '',
     personaInstructions.length > 0 ? `## Instructions\n${personaInstructions.join('\n')}\n` : '',
     `Verify the acceptance criteria are met. Run tests. Check the implementation.`,
@@ -144,6 +148,7 @@ export interface PlannerPromptInput {
   readonly plannerInstructions: ReadonlyArray<string>;
   /** Where the planner should write feature/packet artifacts (config.artifact_dir). */
   readonly artifactDir: string;
+  readonly memoryBlock?: string;
   /**
    * If the raw intent recorded a spec_path, the planner is asked to
    * read the spec from that path rather than receiving the spec body
@@ -165,7 +170,7 @@ export interface PlannerPromptInput {
  *   - Output instructions reference the artifact directory verbatim.
  */
 export function buildPlannerPrompt(input: PlannerPromptInput): string {
-  const { intent, plannerInstructions, artifactDir, specPath } = input;
+  const { intent, plannerInstructions, artifactDir, specPath, memoryBlock } = input;
   const constraints = (intent.constraints ?? []).map((c) => `- ${c}`).join('\n');
   const specRef = specPath
     ? `Read the full spec from: ${specPath}`
@@ -178,6 +183,7 @@ export function buildPlannerPrompt(input: PlannerPromptInput): string {
     ``,
     specRef,
     ``,
+    memoryBlock != null && memoryBlock.length > 0 ? `${memoryBlock}\n` : '',
     constraints.length > 0 ? `## Constraints\n${constraints}\n` : '',
     `## Instructions`,
     ...plannerInstructions,

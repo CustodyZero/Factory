@@ -6,7 +6,7 @@
   "type": "object",
   "required": [
     "project_name", "factory_dir", "artifact_dir",
-    "verification", "validation", "infrastructure_patterns",
+    "memory", "verification", "validation", "infrastructure_patterns",
     "completed_by_default", "personas"
   ],
   "properties": {
@@ -14,6 +14,19 @@
     "project_name": { "type": "string", "minLength": 1 },
     "factory_dir": { "type": "string", "minLength": 1 },
     "artifact_dir": { "type": "string", "minLength": 1 },
+    "memory": {
+      "type": "object",
+      "required": ["root_dir", "cache_dir", "suggestion_dir", "max_additional_files", "max_file_bytes", "max_cache_entries"],
+      "properties": {
+        "root_dir": { "type": "string", "minLength": 1 },
+        "cache_dir": { "type": "string", "minLength": 1 },
+        "suggestion_dir": { "type": "string", "minLength": 1 },
+        "max_additional_files": { "type": "integer", "minimum": 1 },
+        "max_file_bytes": { "type": "integer", "minimum": 1024 },
+        "max_cache_entries": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "verification": {
       "type": "object",
       "required": ["build", "lint", "test"],

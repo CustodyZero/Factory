@@ -16,7 +16,8 @@ set -e
 #   1. Installs factory dependencies (inside .factory/)
 #   2. Copies template files to host project root (no-clobber)
 #   3. Creates artifact directories under factory/
-#   4. Configures git hooks
+#   4. Seeds host-project memory + cache directories
+#   5. Configures git hooks
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -75,7 +76,34 @@ for subdir in intents features packets completions; do
   echo "  MKDIR ${ARTIFACT_DIR}/${subdir}/"
 done
 
-# ── 4. Configure git hooks ──────────────────────────────────────────────────
+# ── 4. Seed host-project memory + cache directories ─────────────────────────
+
+echo ""
+echo "Creating memory and cache directories..."
+for subdir in \
+  memory \
+  memory/architectural-facts \
+  memory/recurring-failures \
+  memory/project-conventions \
+  memory/code-patterns \
+  memory/suggestions \
+  cache
+do
+  mkdir -p "${ARTIFACT_DIR}/${subdir}"
+  echo "  MKDIR ${ARTIFACT_DIR}/${subdir}/"
+done
+copy_template "${FACTORY_DIR}/templates/memory.md" "${ARTIFACT_DIR}/memory/MEMORY.md"
+
+if [ -f ".gitignore" ]; then
+  if ! grep -qx "${ARTIFACT_DIR}/cache/" ".gitignore"; then
+    printf "\n%s\n" "${ARTIFACT_DIR}/cache/" >> ".gitignore"
+    echo "  APPEND .gitignore -> ${ARTIFACT_DIR}/cache/"
+  else
+    echo "  SKIP  .gitignore (${ARTIFACT_DIR}/cache/ already present)"
+  fi
+fi
+
+# ── 5. Configure git hooks ──────────────────────────────────────────────────
 
 echo ""
 echo "Configuring git hooks..."

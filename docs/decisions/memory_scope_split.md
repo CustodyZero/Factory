@@ -1,7 +1,29 @@
 ---
 name: Memory scope split — stateless workers, stateful project; host-project memory vs factory-development memory
 description: >-
-  Memory in factory operates at two scopes with different design properties. Workers (per-packet agent invocations: developer, code reviewer, QA) stay stateless — short-lived, parallelizable, replaceable, no carry-forward state, recovery via typed scenarios rather than learned context (claw-code's posture). The project layer is stateful — multiple intents over its lifetime, multiple humans, accumulating runs, curated and persistent (claurst's memdir/session_memory/AutoDream three-layer pattern). Within project scope, factory respects a host/guest boundary claurst (a single-user TUI) doesn't have to navigate, splitting further into host-project memory (factory's contract with host projects: factory writes artifacts to the host's tracked artifact tree; the host owns the loading mechanism, not factory) and factory-development memory (the memdir-style symlink convention this repo uses, configured via gitignored `.claude/settings.local.json`; per-developer setup, NOT inherited by host projects). Memory categories when implemented at host-project scope: architectural facts, recurring failures, code patterns. Operator preferences are explicitly out of scope. The write-side (session_memory analog) and consolidation pass (AutoDream analog) are deferred to a future spec; the architectural shape that future implementation will take is committed in [host_project_memory_graph_rag.md](host_project_memory_graph_rag.md). Decided 2026-04-30; informed by [claurst_audit.md](../research/claurst_audit.md) §9 (three-layer subsystem) and [claw_code_audit.md](../research/claw_code_audit.md) §12 (context loading, not learned memory).
+  Memory in factory operates at two scopes with different design properties.
+  Workers (per-packet agent invocations: developer, code reviewer, QA) stay
+  stateless — short-lived, parallelizable, replaceable, no carry-forward
+  state, recovery via typed scenarios rather than learned context
+  (claw-code's posture). The project layer is stateful — multiple intents over
+  its lifetime, multiple humans, accumulating runs, curated and persistent
+  (claurst's memdir/session_memory/AutoDream three-layer pattern). Within
+  project scope, factory respects a host/guest boundary claurst (a
+  single-user TUI) doesn't have to navigate, splitting further into
+  host-project memory (factory's contract with host projects: factory writes
+  artifacts to the host's tracked artifact tree; the host owns the loading
+  mechanism, not factory) and factory-development memory (the memdir-style
+  symlink convention this repo uses, configured via gitignored
+  `.claude/settings.local.json`; per-developer setup, NOT inherited by host
+  projects). Memory categories at host-project scope are architectural facts,
+  recurring failures, project conventions, and code patterns. The current
+  implementation shape is the thin layer described in
+  [host_project_memory_thin_layer.md](host_project_memory_thin_layer.md);
+  heavier graph-backed retrieval remains a future option, not the operative
+  contract. Decided 2026-04-30; clarified 2026-05-13. Informed by
+  [claurst_audit.md](../research/claurst_audit.md) §9 (three-layer subsystem)
+  and [claw_code_audit.md](../research/claw_code_audit.md) §12 (context
+  loading, not learned memory).
 type: project
 ---
 
@@ -57,7 +79,7 @@ Properties at this sub-scope:
 - **Factory writes memory artifacts to the host's tracked artifact tree.** Concrete location TBD by a future spec; likely `factory/memory/<...>` alongside `factory/intents/`, `factory/packets/`, etc. — the same artifact tree that already holds factory's other host-project outputs.
 - **Factory does NOT write to host-environment-specific locations.** No writes to `~/.claude/projects/<host-encoded>/memory/`, no writes to the host's `docs/decisions/`, no assumptions about the host's editor or CLI tooling.
 - **The host owns the loading mechanism.** Whether the host project surfaces factory's memory artifacts to Claude Code (via symlink), to a different agent, to a search index, or to nothing at all — that's the host's decision. Factory provides the artifacts; the host decides what to do with them.
-- **Memory categories** (when implemented): architectural facts, recurring failures, code patterns. Operator preferences are explicitly out of scope.
+- **Memory categories:** architectural facts, recurring failures, project conventions, code patterns. Operator preferences are explicitly out of scope.
 
 This sub-scope is the load-bearing one for factory-as-a-tool. It is the contract host projects can rely on.
 
@@ -75,7 +97,7 @@ Host projects that install factory **are not expected** to adopt this convention
 
 #### What's still TBD across both sub-scopes
 
-- **Memory write-side** (session_memory analog): extracting facts learned during pipeline runs and persisting them to disk. Not yet implemented in either sub-scope. A future spec will define this, primarily for the host-project sub-scope (architectural facts, recurring failures, code patterns).
+- **Memory write-side** (session_memory analog): a thin write-side now exists for host-project memory in the form of pipeline-generated suggestion reports under `factory/memory/suggestions/`. Durable promotion and richer extraction remain future work.
 - **Memory curation/consolidation** (AutoDream analog): periodic consolidation that prunes duplicates, updates stale facts, promotes reinforced observations. Not yet implemented.
 
 This whole arrangement matches claurst's design at the project scope but **not** at the per-invocation worker scope, with the additional refinement that factory respects the host/guest boundary that claurst (a single-user TUI) doesn't have to navigate.
@@ -85,18 +107,17 @@ This whole arrangement matches claurst's design at the project scope but **not**
 1. **Memory will not be added to the worker layer.** Per-packet agent invocations remain stateless. Recovery from worker failure is via typed recipes, not via learned-memory carry-forward.
 2. **Memory IS the project layer's load-bearing pattern.** Investment in memory infrastructure is investment in the project layer.
 3. **Project-scope memory has two ownership-distinct sub-scopes.** Host-project memory is what factory writes for host projects; factory-development memory is specific to this repo's evolution. The two are not interchangeable.
-4. **For host projects, factory writes memory artifacts to the host's tracked artifact tree** (concrete path TBD). Factory does **not** write to `~/.claude/...` or any host-environment-specific location.
+4. **For host projects, factory writes memory artifacts to the host's tracked artifact tree** under `factory/memory/` and `factory/cache/`. Factory does **not** write to `~/.claude/...` or any host-environment-specific location.
 5. **The host project owns its memory loading mechanism.** Factory produces artifacts; the host decides whether and how to surface them to its AI tooling.
 6. **The memdir-style symlink in this repo is per-developer setup, not a contract host projects inherit.** Factory's host-project contract does not assume Claude Code, does not assume the host has a `.claude/` directory, and does not impose the symlink convention.
-7. **Memory categories (when implemented at host-project scope) are: architectural facts, recurring failures, code patterns.** Operator preferences are explicitly out of scope.
+7. **Memory categories at host-project scope are: architectural facts, recurring failures, project conventions, code patterns.** Operator preferences are explicitly out of scope.
 
 ## What this does NOT decide
 
 The following are deferred to a future spec (likely after Phase 6 of `specs/single-entry-pipeline.md`):
 
-- **The specific path within the host's artifact tree** where factory's memory artifacts live. `factory/memory/` is the natural candidate (alongside `factory/intents/`, `factory/packets/`, etc.) but the exact subdirectory and file naming convention are deferred.
-- **Whether to implement a session_memory equivalent** (write-side) for factory pipeline runs. Likely yes per the chosen memory model (architectural facts, recurring failures, code patterns), but the implementation timing and shape are deferred.
-- **Whether to implement an AutoDream equivalent** (background consolidation). Same — likely yes given long-running host projects accumulate memory drift, but not committed.
+- **How suggestion promotion works.** The thin layer writes candidate updates under `factory/memory/suggestions/`, but the durable-promotion contract is still deferred.
+- **Whether to implement an AutoDream equivalent** (background consolidation). Not committed.
 - **Frontmatter schema details for memory entries.** Whether to mirror claurst's schema (name, description, type), extend it (e.g., add `category`, `severity`, `last_observed`), or define a different one.
 - **The agent invocation that performs extraction.** Whether the write-side is a dedicated extraction agent run after each pipeline phase, an in-line extraction during agent runs, or batched/scheduled.
 - **Whether host projects can opt OUT of memory writes.** Configurability TBD.

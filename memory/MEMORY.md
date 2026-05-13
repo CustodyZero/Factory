@@ -25,20 +25,7 @@ category directories next to it.
 - Keep this file under 200 lines.
 - Prefer links and short summaries over long prose.
 - Do not restate current packet/feature state here.
-- Do not use this file as a run log.
 - Promote from `suggestions/` into durable categories only after human review.
-
-## When To Add Durable Memory
-
-Add durable memory when a fact is likely to matter again across future work:
-
-- architecture or boundary facts
-- recurring failure modes
-- stable conventions
-- reusable code patterns
-
-If the note is temporary, operational, or reconstructible from factory
-artifacts, it does not belong here.
 
 ## Current Notes
 

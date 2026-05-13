@@ -21,7 +21,9 @@ The setup script:
    - `AGENTS.md` — agent operating constraints
 3. Creates `factory/` directory with artifact subdirectories:
    - `factory/intents/`, `factory/features/`, `factory/packets/`, `factory/completions/`
-4. Configures `git config core.hooksPath .factory/hooks`
+   - `factory/memory/` (durable host-project memory) and `factory/cache/` (transient machine cache)
+4. Seeds `factory/memory/MEMORY.md` and category directories
+5. Configures `git config core.hooksPath .factory/hooks`
 
 After setup, the normal workflow is:
 
@@ -29,6 +31,36 @@ After setup, the normal workflow is:
 2. Run the full pipeline: `npx tsx .factory/tools/run.ts <spec-id>`
 3. The pipeline plans, develops, reviews, and verifies — autonomously to completion
 4. Re-run the same command to resume if anything failed (the pipeline is idempotent)
+
+### Using the host-project memory layer
+
+After setup, treat host-project memory as a small curated knowledge surface:
+
+- `factory/memory/MEMORY.md` is the index the pipeline may always load
+- category directories hold durable memory
+- `factory/memory/suggestions/` holds candidate updates from pipeline runs
+- `factory/cache/` is transient machine state only
+
+Use durable memory for things like:
+
+- architectural invariants
+- repeated failure modes
+- stable team or repo conventions
+- reusable local patterns
+
+Do not use durable memory for:
+
+- current packet/feature state
+- run narration
+- temporary debugging notes
+- data already reconstructible from factory artifacts
+
+Recommended host workflow:
+
+1. Keep `factory/memory/MEMORY.md` short and link outward.
+2. Add stable project knowledge to the category directories as it becomes worth reusing.
+3. Periodically review `factory/memory/suggestions/` and promote only the durable items.
+4. Treat `factory/cache/` as disposable.
 
 ### Two operating modes
 
@@ -63,6 +95,14 @@ factory/                 # Factory artifacts (visible, one directory)
 ├── features/
 ├── packets/
 ├── completions/
+├── memory/              # Durable host-project memory (tracked)
+│   ├── MEMORY.md        # Small always-loaded index
+│   ├── architectural-facts/
+│   ├── recurring-failures/
+│   ├── project-conventions/
+│   ├── code-patterns/
+│   └── suggestions/     # Candidate updates; review before promotion
+├── cache/               # Transient machine cache (gitignore)
 ├── events/              # Per-run event streams (JSONL)
 ├── cost/                # Per-invocation cost records
 └── escalations/         # Structured failure records when recovery escalates
@@ -74,6 +114,16 @@ AGENTS.md                # Agent constraints
 Tooling is hidden in `.factory/`. Artifacts are visible in `factory/`.
 Specs live at the project root in `specs/` so authors edit them next to
 the code, not inside the tooling submodule.
+
+### Memory authoring conventions
+
+The memory layer works best when the files stay small and specific:
+
+- Put the broad summary in `factory/memory/MEMORY.md`
+- Put one durable idea per file when possible
+- Prefer concise statements over long narratives
+- Link related notes from the index instead of copying them
+- Promote from `suggestions/` only after human review
 
 ---
 
@@ -182,6 +232,14 @@ Edit the template at your project root:
   "project_name": "my-project",
   "factory_dir": ".factory",
   "artifact_dir": "factory",
+  "memory": {
+    "root_dir": "memory",
+    "cache_dir": "cache",
+    "suggestion_dir": "suggestions",
+    "max_additional_files": 4,
+    "max_file_bytes": 16384,
+    "max_cache_entries": 20
+  },
   "verification": {
     "build": "dotnet build",
     "lint": "true",

@@ -80,6 +80,14 @@ Edit `factory.config.json` at the project root:
   "project_name": "my-project",
   "factory_dir": ".factory",
   "artifact_dir": "factory",
+  "memory": {
+    "root_dir": "memory",
+    "cache_dir": "cache",
+    "suggestion_dir": "suggestions",
+    "max_additional_files": 4,
+    "max_file_bytes": 16384,
+    "max_cache_entries": 20
+  },
   "verification": {
     "build": "dotnet build",
     "lint": "true",
@@ -183,6 +191,55 @@ The pipeline supports multiple agent CLI providers:
 
 Each persona is mapped to a provider in `pipeline.persona_providers`.
 Custom providers can be added — any CLI that accepts a prompt argument works.
+
+### Host-Project Memory
+
+Factory now supports a thin host-project memory layer under the artifact tree:
+
+- `factory/memory/MEMORY.md` — small always-loaded index
+- `factory/memory/architectural-facts/`
+- `factory/memory/recurring-failures/`
+- `factory/memory/project-conventions/`
+- `factory/memory/code-patterns/`
+- `factory/memory/suggestions/` — pipeline-generated suggestions that require human review before promotion
+- `factory/cache/` — transient machine cache, safe to delete and rebuild
+
+The pipeline loads the index plus a few targeted memory files into planner,
+developer, reviewer, and QA prompts. It does **not** auto-promote suggestions
+into durable memory.
+
+### Using Host-Project Memory
+
+Host-project memory is for **stable project context** that is expensive to
+rediscover but not already the state of record elsewhere in factory artifacts.
+
+Good durable memory:
+
+- architectural invariants
+- recurring failure modes
+- stable project conventions
+- reusable local code patterns
+
+Bad durable memory:
+
+- current packet or feature status
+- run-by-run narration
+- temporary debugging notes
+- anything already reconstructible from `factory/packets/`, `factory/features/`,
+  `factory/completions/`, or `factory/events/`
+
+Recommended operating model:
+
+1. Keep `factory/memory/MEMORY.md` short. Use it as an index, not a dump.
+2. Add durable notes to the category directories when the fact is stable enough
+   to matter across future runs.
+3. Review `factory/memory/suggestions/` after meaningful runs and promote only
+   the entries that deserve to become durable memory.
+4. Ignore or delete `factory/cache/` freely. It is machine cache, not project
+   knowledge.
+
+Promotion is intentionally manual. The pipeline may suggest memory updates,
+but humans decide what becomes durable memory.
 
 ---
 

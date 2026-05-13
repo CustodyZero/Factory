@@ -22,6 +22,7 @@ Thumbs.db
 # Test / build artifacts
 coverage/
 *.log
+cache/
 
 # Claude Code — track project-wide settings, not per-developer local overrides
 .claude/settings.local.json

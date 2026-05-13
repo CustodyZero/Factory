@@ -7,7 +7,7 @@ type: lesson
 
 # Host-Project Memory Reconsideration
 
-**Status:** Challenge note. This is not an implementation plan. It is a case for reopening the current host-project memory direction before implementation starts.
+**Status:** Challenge note. This is not an implementation plan. It reopened the earlier graph-RAG-first direction and directly informed the later thin-layer implementation contract in [`../decisions/host_project_memory_thin_layer.md`](../decisions/host_project_memory_thin_layer.md).
 
 ## The pushback
 

@@ -28,6 +28,7 @@ import * as fmt from '../../output.js';
 import { runPlanPhase } from '../plan_phase.js';
 import { runDevelopPhase } from '../develop_phase.js';
 import { runVerifyPhase } from '../verify_phase.js';
+import { writeMemorySuggestionReport } from '../memory.js';
 import type { ResolvedSpec } from './resolution.js';
 
 // ---------------------------------------------------------------------------
@@ -303,6 +304,17 @@ export async function runSingleSpec(
   }
 
   const success = allFailed.length === 0 && allSkipped.length === 0;
+  const latestPackets = readJsonDir<RawPacket>(join(artifactRoot, 'packets'))
+    .filter((packet) => feature.packets.includes(packet.id))
+    .map((packet) => packet as RawPacket & { readonly failure?: { readonly scenario?: string; readonly reason?: string } | null });
+  writeMemorySuggestionReport({
+    projectRoot,
+    config,
+    specId: spec.id,
+    featureId: feature.id,
+    status: success ? 'completed' : 'failed',
+    packets: latestPackets,
+  });
   if (success) {
     return {
       status: 'completed',

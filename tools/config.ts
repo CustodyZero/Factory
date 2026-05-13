@@ -20,6 +20,15 @@ export type ModelTier = 'high' | 'medium' | 'low';
 export type PipelineProvider = 'codex' | 'claude' | 'copilot';
 export type PipelinePersona = 'planner' | 'developer' | 'code_reviewer' | 'qa';
 
+export interface MemoryConfig {
+  readonly root_dir: string;
+  readonly cache_dir: string;
+  readonly suggestion_dir: string;
+  readonly max_additional_files: number;
+  readonly max_file_bytes: number;
+  readonly max_cache_entries: number;
+}
+
 export interface PersonaConfig {
   readonly description: string;
   readonly instructions: ReadonlyArray<string>;
@@ -198,6 +207,7 @@ export interface FactoryConfig {
   readonly project_name: string;
   readonly factory_dir: string;
   readonly artifact_dir: string;
+  readonly memory: MemoryConfig;
   readonly verification: {
     readonly build: string;
     readonly lint: string;
@@ -213,6 +223,17 @@ export interface FactoryConfig {
   };
   readonly personas: PersonasConfig;
   readonly pipeline?: PipelineConfig;
+}
+
+export function defaultMemoryConfig(): MemoryConfig {
+  return {
+    root_dir: 'memory',
+    cache_dir: 'cache',
+    suggestion_dir: 'suggestions',
+    max_additional_files: 4,
+    max_file_bytes: 16_384,
+    max_cache_entries: 20,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -446,13 +467,16 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       code_reviewer: { description: 'Reviews code changes for correctness, design, and contract adherence', instructions: [] },
       qa: { description: 'Verifies acceptance criteria are met', instructions: [] },
     };
+    const defaultMemory = defaultMemoryConfig();
     const rawPersonas = (parsed as Record<string, unknown>)['personas'] as Partial<PersonasConfig> | undefined;
+    const rawMemory = (parsed as Record<string, unknown>)['memory'] as Partial<MemoryConfig> | undefined;
     const personas: PersonasConfig = {
       planner: { ...defaultPersonas.planner, ...rawPersonas?.planner },
       developer: { ...defaultPersonas.developer, ...rawPersonas?.developer },
       code_reviewer: { ...defaultPersonas.code_reviewer, ...rawPersonas?.code_reviewer },
       qa: { ...defaultPersonas.qa, ...rawPersonas?.qa },
     };
+    const memory: MemoryConfig = { ...defaultMemory, ...rawMemory };
 
     const defaultProviders: Record<string, PipelineProviderConfig> = {
       codex: { enabled: true, command: 'codex', sandbox: 'workspace-write' },
@@ -600,7 +624,7 @@ export function loadConfig(projectRoot?: string): FactoryConfig {
       ...(rawRateCard !== undefined ? { rate_card: rawRateCard } : {}),
     };
 
-    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, pipeline } as FactoryConfig;
+    return { factory_dir: '.', artifact_dir: '.', ...parsed, personas, memory, pipeline } as FactoryConfig;
   } catch (e) {
     console.error(`ERROR: Failed to parse factory.config.json: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
@@ -644,6 +668,26 @@ export function resolveArtifactRoot(projectRoot?: string, config?: FactoryConfig
   const cfg = config ?? loadConfig(root);
   const artifactDir = cfg.artifact_dir ?? '.';
   return artifactDir === '.' ? root : join(root, artifactDir);
+}
+
+/**
+ * Resolves the durable host-project memory root inside the artifact tree.
+ */
+export function resolveMemoryRoot(projectRoot?: string, config?: FactoryConfig): string {
+  const root = projectRoot ?? findProjectRoot();
+  const cfg = config ?? loadConfig(root);
+  const memory = cfg.memory ?? defaultMemoryConfig();
+  return join(resolveArtifactRoot(root, cfg), memory.root_dir);
+}
+
+/**
+ * Resolves the transient machine cache root inside the artifact tree.
+ */
+export function resolveCacheRoot(projectRoot?: string, config?: FactoryConfig): string {
+  const root = projectRoot ?? findProjectRoot();
+  const cfg = config ?? loadConfig(root);
+  const memory = cfg.memory ?? defaultMemoryConfig();
+  return join(resolveArtifactRoot(root, cfg), memory.cache_dir);
 }
 
 /**
